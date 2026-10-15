@@ -1062,3 +1062,46 @@ fn archived_flag_roundtrips_without_changing_canon() {
     assert_eq!(definition_flag, 1);
     assert_eq!(assertion_flag, 1);
 }
+
+#[test]
+fn null_primary_keys_are_rejected() {
+    let (scratch, mut store) = created("null-pk.sqlite");
+    let entity_type = person_type(&mut store);
+    let subject = narrator(&mut store, Some(entity_type.id.clone()));
+    let definition = store
+        .create_definition(Definition {
+            id: DefinitionId::parse("77777777-7777-4777-8777-777777777777").expect("definition"),
+            owner: Owner::Type(entity_type.id.clone()),
+            value_class: ValueClass::Text,
+            cardinality: Cardinality::Singular,
+            archived: false,
+        })
+        .expect("definition");
+    drop(store);
+    let conn = Connection::open(&scratch.path).expect("raw");
+    conn.execute_batch("PRAGMA foreign_keys = ON").expect("fk");
+    let definition_sql = format!(
+        "INSERT INTO definitions (
+            id, owner_type_id, owner_entity_id, value_class, cardinality, archived
+        ) VALUES (NULL, '{}', NULL, 'text', 'singular', 0)",
+        entity_type.id.as_str()
+    );
+    let assertion_sql = format!(
+        "INSERT INTO assertions (
+            id, subject_id, definition_id, value_kind, text_value, bool_value,
+            target_entity_id, canon, archived
+        ) VALUES (NULL, '{}', '{}', 'text', 'x', NULL, NULL, 'PROVISIONAL', 0)",
+        subject.id.as_str(),
+        definition.id.as_str()
+    );
+    let statements = [
+        "INSERT INTO pages (id, title, body) VALUES (NULL, 't', 'b')",
+        "INSERT INTO types (id, label) VALUES (NULL, 't')",
+        "INSERT INTO entities (id, label, type_id, page_id) VALUES (NULL, 'e', NULL, NULL)",
+        definition_sql.as_str(),
+        assertion_sql.as_str(),
+    ];
+    for sql in statements {
+        assert_sql_error(conn.execute(sql, []), "NOT NULL constraint failed");
+    }
+}

@@ -320,6 +320,13 @@ impl Store {
 }
 
 fn init_new(conn: &mut Connection, universe_id: &UniverseId) -> Result<()> {
+    // The named test thread asks initialization to fail after the file exists.
+    #[cfg(test)]
+    if std::thread::current().name() == Some("fail-after-reserve") {
+        return Err(Error::Storage {
+            message: "injected initialization failure".to_string(),
+        });
+    }
     prepare_connection(conn)?;
     set_delete_journal(conn)?;
     let transaction = conn
@@ -928,5 +935,26 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read version");
         assert_eq!(version, 0);
+    }
+
+    #[test]
+    fn failed_initialization_keeps_the_reserved_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("reserved.sqlite");
+        let universe = UniverseId::parse("11111111-1111-4111-8111-111111111111").expect("universe");
+        let err = std::thread::Builder::new()
+            .name("fail-after-reserve".to_string())
+            .spawn(move || Store::create(&path, universe))
+            .expect("spawn")
+            .join()
+            .expect("join")
+            .expect_err("init");
+        let message = err.to_string();
+        assert!(
+            message.contains("injected initialization failure"),
+            "{message}"
+        );
+        assert!(message.contains("residual file"), "{message}");
+        assert!(dir.path().join("reserved.sqlite").is_file());
     }
 }
