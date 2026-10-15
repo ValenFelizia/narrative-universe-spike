@@ -99,6 +99,10 @@ El tiempo de espera por bloqueo es 250 ms. Si otra conexión tiene una transacci
 
 `PRAGMA user_version` entra en la misma transacción que el esquema. En este SQLite, `ROLLBACK` deshace ese pragma. Lo cubre `user_version_rolls_back_with_the_transaction`. No probé un corte de energía.
 
+`create` reserva la ruta con `create_new` y después abre ese archivo sin el flag de creación de SQLite. Si la ruta ya existe, devuelve `PathExists` y no modifica el archivo. Si la inicialización falla después de la reserva, el archivo queda en disco y el error incluye `residual file`. Las claves primarias de `pages`, `types`, `entities`, `definitions` y `assertions` son `NOT NULL`.
+
+La suite posterior a esa corrección tiene 33 tests. `cargo fmt --check` y `cargo clippy --locked --all-targets -- -D warnings` pasaron. `cargo test --locked --all-targets` tardó 2351 ms con las dependencias ya compiladas. `persistence` informó 0,84 s para 27 tests y `process_replay` informó 0,46 s para 3 tests.
+
 Abrir una base ajena o de otra versión falla antes de migrarla. Los tests comparan los bytes del archivo. `inspect` dejó los mismos bytes que `seed` en esta corrida.
 
 Una consulta por sujeto devuelve las filas que existen. Si el sujeto no existe, el resultado es una lista vacía. La lectura por id de un registro ausente devuelve `NotFound`.

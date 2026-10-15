@@ -45,22 +45,34 @@ impl std::fmt::Debug for Store {
 
 impl Store {
     pub fn create(path: &Path, universe_id: UniverseId) -> Result<Self> {
-        if path.exists() {
-            return Err(Error::validation(
-                ValidationReason::PathExists,
-                "path",
-                None,
-            ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(file) => drop(file),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(Error::validation(
+                    ValidationReason::PathExists,
+                    "path",
+                    None,
+                ));
+            }
+            Err(err) => {
+                return Err(Error::Io {
+                    message: format!("reserve {}: {err}", path.display()),
+                });
+            }
         }
-        let mut conn = match Connection::open(path) {
+        let mut conn = match open_read_write(path) {
             Ok(conn) => conn,
-            Err(err) => return Err(fail_create(path, map_sql("create", err))),
+            Err(err) => return Err(residual(path, err)),
         };
         match init_new(&mut conn, &universe_id) {
             Ok(()) => Ok(Self { conn, universe_id }),
             Err(err) => {
                 drop(conn);
-                Err(fail_create(path, err))
+                Err(residual(path, err))
             }
         }
     }
@@ -85,7 +97,7 @@ impl Store {
         require_tables(&inspected)?;
         let universe_id = read_universe(&inspected)?;
         drop(inspected);
-        let conn = Connection::open(path).map_err(|err| map_sql("open", err))?;
+        let conn = open_read_write(path)?;
         prepare_connection(&conn)?;
         require_delete_journal(&conn)?;
         let confirmed = read_universe(&conn)?;
@@ -491,15 +503,22 @@ fn read_header(path: &Path) -> Result<Header> {
     })
 }
 
-fn fail_create(path: &Path, err: Error) -> Error {
-    match std::fs::remove_file(path) {
-        Ok(()) => err,
-        Err(remove_err) if remove_err.kind() == std::io::ErrorKind::NotFound => err,
-        Err(remove_err) => Error::Io {
-            message: format!(
-                "{err}; leftover file {} could not be removed: {remove_err}",
-                path.display()
-            ),
+fn open_read_write(path: &Path) -> Result<Connection> {
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(|err| map_sql("open", err))
+}
+
+fn residual(path: &Path, err: Error) -> Error {
+    let note = format!("residual file {}", path.display());
+    match err {
+        Error::Storage { message } => Error::Storage {
+            message: format!("{message}; {note}"),
+        },
+        Error::Io { message } => Error::Io {
+            message: format!("{message}; {note}"),
+        },
+        other => Error::Io {
+            message: format!("{other}; {note}"),
         },
     }
 }
@@ -902,7 +921,7 @@ fn is_primary_key(err: &rusqlite::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::Store;
-    use crate::UniverseId;
+    use crate::{Error, UniverseId, ValidationReason};
 
     #[test]
     fn open_connection_enables_foreign_keys_and_delete_journal() {
@@ -955,6 +974,22 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("residual file"), "{message}");
-        assert!(dir.path().join("reserved.sqlite").is_file());
+        let reserved = dir.path().join("reserved.sqlite");
+        assert!(reserved.is_file());
+        let open_err = Store::open(&reserved).expect_err("residual open");
+        assert!(
+            matches!(
+                open_err,
+                Error::UnsupportedVersion { .. }
+                    | Error::Validation {
+                        reason: ValidationReason::NotADatabase
+                            | ValidationReason::ForeignDatabase
+                            | ValidationReason::MissingMetadata,
+                        ..
+                    }
+            ),
+            "{open_err}"
+        );
+        assert!(reserved.is_file());
     }
 }

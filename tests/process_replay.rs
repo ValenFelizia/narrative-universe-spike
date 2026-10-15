@@ -125,3 +125,38 @@ fn inspect_missing_file_does_not_create_it() {
     let stderr = String::from_utf8(output.stderr).expect("stderr");
     assert!(stderr.contains("PathMissing"), "{stderr}");
 }
+
+#[test]
+fn competing_seed_processes_keep_the_winner() {
+    let scratch = scratch("compete.sqlite");
+    let path = scratch.path.as_os_str();
+    let mut children = Vec::new();
+    for _ in 0..8 {
+        children.push(
+            Command::new(env!("CARGO_BIN_EXE_spike"))
+                .arg("seed")
+                .arg(path)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn seed"),
+        );
+    }
+    let mut successes = 0;
+    let mut failures = Vec::new();
+    for child in children {
+        let output = child.wait_with_output().expect("wait");
+        if output.status.code() == Some(0) {
+            successes += 1;
+        } else {
+            failures.push(String::from_utf8(output.stderr).expect("stderr"));
+        }
+    }
+    assert_eq!(successes, 1, "{failures:?}");
+    assert!(scratch.path.is_file(), "winner file missing; {failures:?}");
+    for stderr in &failures {
+        assert!(stderr.contains("PathExists"), "{stderr}");
+    }
+    let inspected = success(&run(&[std::ffi::OsStr::new("inspect"), path]));
+    assert_eq!(inspected, EXPECTED);
+}

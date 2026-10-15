@@ -114,6 +114,40 @@ fn create_refuses_existing_bytes() {
 }
 
 #[test]
+fn second_create_leaves_the_existing_database() {
+    let (scratch, mut store) = created("second-create.sqlite");
+    let page = store
+        .create_page(Page {
+            id: PageId::parse("22222222-2222-4222-8222-222222222222").expect("page"),
+            title: "Queda".to_string(),
+            body: "intacta".to_string(),
+        })
+        .expect("page");
+    drop(store);
+    let before = bytes(&scratch.path);
+    let err = Store::create(&scratch.path, universe()).expect_err("second");
+    match err {
+        Error::Validation {
+            reason: ValidationReason::PathExists,
+            field: "path",
+            id: None,
+        } => {}
+        other => panic!("expected path exists, got {other}"),
+    }
+    assert_eq!(bytes(&scratch.path), before);
+    let store = Store::open(&scratch.path).expect("reopen");
+    assert_eq!(store.page(&page.id).expect("page").body, "intacta");
+}
+
+#[test]
+fn create_on_a_directory_does_not_remove_it() {
+    let scratch = scratch("create-dir");
+    std::fs::create_dir(&scratch.path).expect("dir");
+    let err = Store::create(&scratch.path, universe()).expect_err("directory");
+    assert!(scratch.path.is_dir(), "{err}");
+}
+
+#[test]
 fn create_parent_directory_missing_leaves_no_file() {
     let scratch = scratch("nested");
     let path = scratch.path.join("missing").join("universe.sqlite");

@@ -5,25 +5,25 @@ CREATE TABLE metadata (
 );
 
 CREATE TABLE pages (
-    id TEXT PRIMARY KEY CHECK (length(id) = 36),
+    id TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 36),
     title TEXT NOT NULL,
     body TEXT NOT NULL
 );
 
 CREATE TABLE types (
-    id TEXT PRIMARY KEY CHECK (length(id) = 36),
+    id TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 36),
     label TEXT NOT NULL
 );
 
 CREATE TABLE entities (
-    id TEXT PRIMARY KEY CHECK (length(id) = 36),
+    id TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 36),
     label TEXT NOT NULL,
     type_id TEXT NULL REFERENCES types (id),
     page_id TEXT NULL REFERENCES pages (id)
 );
 
 CREATE TABLE definitions (
-    id TEXT PRIMARY KEY CHECK (length(id) = 36),
+    id TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 36),
     owner_type_id TEXT NULL REFERENCES types (id),
     owner_entity_id TEXT NULL REFERENCES entities (id),
     value_class TEXT NOT NULL CHECK (value_class IN ('text', 'boolean', 'reference')),
@@ -34,7 +34,7 @@ CREATE TABLE definitions (
 );
 
 CREATE TABLE assertions (
-    id TEXT PRIMARY KEY CHECK (length(id) = 36),
+    id TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 36),
     subject_id TEXT NOT NULL REFERENCES entities (id),
     definition_id TEXT NOT NULL REFERENCES definitions (id),
     value_kind TEXT NOT NULL CHECK (value_kind IN ('text', 'boolean', 'reference', 'unknown')),
