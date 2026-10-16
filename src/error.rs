@@ -39,6 +39,7 @@ pub enum ValidationReason {
     UnknownPage,
     NotApplicable,
     ValueMismatch,
+    ArchivedDefinition,
 }
 
 impl Error {

@@ -6,7 +6,9 @@ Narrative Universe aims to combine freeform pages with structured entities, user
 
 ## Current scope
 
-**I1 — Persistence and relationships** is the only implemented increment:
+**I1 — Persistence and relationships** and **I2 — Canon alternatives and reversible archival** are implemented in this spike. I2 is waiting for review at G2.
+
+The spike covers:
 
 - Pages with freeform text, entity types, and entities with optional type and primary page.
 - Property definitions owned by a type or one entity.
@@ -15,8 +17,12 @@ Narrative Universe aims to combine freeform pages with structured entities, user
 - Stable IDs, provenance fields, narrative scope notes, and archived flags.
 - SQLite storage, validation, and bidirectional relationship queries backed by **one stored assertion**.
 - Reopening an existing universe from a different process.
+- An explicit canon change for one assertion. Other assertions keep their ids, values, provenance, scope, and canon.
+- Idempotent archive and restore for definitions and assertions. Archival does not delete values or provenance, and it does not change canon.
+- Rejection of a new assertion on an archived definition.
+- A read-only query for possible incompatibilities: two active `ACORDADO` assertions with different known values on the same subject and the same active singular definition.
 
-**Not implemented:** editing UI, Tauri, MCP, JSON import/export, canon transitions, archive/restore commands, full history, or a fictional timeline engine. I2 and I3 are planned but require separate approval.
+**Not implemented:** editing UI, Tauri, MCP, JSON import/export, full history, or a fictional timeline engine. I3 requires a separate approval. A green I2 suite does not authorize merge.
 
 ## Getting started
 
