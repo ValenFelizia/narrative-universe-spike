@@ -1043,8 +1043,8 @@ fn t13_busy_write_does_not_persist() {
 }
 
 #[test]
-fn archived_flag_roundtrips_without_changing_canon() {
-    let (scratch, mut store) = created("archived-flag.sqlite");
+fn archived_definition_rejects_new_assertion() {
+    let (scratch, mut store) = created("archived-definition.sqlite");
     let entity_type = person_type(&mut store);
     let subject = narrator(&mut store, Some(entity_type.id.clone()));
     let definition = store
@@ -1056,9 +1056,11 @@ fn archived_flag_roundtrips_without_changing_canon() {
             archived: true,
         })
         .expect("definition");
-    let assertion = store
+    let assertion_id =
+        AssertionId::parse("88888888-8888-4888-8888-888888888888").expect("assertion");
+    let err = store
         .create_assertion(Assertion {
-            id: AssertionId::parse("88888888-8888-4888-8888-888888888888").expect("assertion"),
+            id: assertion_id.clone(),
             subject_id: subject.id,
             definition_id: definition.id.clone(),
             value: Value::Text("histórico".to_string()),
@@ -1066,18 +1068,33 @@ fn archived_flag_roundtrips_without_changing_canon() {
             source_status_raw: None,
             provenance: Provenance::absent(),
             scope_note: None,
-            archived: true,
+            archived: false,
         })
-        .expect("assertion");
+        .expect_err("archived definition");
+    match err {
+        Error::Validation {
+            reason: ValidationReason::ArchivedDefinition,
+            field: "definition_id",
+            id: Some(id),
+        } => assert_eq!(id, definition.id.as_str()),
+        other => panic!("expected archived definition, got {other}"),
+    }
     drop(store);
     let store = Store::open(&scratch.path).expect("reopen");
     let stored_definition = store.definition(&definition.id).expect("definition");
     assert!(stored_definition.archived);
     assert_eq!(stored_definition.cardinality, Cardinality::Multiple);
-    let stored = store.assertion(&assertion.id).expect("assertion");
-    assert!(stored.archived);
-    assert_eq!(stored.canon, Canon::MisterioIntencional);
-    assert_eq!(stored.value, Value::Text("histórico".to_string()));
+    match store
+        .assertion(&assertion_id)
+        .expect_err("missing assertion")
+    {
+        Error::Validation {
+            reason: ValidationReason::NotFound,
+            field: "id",
+            id: Some(id),
+        } => assert_eq!(id, assertion_id.as_str()),
+        other => panic!("expected not found, got {other}"),
+    }
     let conn = Connection::open(&scratch.path).expect("raw");
     let definition_flag: i64 = conn
         .query_row(
@@ -1086,15 +1103,11 @@ fn archived_flag_roundtrips_without_changing_canon() {
             |row| row.get(0),
         )
         .expect("definition flag");
-    let assertion_flag: i64 = conn
-        .query_row(
-            "SELECT archived FROM assertions WHERE id = ?1",
-            [assertion.id.as_str()],
-            |row| row.get(0),
-        )
-        .expect("assertion flag");
+    let assertion_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM assertions", [], |row| row.get(0))
+        .expect("assertion count");
     assert_eq!(definition_flag, 1);
-    assert_eq!(assertion_flag, 1);
+    assert_eq!(assertion_count, 0);
 }
 
 #[test]

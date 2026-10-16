@@ -20,6 +20,38 @@ const SQLITE_CONSTRAINT_PRIMARYKEY: i32 = 1555;
 
 const ASSERTION_COLUMNS: &str = "id, subject_id, definition_id, value_kind, text_value, bool_value, target_entity_id, canon, source_status_raw, provenance_external_ref, provenance_locator, provenance_fragment, provenance_source_revision, scope_note, archived";
 
+// `IS` treats NULL as equal to NULL, so empty text columns do not split two booleans.
+const INCOMPATIBLE_PAIRS: &str = "
+SELECT a.id, b.id
+FROM assertions AS a
+JOIN assertions AS b
+  ON a.subject_id = b.subject_id
+ AND a.definition_id = b.definition_id
+ AND a.id < b.id
+JOIN definitions AS d ON d.id = a.definition_id
+WHERE a.archived = 0
+  AND b.archived = 0
+  AND d.archived = 0
+  AND d.cardinality = 'singular'
+  AND a.canon = 'ACORDADO'
+  AND b.canon = 'ACORDADO'
+  AND a.value_kind != 'unknown'
+  AND b.value_kind != 'unknown'
+  AND NOT (
+       a.value_kind = b.value_kind
+       AND a.text_value IS b.text_value
+       AND a.bool_value IS b.bool_value
+       AND a.target_entity_id IS b.target_entity_id
+  )
+ORDER BY a.subject_id, a.definition_id, a.id, b.id
+";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PossibleIncompatibility {
+    pub first: Assertion,
+    pub second: Assertion,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Counts {
     pub pages: u64,
@@ -320,6 +352,105 @@ impl Store {
         )
     }
 
+    pub fn set_canon(&mut self, id: &AssertionId, canon: Canon) -> Result<Assertion> {
+        self.write(|tx| {
+            if lookup_assertion_id(tx, id)?.is_none() {
+                return Err(Error::validation(
+                    ValidationReason::NotFound,
+                    "id",
+                    Some(id.as_str()),
+                ));
+            }
+            tx.execute(
+                "UPDATE assertions SET canon = ?1 WHERE id = ?2",
+                params![canon.as_str(), id.as_str()],
+            )
+            .map_err(|err| map_sql("set canon", err))?;
+            required_assertion(tx, id)
+        })
+    }
+
+    pub fn archive_definition(&mut self, id: &DefinitionId) -> Result<Definition> {
+        self.set_definition_archived(id, true)
+    }
+
+    pub fn restore_definition(&mut self, id: &DefinitionId) -> Result<Definition> {
+        self.set_definition_archived(id, false)
+    }
+
+    pub fn archive_assertion(&mut self, id: &AssertionId) -> Result<Assertion> {
+        self.set_assertion_archived(id, true)
+    }
+
+    pub fn restore_assertion(&mut self, id: &AssertionId) -> Result<Assertion> {
+        self.set_assertion_archived(id, false)
+    }
+
+    pub fn possible_incompatibilities(&self) -> Result<Vec<PossibleIncompatibility>> {
+        let id_pairs = {
+            let mut statement = self
+                .conn
+                .prepare(INCOMPATIBLE_PAIRS)
+                .map_err(|err| map_sql("prepare", err))?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|err| map_sql("query", err))?;
+            let mut pairs = Vec::new();
+            for row in rows {
+                pairs.push(row.map_err(|err| map_sql("row", err))?);
+            }
+            pairs
+        };
+        let mut pairs = Vec::new();
+        for (first_raw, second_raw) in id_pairs {
+            let first_id = parse_stored_id("assertion", &first_raw, AssertionId::parse)?;
+            let second_id = parse_stored_id("assertion", &second_raw, AssertionId::parse)?;
+            pairs.push(PossibleIncompatibility {
+                first: required_assertion(&self.conn, &first_id)?,
+                second: required_assertion(&self.conn, &second_id)?,
+            });
+        }
+        Ok(pairs)
+    }
+
+    fn set_definition_archived(&mut self, id: &DefinitionId, archived: bool) -> Result<Definition> {
+        self.write(|tx| {
+            if lookup_definition(tx, id)?.is_none() {
+                return Err(Error::validation(
+                    ValidationReason::NotFound,
+                    "id",
+                    Some(id.as_str()),
+                ));
+            }
+            tx.execute(
+                "UPDATE definitions SET archived = ?1 WHERE id = ?2",
+                params![i64::from(archived), id.as_str()],
+            )
+            .map_err(|err| map_sql("definition archived", err))?;
+            required_definition(tx, id)
+        })
+    }
+
+    fn set_assertion_archived(&mut self, id: &AssertionId, archived: bool) -> Result<Assertion> {
+        self.write(|tx| {
+            if lookup_assertion_id(tx, id)?.is_none() {
+                return Err(Error::validation(
+                    ValidationReason::NotFound,
+                    "id",
+                    Some(id.as_str()),
+                ));
+            }
+            tx.execute(
+                "UPDATE assertions SET archived = ?1 WHERE id = ?2",
+                params![i64::from(archived), id.as_str()],
+            )
+            .map_err(|err| map_sql("assertion archived", err))?;
+            required_assertion(tx, id)
+        })
+    }
+
     fn write<T>(&mut self, body: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
         let transaction = self
             .conn
@@ -547,6 +678,13 @@ fn validate_assertion(tx: &Transaction, assertion: &Assertion) -> Result<()> {
             Some(assertion.definition_id.as_str()),
         )
     })?;
+    if definition.archived {
+        return Err(Error::validation(
+            ValidationReason::ArchivedDefinition,
+            "definition_id",
+            Some(definition.id.as_str()),
+        ));
+    }
     if !value_fits(definition.value_class, &assertion.value) {
         return Err(Error::validation(
             ValidationReason::ValueMismatch,
@@ -867,6 +1005,17 @@ fn lookup_definition(conn: &Connection, id: &DefinitionId) -> Result<Option<Defi
 fn required_definition(conn: &Connection, id: &DefinitionId) -> Result<Definition> {
     lookup_definition(conn, id)?
         .ok_or_else(|| Error::validation(ValidationReason::NotFound, "id", Some(id.as_str())))
+}
+
+fn lookup_assertion_id(conn: &Connection, id: &AssertionId) -> Result<Option<()>> {
+    let found: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM assertions WHERE id = ?1",
+            [id.as_str()],
+            |row| row.get(0),
+        )
+        .map_err(|err| map_sql("assertion", err))?;
+    Ok(if found == 1 { Some(()) } else { None })
 }
 
 fn required_assertion(conn: &Connection, id: &AssertionId) -> Result<Assertion> {
