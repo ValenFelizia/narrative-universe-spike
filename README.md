@@ -69,6 +69,8 @@ This is an experimental format intended for disposable test universes. Do **not*
 
 - `Store::create` reserves a new file path exclusively. It does not overwrite an existing file.
 - If initialization fails after that reservation, it leaves a **residual file** and reports its location instead of risking deletion of another process's database.
+- A successful JSON export is compact UTF-8 and must fit the same 10 MiB cap as import. An oversized universe fails export before the destination file is created.
+- A failed export write keeps the reserved file and reports `residual file` plus the path. It does not delete that path.
 - SQLite transactions protect individual writes, but there is no workspace-level multiwriter coordination or supported backup workflow yet.
 - JSON portability and safe restoration are part of a later increment, not I1.
 

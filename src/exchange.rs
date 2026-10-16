@@ -1,3 +1,5 @@
+use std::io::{Read, Write};
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result, ValidationReason};
@@ -11,7 +13,80 @@ pub const MAX_DOCUMENT_BYTES: usize = 10 * 1024 * 1024;
 
 pub fn export_json(store: &mut Store) -> Result<Vec<u8>> {
     let snapshot = store.export_snapshot()?;
-    encode(&snapshot)
+    let bytes = encode(&snapshot)?;
+    if bytes.len() > MAX_DOCUMENT_BYTES {
+        return Err(Error::validation(
+            ValidationReason::InputTooLarge,
+            "json",
+            None,
+        ));
+    }
+    Ok(bytes)
+}
+
+pub fn read_limited(reader: impl std::io::Read) -> Result<Vec<u8>> {
+    let mut limited = reader.take((MAX_DOCUMENT_BYTES as u64) + 1);
+    let mut bytes = Vec::new();
+    limited.read_to_end(&mut bytes).map_err(|err| Error::Io {
+        message: format!("read document: {err}"),
+    })?;
+    if bytes.len() > MAX_DOCUMENT_BYTES {
+        return Err(Error::validation(
+            ValidationReason::InputTooLarge,
+            "json",
+            None,
+        ));
+    }
+    Ok(bytes)
+}
+
+pub fn write_exclusive(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    write_exclusive_inner(path, bytes, false)
+}
+
+fn write_exclusive_inner(
+    path: &std::path::Path,
+    bytes: &[u8],
+    fail_after_reserve: bool,
+) -> Result<()> {
+    let mut file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(Error::validation(
+                ValidationReason::PathExists,
+                "path",
+                None,
+            ));
+        }
+        Err(err) => {
+            return Err(Error::Io {
+                message: format!("reserve {}: {err}", path.display()),
+            });
+        }
+    };
+    if fail_after_reserve {
+        return Err(Error::Io {
+            message: format!(
+                "write {}: injected write failure; residual file {}",
+                path.display(),
+                path.display()
+            ),
+        });
+    }
+    if let Err(err) = file.write_all(bytes) {
+        return Err(Error::Io {
+            message: format!(
+                "write {}: {err}; residual file {}",
+                path.display(),
+                path.display()
+            ),
+        });
+    }
+    Ok(())
 }
 
 pub fn import_json(store: &mut Store, bytes: &[u8]) -> Result<ImportOutcome> {
@@ -46,7 +121,7 @@ fn encode(snapshot: &Snapshot) -> Result<Vec<u8>> {
             .map(AssertionDto::from_assertion)
             .collect(),
     };
-    serde_json::to_vec_pretty(&envelope).map_err(|err| Error::InvalidDocument {
+    serde_json::to_vec(&envelope).map_err(|err| Error::InvalidDocument {
         message: err.to_string(),
     })
 }
@@ -400,5 +475,27 @@ fn parse_cardinality(raw: &str) -> Result<Cardinality> {
         _ => Err(Error::InvalidDocument {
             message: format!("invalid cardinality {raw}"),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_exclusive_inner;
+
+    #[test]
+    fn failed_export_write_keeps_the_residual_and_other_files() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let kept = dir.path().join("keep-me.txt");
+        std::fs::write(&kept, b"keep-me").expect("keep");
+        let residual = dir.path().join("export.json");
+        let err = write_exclusive_inner(&residual, b"{}", true).expect_err("write");
+        let message = err.to_string();
+        assert!(message.contains("residual file"), "{message}");
+        assert!(
+            message.contains(residual.to_str().expect("path")),
+            "{message}"
+        );
+        assert!(residual.is_file());
+        assert_eq!(std::fs::read(&kept).expect("kept"), b"keep-me");
     }
 }

@@ -2,9 +2,9 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use narrative_universe::{
-    export_json, import_json, import_new_json, Assertion, AssertionId, Canon, Cardinality,
-    Definition, DefinitionId, Entity, EntityId, EntityType, Error, Owner, Page, PageId, Provenance,
-    Store, TypeId, UniverseId, ValidationReason, Value, ValueClass,
+    export_json, import_json, import_new_json, read_limited, write_exclusive, Assertion,
+    AssertionId, Canon, Cardinality, Definition, DefinitionId, Entity, EntityId, EntityType, Error,
+    Owner, Page, PageId, Provenance, Store, TypeId, UniverseId, Value, ValueClass,
 };
 
 const UNIVERSE: &str = "11111111-1111-4111-8111-111111111111";
@@ -105,15 +105,13 @@ fn seed(path: &Path) -> Result<(), Error> {
 fn export(database: &Path, json_path: &Path) -> Result<(), Error> {
     let mut store = Store::open(database)?;
     let bytes = export_json(&mut store)?;
-    write_new(json_path, &bytes)?;
+    write_exclusive(json_path, &bytes)?;
     println!("bytes={}", bytes.len());
     Ok(())
 }
 
 fn import(database: &Path, json_path: &Path) -> Result<(), Error> {
-    let bytes = std::fs::read(json_path).map_err(|err| Error::Io {
-        message: format!("read {}: {err}", json_path.display()),
-    })?;
+    let bytes = read_capped(json_path)?;
     let mut store = Store::open(database)?;
     let outcome = import_json(&mut store, &bytes)?;
     println!("inserted={}", outcome.inserted);
@@ -122,51 +120,18 @@ fn import(database: &Path, json_path: &Path) -> Result<(), Error> {
 }
 
 fn import_new(database: &Path, json_path: &Path) -> Result<(), Error> {
-    let bytes = std::fs::read(json_path).map_err(|err| Error::Io {
-        message: format!("read {}: {err}", json_path.display()),
-    })?;
+    let bytes = read_capped(json_path)?;
     let (_store, outcome) = import_new_json(database, &bytes)?;
     println!("inserted={}", outcome.inserted);
     println!("unchanged={}", outcome.unchanged);
     Ok(())
 }
 
-fn write_new(path: &Path, bytes: &[u8]) -> Result<(), Error> {
-    let mut file = match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-    {
-        Ok(file) => file,
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(Error::Validation {
-                reason: ValidationReason::PathExists,
-                field: "path",
-                id: None,
-            });
-        }
-        Err(err) => {
-            return Err(Error::Io {
-                message: format!("reserve {}: {err}", path.display()),
-            });
-        }
-    };
-    if let Err(err) = std::io::Write::write_all(&mut file, bytes) {
-        drop(file);
-        return match std::fs::remove_file(path) {
-            Ok(()) => Err(Error::Io {
-                message: format!("write {}: {err}", path.display()),
-            }),
-            Err(remove_err) => Err(Error::Io {
-                message: format!(
-                    "write {}: {err}; residual file {} could not be removed: {remove_err}",
-                    path.display(),
-                    path.display()
-                ),
-            }),
-        };
-    }
-    Ok(())
+fn read_capped(path: &Path) -> Result<Vec<u8>, Error> {
+    let file = std::fs::File::open(path).map_err(|err| Error::Io {
+        message: format!("read {}: {err}", path.display()),
+    })?;
+    read_limited(file)
 }
 
 fn inspect(path: &Path) -> Result<(), Error> {

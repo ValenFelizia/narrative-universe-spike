@@ -810,3 +810,164 @@ fn import_new_refuses_an_existing_path_and_a_failed_batch_is_not_a_universe() {
         );
     }
 }
+
+fn compact_page_document(body: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "format_version": 1,
+        "universe_id": universe().as_str(),
+        "pages": [{
+            "id": "22222222-2222-4222-8222-222222222222",
+            "title": "Limite",
+            "body": body
+        }],
+        "types": [],
+        "entities": [],
+        "definitions": [],
+        "assertions": []
+    }))
+    .expect("document")
+}
+
+#[test]
+fn successful_export_fits_the_import_cap_and_reimports() {
+    let empty = compact_page_document("");
+    let body = "x".repeat(narrative_universe::MAX_DOCUMENT_BYTES - 1 - empty.len());
+    let document = compact_page_document(&body);
+    assert_eq!(document.len(), narrative_universe::MAX_DOCUMENT_BYTES - 1);
+    let scratch = scratch("near-limit.sqlite");
+    let exact =
+        compact_page_document(&"x".repeat(narrative_universe::MAX_DOCUMENT_BYTES - empty.len()));
+    assert_eq!(exact.len(), narrative_universe::MAX_DOCUMENT_BYTES);
+    import_new_json(&scratch.path.with_file_name("exact-cap.sqlite"), &exact).expect("exact cap");
+    let (mut store, outcome) = import_new_json(&scratch.path, &document).expect("import");
+    assert_eq!(outcome.inserted, 1);
+    let exported = narrative_universe::export_json(&mut store).expect("export");
+    assert!(exported.len() <= narrative_universe::MAX_DOCUMENT_BYTES);
+    let again = import_json(&mut store, &exported).expect("reimport");
+    assert_eq!(again.inserted, 0);
+    assert_eq!(again.unchanged, 1);
+    assert_eq!(
+        store
+            .page(&id_page("22222222-2222-4222-8222-222222222222"))
+            .expect("page")
+            .body
+            .len(),
+        body.len()
+    );
+}
+
+#[test]
+fn oversized_universe_fails_export_before_creating_destination() {
+    let (scratch, mut store) = created("oversized.sqlite");
+    let page = store
+        .create_page(Page {
+            id: id_page("22222222-2222-4222-8222-222222222222"),
+            title: "Grande".to_string(),
+            body: "x".repeat(narrative_universe::MAX_DOCUMENT_BYTES),
+        })
+        .expect("page");
+    let err = narrative_universe::export_json(&mut store).expect_err("export");
+    assert!(
+        matches!(
+            err,
+            Error::Validation {
+                reason: ValidationReason::InputTooLarge,
+                field: "json",
+                id: None,
+            }
+        ),
+        "{err}"
+    );
+    let destination = scratch.path.with_file_name("oversized.json");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_spike"))
+        .arg("export")
+        .arg(&scratch.path)
+        .arg(&destination)
+        .output()
+        .expect("spike export");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("stderr");
+    assert!(stderr.contains("InputTooLarge"), "{stderr}");
+    assert!(!destination.exists());
+    drop(store);
+    let store = Store::open(&scratch.path).expect("source");
+    assert_eq!(
+        store.page(&page.id).expect("page").body.len(),
+        page.body.len()
+    );
+}
+
+struct CountingReader<R> {
+    inner: R,
+    bytes: usize,
+}
+
+impl<R: std::io::Read> std::io::Read for CountingReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        self.bytes += read;
+        Ok(read)
+    }
+}
+
+#[test]
+fn read_limited_stops_at_one_byte_past_the_cap() {
+    let cap = narrative_universe::MAX_DOCUMENT_BYTES;
+    let source = vec![b'x'; cap + 50];
+    let mut reader = CountingReader {
+        inner: std::io::Cursor::new(source),
+        bytes: 0,
+    };
+    let err = narrative_universe::read_limited(&mut reader).expect_err("too large");
+    assert!(
+        matches!(
+            err,
+            Error::Validation {
+                reason: ValidationReason::InputTooLarge,
+                ..
+            }
+        ),
+        "{err}"
+    );
+    assert_eq!(reader.bytes, cap + 1);
+    let exact = compact_page_document("");
+    assert!(exact.len() <= cap);
+    let read =
+        narrative_universe::read_limited(std::io::Cursor::new(exact.clone())).expect("exact");
+    assert_eq!(read, exact);
+}
+
+#[test]
+fn cli_import_rejects_one_byte_past_the_cap_without_writing() {
+    let (scratch, store) = created("capped-import.sqlite");
+    drop(store);
+    let before = bytes(&scratch.path);
+    let mut over = compact_page_document("");
+    while over.len() <= narrative_universe::MAX_DOCUMENT_BYTES {
+        over.push(b' ');
+    }
+    assert_eq!(over.len(), narrative_universe::MAX_DOCUMENT_BYTES + 1);
+    let json = scratch.path.with_file_name("over-cap.json");
+    std::fs::write(&json, &over).expect("json");
+    let import = std::process::Command::new(env!("CARGO_BIN_EXE_spike"))
+        .arg("import")
+        .arg(&scratch.path)
+        .arg(&json)
+        .output()
+        .expect("import");
+    assert_eq!(import.status.code(), Some(1));
+    let import_err = String::from_utf8(import.stderr).expect("stderr");
+    assert!(import_err.contains("InputTooLarge"), "{import_err}");
+    assert_eq!(bytes(&scratch.path), before);
+    let destination = scratch.path.with_file_name("over-cap.sqlite");
+    let import_new = std::process::Command::new(env!("CARGO_BIN_EXE_spike"))
+        .arg("import-new")
+        .arg(&destination)
+        .arg(&json)
+        .output()
+        .expect("import-new");
+    assert_eq!(import_new.status.code(), Some(1));
+    let new_err = String::from_utf8(import_new.stderr).expect("stderr");
+    assert!(new_err.contains("InputTooLarge"), "{new_err}");
+    assert!(!destination.exists());
+}
