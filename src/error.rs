@@ -13,6 +13,17 @@ pub enum Error {
         found: i32,
     },
     Busy,
+    ImportConflict {
+        class: &'static str,
+        id: String,
+    },
+    WrongUniverse {
+        expected: String,
+        found: String,
+    },
+    InvalidDocument {
+        message: String,
+    },
     Storage {
         message: String,
     },
@@ -40,6 +51,7 @@ pub enum ValidationReason {
     NotApplicable,
     ValueMismatch,
     ArchivedDefinition,
+    InputTooLarge,
 }
 
 impl Error {
@@ -67,6 +79,16 @@ impl fmt::Display for Error {
                 write!(formatter, "unsupported schema version {found}")
             }
             Self::Busy => formatter.write_str("database is busy"),
+            Self::ImportConflict { class, id } => {
+                write!(formatter, "import conflict {class} {id}")
+            }
+            Self::WrongUniverse { expected, found } => {
+                write!(
+                    formatter,
+                    "wrong universe expected {expected} found {found}"
+                )
+            }
+            Self::InvalidDocument { message } => write!(formatter, "invalid document: {message}"),
             Self::Storage { message } => write!(formatter, "storage: {message}"),
             Self::Io { message } => write!(formatter, "io: {message}"),
         }

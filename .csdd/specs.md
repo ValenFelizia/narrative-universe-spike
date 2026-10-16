@@ -19,8 +19,9 @@ entities, user-defined properties, and assertions that can preserve competing
 hypotheses without silently deciding what is canon.
 
 The repository is currently a headless Rust/SQLite spike, not a usable writing
-application. **I1 — persistence and relationships** is the only implemented
-increment. I2 and I3 are planned and require separate approval.
+application. **I1 — persistence and relationships** and **I2 — canon
+alternatives and reversible archival** are the reviewed baseline. I3 JSON
+exchange is not an accepted specification until G3 review.
 
 ## Requirements
 
@@ -40,13 +41,17 @@ I1, as documented:
 - An existing universe can be reopened from a different process.
 - Prose belongs to pages; structured facts belong to assertions. Writing a
   page does not automatically create or canonize facts.
+- Canon can be changed on one assertion without changing any other assertion.
+- Archive and restore are repeatable. They do not delete values, provenance,
+  or canon.
+- A new assertion on an archived definition is rejected.
 
 ## Constraints
 
 - Do not store irreplaceable writing in this experimental format.
-- Not implemented: editing UI, Tauri, MCP, JSON import/export, canon
-  transitions, archive/restore commands, full history, and a fictional
-  timeline engine.
+- Not implemented as accepted product behavior: editing UI, Tauri, MCP, full
+  history, and a fictional timeline engine. JSON exchange is under G3 review
+  and is not recorded here as an accepted contract.
 - This spike does not commit the product to Tauri. The implementation
   language and future desktop shell are still being validated.
 - No license is selected. Public repository visibility is not a license grant.
@@ -68,7 +73,7 @@ I1, as documented:
   or real-universe content. Public examples are synthetic or explicitly
   cleared. The checked-in fixture is synthetic, not War Archivist canon.
 - There is no workspace-level multiwriter coordination or supported backup
-  workflow. JSON portability and safe restoration are later increments, not I1.
+  workflow.
 
 ## Invariants
 
@@ -83,6 +88,9 @@ I1, as documented:
 - If initialization fails after that reservation, it leaves a residual file
   and reports its location instead of deleting another process's database.
 - A second `seed` against an existing path fails without overwriting it.
+- A new assertion cannot be created against an archived definition.
+- Promoting one assertion does not change the id, value, provenance, scope,
+  or canon of another assertion.
 - Canon literals (`ACORDADO`, `PROVISIONAL`, `ABIERTO`,
   `MISTERIO_INTENCIONAL`), fixture text such as `al inicio`, fixed
   identifiers, and source quotations stay in their original form.

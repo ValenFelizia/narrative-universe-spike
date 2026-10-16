@@ -52,6 +52,22 @@ pub struct PossibleIncompatibility {
     pub second: Assertion,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Snapshot {
+    pub universe_id: UniverseId,
+    pub pages: Vec<Page>,
+    pub types: Vec<EntityType>,
+    pub entities: Vec<Entity>,
+    pub definitions: Vec<Definition>,
+    pub assertions: Vec<Assertion>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImportOutcome {
+    pub inserted: u64,
+    pub unchanged: u64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Counts {
     pub pages: u64,
@@ -77,25 +93,7 @@ impl std::fmt::Debug for Store {
 
 impl Store {
     pub fn create(path: &Path, universe_id: UniverseId) -> Result<Self> {
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-        {
-            Ok(file) => drop(file),
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(Error::validation(
-                    ValidationReason::PathExists,
-                    "path",
-                    None,
-                ));
-            }
-            Err(err) => {
-                return Err(Error::Io {
-                    message: format!("reserve {}: {err}", path.display()),
-                });
-            }
-        }
+        reserve_new_file(path)?;
         let mut conn = match open_read_write(path) {
             Ok(conn) => conn,
             Err(err) => return Err(residual(path, err)),
@@ -451,6 +449,77 @@ impl Store {
         })
     }
 
+    pub fn export_snapshot(&mut self) -> Result<Snapshot> {
+        let transaction = self
+            .conn
+            .transaction()
+            .map_err(|err| map_sql("begin", err))?;
+        let snapshot = Snapshot {
+            universe_id: self.universe_id.clone(),
+            pages: list_pages(&transaction)?,
+            types: list_types(&transaction)?,
+            entities: list_entities(&transaction)?,
+            definitions: list_definitions(&transaction)?,
+            assertions: list_assertions(
+                &transaction,
+                &format!("SELECT {ASSERTION_COLUMNS} FROM assertions ORDER BY id"),
+                params![],
+            )?,
+        };
+        transaction.commit().map_err(|err| map_sql("commit", err))?;
+        Ok(snapshot)
+    }
+
+    pub fn import_snapshot(&mut self, snapshot: Snapshot) -> Result<ImportOutcome> {
+        ensure_unique_snapshot(&snapshot)?;
+        let universe_id = self.universe_id.clone();
+        self.write(|tx| {
+            if snapshot.universe_id != universe_id {
+                return Err(Error::WrongUniverse {
+                    expected: universe_id.to_string(),
+                    found: snapshot.universe_id.to_string(),
+                });
+            }
+            let mut outcome = ImportOutcome {
+                inserted: 0,
+                unchanged: 0,
+            };
+            import_records(tx, &snapshot, &mut outcome)?;
+            Ok(outcome)
+        })
+    }
+
+    pub fn import_new(path: &Path, snapshot: Snapshot) -> Result<(Self, ImportOutcome)> {
+        ensure_unique_snapshot(&snapshot)?;
+        reserve_new_file(path)?;
+        let mut conn = match open_read_write(path) {
+            Ok(conn) => conn,
+            Err(err) => return Err(residual(path, err)),
+        };
+        let result = (|| {
+            prepare_connection(&conn)?;
+            set_delete_journal(&conn)?;
+            let transaction = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|err| map_sql("begin", err))?;
+            write_schema(&transaction, &snapshot.universe_id)?;
+            let mut outcome = ImportOutcome {
+                inserted: 0,
+                unchanged: 0,
+            };
+            import_records(&transaction, &snapshot, &mut outcome)?;
+            transaction.commit().map_err(|err| map_sql("commit", err))?;
+            Ok((snapshot.universe_id.clone(), outcome))
+        })();
+        match result {
+            Ok((universe_id, outcome)) => Ok((Self { conn, universe_id }, outcome)),
+            Err(err) => {
+                drop(conn);
+                Err(residual(path, err))
+            }
+        }
+    }
+
     fn write<T>(&mut self, body: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
         let transaction = self
             .conn
@@ -475,6 +544,12 @@ fn init_new(conn: &mut Connection, universe_id: &UniverseId) -> Result<()> {
     let transaction = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|err| map_sql("begin", err))?;
+    write_schema(&transaction, universe_id)?;
+    transaction.commit().map_err(|err| map_sql("commit", err))?;
+    Ok(())
+}
+
+fn write_schema(transaction: &Transaction, universe_id: &UniverseId) -> Result<()> {
     transaction
         .execute_batch(SCHEMA)
         .map_err(|err| map_sql("schema", err))?;
@@ -489,8 +564,28 @@ fn init_new(conn: &mut Connection, universe_id: &UniverseId) -> Result<()> {
     transaction
         .execute_batch(&sql)
         .map_err(|err| map_sql("user_version", err))?;
-    transaction.commit().map_err(|err| map_sql("commit", err))?;
     Ok(())
+}
+
+fn reserve_new_file(path: &Path) -> Result<()> {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(file) => {
+            drop(file);
+            Ok(())
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(Error::validation(
+            ValidationReason::PathExists,
+            "path",
+            None,
+        )),
+        Err(err) => Err(Error::Io {
+            message: format!("reserve {}: {err}", path.display()),
+        }),
+    }
 }
 
 fn open_read_only(path: &Path) -> Result<Connection> {
@@ -654,6 +749,405 @@ fn residual(path: &Path, err: Error) -> Error {
     }
 }
 
+fn ensure_unique_snapshot(snapshot: &Snapshot) -> Result<()> {
+    unique_ids(snapshot.pages.iter().map(|page| page.id.as_str()), "page")?;
+    unique_ids(
+        snapshot
+            .types
+            .iter()
+            .map(|entity_type| entity_type.id.as_str()),
+        "type",
+    )?;
+    unique_ids(
+        snapshot.entities.iter().map(|entity| entity.id.as_str()),
+        "entity",
+    )?;
+    unique_ids(
+        snapshot
+            .definitions
+            .iter()
+            .map(|definition| definition.id.as_str()),
+        "definition",
+    )?;
+    unique_ids(
+        snapshot
+            .assertions
+            .iter()
+            .map(|assertion| assertion.id.as_str()),
+        "assertion",
+    )?;
+    Ok(())
+}
+
+fn unique_ids<'a>(ids: impl Iterator<Item = &'a str>, class: &'static str) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for id in ids {
+        if !seen.insert(id) {
+            return Err(Error::validation(
+                ValidationReason::DuplicateId,
+                class,
+                Some(id),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn import_records(
+    tx: &Transaction,
+    snapshot: &Snapshot,
+    outcome: &mut ImportOutcome,
+) -> Result<()> {
+    for page in &snapshot.pages {
+        reconcile(
+            outcome,
+            "page",
+            page.id.as_str(),
+            lookup_page(tx, &page.id)?,
+            page,
+            || insert_page(tx, page),
+        )?;
+    }
+    for entity_type in &snapshot.types {
+        reconcile(
+            outcome,
+            "type",
+            entity_type.id.as_str(),
+            lookup_entity_type(tx, &entity_type.id)?,
+            entity_type,
+            || insert_type(tx, entity_type),
+        )?;
+    }
+    for entity in &snapshot.entities {
+        reconcile(
+            outcome,
+            "entity",
+            entity.id.as_str(),
+            lookup_entity(tx, &entity.id)?,
+            entity,
+            || {
+                require_entity_links(tx, entity)?;
+                insert_entity(tx, entity)
+            },
+        )?;
+    }
+    for definition in &snapshot.definitions {
+        reconcile(
+            outcome,
+            "definition",
+            definition.id.as_str(),
+            lookup_definition(tx, &definition.id)?,
+            definition,
+            || {
+                require_definition_owner(tx, definition)?;
+                insert_definition(tx, definition)
+            },
+        )?;
+    }
+    for assertion in &snapshot.assertions {
+        reconcile(
+            outcome,
+            "assertion",
+            assertion.id.as_str(),
+            lookup_assertion(tx, &assertion.id)?,
+            assertion,
+            || {
+                validate_imported_assertion(tx, assertion)?;
+                insert_assertion(tx, assertion)
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn reconcile<T: PartialEq>(
+    outcome: &mut ImportOutcome,
+    class: &'static str,
+    id: &str,
+    existing: Option<T>,
+    incoming: &T,
+    insert: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    match existing {
+        Some(existing) if &existing == incoming => {
+            outcome.unchanged += 1;
+            Ok(())
+        }
+        Some(_) => Err(Error::ImportConflict {
+            class,
+            id: id.to_string(),
+        }),
+        None => {
+            insert()?;
+            outcome.inserted += 1;
+            Ok(())
+        }
+    }
+}
+
+fn require_entity_links(tx: &Transaction, entity: &Entity) -> Result<()> {
+    if let Some(type_id) = &entity.type_id {
+        if lookup_entity_type(tx, type_id)?.is_none() {
+            return Err(Error::validation(
+                ValidationReason::UnknownType,
+                "type_id",
+                Some(type_id.as_str()),
+            ));
+        }
+    }
+    if let Some(page_id) = &entity.page_id {
+        if lookup_page(tx, page_id)?.is_none() {
+            return Err(Error::validation(
+                ValidationReason::UnknownPage,
+                "page_id",
+                Some(page_id.as_str()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn require_definition_owner(tx: &Transaction, definition: &Definition) -> Result<()> {
+    match &definition.owner {
+        Owner::Type(type_id) => {
+            if lookup_entity_type(tx, type_id)?.is_none() {
+                return Err(Error::validation(
+                    ValidationReason::UnknownType,
+                    "owner_type_id",
+                    Some(type_id.as_str()),
+                ));
+            }
+        }
+        Owner::Entity(entity_id) => {
+            if lookup_entity(tx, entity_id)?.is_none() {
+                return Err(Error::validation(
+                    ValidationReason::UnknownEntity,
+                    "owner_entity_id",
+                    Some(entity_id.as_str()),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn insert_page(tx: &Transaction, page: &Page) -> Result<()> {
+    tx.execute(
+        "INSERT INTO pages (id, title, body) VALUES (?1, ?2, ?3)",
+        params![page.id.as_str(), page.title, page.body],
+    )
+    .map(|_| ())
+    .map_err(|err| map_write("id", page.id.as_str(), err))
+}
+
+fn insert_type(tx: &Transaction, entity_type: &EntityType) -> Result<()> {
+    tx.execute(
+        "INSERT INTO types (id, label) VALUES (?1, ?2)",
+        params![entity_type.id.as_str(), entity_type.label],
+    )
+    .map(|_| ())
+    .map_err(|err| map_write("id", entity_type.id.as_str(), err))
+}
+
+fn insert_entity(tx: &Transaction, entity: &Entity) -> Result<()> {
+    tx.execute(
+        "INSERT INTO entities (id, label, type_id, page_id) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            entity.id.as_str(),
+            entity.label,
+            entity.type_id.as_ref().map(TypeId::as_str),
+            entity.page_id.as_ref().map(PageId::as_str),
+        ],
+    )
+    .map(|_| ())
+    .map_err(|err| map_write("id", entity.id.as_str(), err))
+}
+
+fn insert_definition(tx: &Transaction, definition: &Definition) -> Result<()> {
+    let (owner_type, owner_entity) = match &definition.owner {
+        Owner::Type(type_id) => (Some(type_id.as_str()), None),
+        Owner::Entity(entity_id) => (None, Some(entity_id.as_str())),
+    };
+    tx.execute(
+        "INSERT INTO definitions (
+            id, owner_type_id, owner_entity_id, value_class, cardinality, archived
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            definition.id.as_str(),
+            owner_type,
+            owner_entity,
+            definition.value_class.as_str(),
+            definition.cardinality.as_str(),
+            i64::from(definition.archived),
+        ],
+    )
+    .map(|_| ())
+    .map_err(|err| map_write("id", definition.id.as_str(), err))
+}
+
+fn insert_assertion(tx: &Transaction, assertion: &Assertion) -> Result<()> {
+    let (kind, text_value, bool_value, target) = value_columns(&assertion.value);
+    tx.execute(
+        "INSERT INTO assertions (
+            id, subject_id, definition_id, value_kind, text_value, bool_value,
+            target_entity_id, canon, source_status_raw, provenance_external_ref,
+            provenance_locator, provenance_fragment, provenance_source_revision,
+            scope_note, archived
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+        params![
+            assertion.id.as_str(),
+            assertion.subject_id.as_str(),
+            assertion.definition_id.as_str(),
+            kind,
+            text_value,
+            bool_value,
+            target,
+            assertion.canon.as_str(),
+            assertion.source_status_raw,
+            assertion.provenance.external_ref,
+            assertion.provenance.locator,
+            assertion.provenance.fragment,
+            assertion.provenance.source_revision,
+            assertion.scope_note,
+            i64::from(assertion.archived),
+        ],
+    )
+    .map(|_| ())
+    .map_err(|err| map_write("id", assertion.id.as_str(), err))
+}
+
+fn lookup_assertion(conn: &Connection, id: &AssertionId) -> Result<Option<Assertion>> {
+    let found = list_assertions(
+        conn,
+        &format!("SELECT {ASSERTION_COLUMNS} FROM assertions WHERE id = ?1"),
+        params![id.as_str()],
+    )?;
+    Ok(found.into_iter().next())
+}
+
+fn list_pages(conn: &Connection) -> Result<Vec<Page>> {
+    let mut statement = conn
+        .prepare("SELECT id, title, body FROM pages ORDER BY id")
+        .map_err(|err| map_sql("prepare", err))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|err| map_sql("query", err))?;
+    let mut pages = Vec::new();
+    for row in rows {
+        let (id, title, body) = row.map_err(|err| map_sql("row", err))?;
+        pages.push(Page {
+            id: parse_stored_id("page", &id, PageId::parse)?,
+            title,
+            body,
+        });
+    }
+    Ok(pages)
+}
+
+fn list_types(conn: &Connection) -> Result<Vec<EntityType>> {
+    let mut statement = conn
+        .prepare("SELECT id, label FROM types ORDER BY id")
+        .map_err(|err| map_sql("prepare", err))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|err| map_sql("query", err))?;
+    let mut types = Vec::new();
+    for row in rows {
+        let (id, label) = row.map_err(|err| map_sql("row", err))?;
+        types.push(EntityType {
+            id: parse_stored_id("type", &id, TypeId::parse)?,
+            label,
+        });
+    }
+    Ok(types)
+}
+
+fn list_entities(conn: &Connection) -> Result<Vec<Entity>> {
+    let mut statement = conn
+        .prepare("SELECT id, label, type_id, page_id FROM entities ORDER BY id")
+        .map_err(|err| map_sql("prepare", err))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })
+        .map_err(|err| map_sql("query", err))?;
+    let mut entities = Vec::new();
+    for row in rows {
+        let (id, label, type_id, page_id) = row.map_err(|err| map_sql("row", err))?;
+        entities.push(Entity {
+            id: parse_stored_id("entity", &id, EntityId::parse)?,
+            label,
+            type_id: match type_id {
+                Some(raw) => Some(parse_stored_id("entity type", &raw, TypeId::parse)?),
+                None => None,
+            },
+            page_id: match page_id {
+                Some(raw) => Some(parse_stored_id("entity page", &raw, PageId::parse)?),
+                None => None,
+            },
+        });
+    }
+    Ok(entities)
+}
+
+fn list_definitions(conn: &Connection) -> Result<Vec<Definition>> {
+    let mut statement = conn
+        .prepare(
+            "SELECT id, owner_type_id, owner_entity_id, value_class, cardinality, archived
+             FROM definitions ORDER BY id",
+        )
+        .map_err(|err| map_sql("prepare", err))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })
+        .map_err(|err| map_sql("query", err))?;
+    let mut definitions = Vec::new();
+    for row in rows {
+        let (id, owner_type, owner_entity, value_class, cardinality, archived) =
+            row.map_err(|err| map_sql("row", err))?;
+        let owner = match (owner_type, owner_entity) {
+            (Some(raw), None) => Owner::Type(parse_stored_id("owner type", &raw, TypeId::parse)?),
+            (None, Some(raw)) => {
+                Owner::Entity(parse_stored_id("owner entity", &raw, EntityId::parse)?)
+            }
+            _ => {
+                return Err(Error::Storage {
+                    message: format!("invalid definition owner {id}"),
+                });
+            }
+        };
+        definitions.push(Definition {
+            id: parse_stored_id("definition", &id, DefinitionId::parse)?,
+            owner,
+            value_class: ValueClass::parse(&value_class)?,
+            cardinality: Cardinality::parse(&cardinality)?,
+            archived: read_flag(archived, "archived")?,
+        });
+    }
+    Ok(definitions)
+}
+
 fn count(conn: &Connection, sql: &str) -> Result<u64> {
     let n: i64 = conn
         .query_row(sql, [], |row| row.get(0))
@@ -664,6 +1158,18 @@ fn count(conn: &Connection, sql: &str) -> Result<u64> {
 }
 
 fn validate_assertion(tx: &Transaction, assertion: &Assertion) -> Result<()> {
+    validate_assertion_in(tx, assertion, false)
+}
+
+fn validate_imported_assertion(tx: &Transaction, assertion: &Assertion) -> Result<()> {
+    validate_assertion_in(tx, assertion, true)
+}
+
+fn validate_assertion_in(
+    tx: &Transaction,
+    assertion: &Assertion,
+    allow_archived_definition: bool,
+) -> Result<()> {
     let subject = lookup_entity(tx, &assertion.subject_id)?.ok_or_else(|| {
         Error::validation(
             ValidationReason::UnknownSubject,
@@ -678,7 +1184,7 @@ fn validate_assertion(tx: &Transaction, assertion: &Assertion) -> Result<()> {
             Some(assertion.definition_id.as_str()),
         )
     })?;
-    if definition.archived {
+    if definition.archived && !allow_archived_definition {
         return Err(Error::validation(
             ValidationReason::ArchivedDefinition,
             "definition_id",

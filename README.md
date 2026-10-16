@@ -6,7 +6,7 @@ Narrative Universe aims to combine freeform pages with structured entities, user
 
 ## Current scope
 
-**I1 — Persistence and relationships** and **I2 — Canon alternatives and reversible archival** are implemented in this spike. I2 is waiting for review at G2.
+**I1 — Persistence and relationships** and **I2 — Canon alternatives and reversible archival** are the reviewed baseline. **I3 — Versioned JSON exchange** is implemented on this branch and is waiting for G3 review.
 
 The spike covers:
 
@@ -21,8 +21,9 @@ The spike covers:
 - Idempotent archive and restore for definitions and assertions. Archival does not delete values or provenance, and it does not change canon.
 - Rejection of a new assertion on an archived definition.
 - A read-only query for possible incompatibilities: two active `ACORDADO` assertions with different known values on the same subject and the same active singular definition.
+- Versioned JSON export, import into the same universe, and import into a new file. A conflicting record rolls back the whole batch. Import can restore an assertion whose definition is already archived. Creating a new assertion on an archived definition still fails.
 
-**Not implemented:** editing UI, Tauri, MCP, JSON import/export, full history, or a fictional timeline engine. I3 requires a separate approval. A green I2 suite does not authorize merge.
+**Not implemented:** editing UI, Tauri, MCP, full history, or a fictional timeline engine. I3 is not accepted until G3 review. A green test suite does not authorize merge.
 
 ## Getting started
 
@@ -41,6 +42,8 @@ To try the persistence demonstration, choose a **new path that does not exist**:
 ```sh
 cargo run --locked --bin spike -- seed ./demo-universe.sqlite
 cargo run --locked --bin spike -- inspect ./demo-universe.sqlite
+cargo run --locked --bin spike -- export ./demo-universe.sqlite ./demo-universe.json
+cargo run --locked --bin spike -- import-new ./demo-copy.sqlite ./demo-universe.json
 ```
 
 The two commands run in separate processes and should print the same fixture report: one page, two types, two entities, one definition, and one assertion. The same assertion ID appears when navigating from its subject and from its target. A second `seed` against an existing path fails without overwriting it.
@@ -53,6 +56,7 @@ The fixture is synthetic, not War Archivist canon. See [fixture notes](tests/fix
 | --- | --- |
 | `src/model.rs` | Typed IDs, record types, canon, values, and property ownership |
 | `src/store.rs` | Synchronous domain checks, transactions, SQLite reads and writes |
+| `src/exchange.rs` | Versioned JSON parse, encode, and the 10 MiB input cap |
 | `src/schema.sql` | Persistent tables, foreign keys, and constraints |
 | `src/bin/spike.rs` | Minimal `seed` / `inspect` demonstration |
 | `tests/` | Real-file tests, process replay, validation, and concurrency regressions |

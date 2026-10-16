@@ -2,9 +2,9 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use narrative_universe::{
-    Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId, Entity, EntityId,
-    EntityType, Error, Owner, Page, PageId, Provenance, Store, TypeId, UniverseId, Value,
-    ValueClass,
+    export_json, import_json, import_new_json, Assertion, AssertionId, Canon, Cardinality,
+    Definition, DefinitionId, Entity, EntityId, EntityType, Error, Owner, Page, PageId, Provenance,
+    Store, TypeId, UniverseId, ValidationReason, Value, ValueClass,
 };
 
 const UNIVERSE: &str = "11111111-1111-4111-8111-111111111111";
@@ -20,14 +20,27 @@ const PAGE_BODY: &str = "Texto con acento áéíóú ñ y emoji 📚";
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let command = args.next();
-    let path = args.next();
+    let first = args.next();
+    let second = args.next();
     let extra = args.next();
-    let result = match (command.as_deref(), path, extra) {
-        (Some("seed"), Some(path), None) => seed(Path::new(&path)),
-        (Some("inspect"), Some(path), None) => inspect(Path::new(&path)),
+    let result = match (command.as_deref(), first, second, extra) {
+        (Some("seed"), Some(path), None, None) => seed(Path::new(&path)),
+        (Some("inspect"), Some(path), None, None) => inspect(Path::new(&path)),
+        (Some("export"), Some(database), Some(json), None) => {
+            export(Path::new(&database), Path::new(&json))
+        }
+        (Some("import"), Some(database), Some(json), None) => {
+            import(Path::new(&database), Path::new(&json))
+        }
+        (Some("import-new"), Some(database), Some(json), None) => {
+            import_new(Path::new(&database), Path::new(&json))
+        }
         _ => {
             eprintln!("usage: spike seed <database>");
             eprintln!("usage: spike inspect <database>");
+            eprintln!("usage: spike export <database> <json>");
+            eprintln!("usage: spike import <database> <json>");
+            eprintln!("usage: spike import-new <database> <json>");
             return ExitCode::from(2);
         }
     };
@@ -86,6 +99,73 @@ fn seed(path: &Path) -> Result<(), Error> {
         archived: false,
     })?;
     print!("{}", report(&store)?);
+    Ok(())
+}
+
+fn export(database: &Path, json_path: &Path) -> Result<(), Error> {
+    let mut store = Store::open(database)?;
+    let bytes = export_json(&mut store)?;
+    write_new(json_path, &bytes)?;
+    println!("bytes={}", bytes.len());
+    Ok(())
+}
+
+fn import(database: &Path, json_path: &Path) -> Result<(), Error> {
+    let bytes = std::fs::read(json_path).map_err(|err| Error::Io {
+        message: format!("read {}: {err}", json_path.display()),
+    })?;
+    let mut store = Store::open(database)?;
+    let outcome = import_json(&mut store, &bytes)?;
+    println!("inserted={}", outcome.inserted);
+    println!("unchanged={}", outcome.unchanged);
+    Ok(())
+}
+
+fn import_new(database: &Path, json_path: &Path) -> Result<(), Error> {
+    let bytes = std::fs::read(json_path).map_err(|err| Error::Io {
+        message: format!("read {}: {err}", json_path.display()),
+    })?;
+    let (_store, outcome) = import_new_json(database, &bytes)?;
+    println!("inserted={}", outcome.inserted);
+    println!("unchanged={}", outcome.unchanged);
+    Ok(())
+}
+
+fn write_new(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    let mut file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(Error::Validation {
+                reason: ValidationReason::PathExists,
+                field: "path",
+                id: None,
+            });
+        }
+        Err(err) => {
+            return Err(Error::Io {
+                message: format!("reserve {}: {err}", path.display()),
+            });
+        }
+    };
+    if let Err(err) = std::io::Write::write_all(&mut file, bytes) {
+        drop(file);
+        return match std::fs::remove_file(path) {
+            Ok(()) => Err(Error::Io {
+                message: format!("write {}: {err}", path.display()),
+            }),
+            Err(remove_err) => Err(Error::Io {
+                message: format!(
+                    "write {}: {err}; residual file {} could not be removed: {remove_err}",
+                    path.display(),
+                    path.display()
+                ),
+            }),
+        };
+    }
     Ok(())
 }
 

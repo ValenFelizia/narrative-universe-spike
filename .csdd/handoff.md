@@ -7,11 +7,13 @@ replaceable current snapshot per task or workstream; remove or replace it when
 the risk is consumed. Do not duplicate the GitHub tracker or accumulate history.
 -->
 
-## I2 pending G2
+## I3 pending G3
 
-Issue #3 is implemented on `feat/3-canon-lifecycle` and is not merged. Do not
-start I3, Tauri, UI, or MCP. `.csdd/specs.md` still records reviewed I1
-behavior. Do not treat this implementation as an accepted decision until G2
-review replaces this note. Schema version 1 was not changed. A new assertion
-on an archived definition is rejected. Historical import of that case remains
-I3.
+Issue #4 is the authorized I3 increment. Do not merge it and do not start
+Tauri, UI, MCP, or another increment. I1 and I2 are the reviewed baseline.
+Do not copy the unreviewed JSON contract into `.csdd/specs.md` or
+`.csdd/decisions.md`. Schema version 1 is unchanged. `import-new` uses the
+same exclusive reservation as `Store::create` and leaves a residual file when
+initialization fails instead of deleting it. A new live assertion on an
+archived definition is still rejected. Import of an already archived history
+is separate from that command.
