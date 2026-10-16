@@ -7,11 +7,13 @@ replaceable current snapshot per task or workstream; remove or replace it when
 the risk is consumed. Do not duplicate the GitHub tracker or accumulate history.
 -->
 
-## I2 pending G2
+## I3 pending G3
 
-Issue #3 is implemented on `feat/3-canon-lifecycle` and is not merged. Do not
-start I3, Tauri, UI, or MCP. `.csdd/specs.md` still records reviewed I1
-behavior. Do not treat this implementation as an accepted decision until G2
-review replaces this note. Schema version 1 was not changed. A new assertion
-on an archived definition is rejected. Historical import of that case remains
-I3.
+Issue #4 is the authorized I3 increment. Do not merge it and do not start
+Tauri, UI, MCP, or another increment. I1 and I2 are the reviewed baseline.
+Do not copy the unreviewed JSON contract into `.csdd/specs.md` or
+`.csdd/decisions.md`. G3 review asked for three boundary fixes before merge:
+a successful export must fit the 10 MiB import cap, CLI reads are bounded to
+that cap plus one byte, and a failed export keeps its residual file instead
+of deleting the path. Those fixes are on `feat/4-json-exchange` and still
+need re-review. Schema version 1 is unchanged.
