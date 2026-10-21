@@ -162,6 +162,116 @@ fn an_indic_conjunct_is_one_extended_cluster() {
 }
 
 #[test]
+fn removed_occurrences_are_sorted_by_id_not_by_position() {
+    let body = annotated(
+        "Elara met Elara",
+        vec![
+            mention(MENTION_THREE, ENTITY_ONE, 0, 5),
+            mention(MENTION_ONE, ENTITY_TWO, 10, 15),
+        ],
+    );
+    let outcome = apply_mention_edit(&body, &replace(3, 12, ""));
+    assert_outcome(&outcome, "Elaara", &[], &[MENTION_ONE, MENTION_THREE]);
+}
+
+#[test]
+fn a_mention_endpoint_inside_a_surrogate_pair_is_rejected() {
+    let start_inside = annotated(
+        &format!("A{BOOK}Elara"),
+        vec![mention(MENTION_ONE, ENTITY_ONE, 2, 8)],
+    );
+    let err = validate_mentions(&start_inside).expect_err("split scalar");
+    assert_reason(err, ValidationReason::SplitScalar);
+
+    let end_inside = annotated(
+        &format!("A{BOOK}Elara"),
+        vec![mention(MENTION_ONE, ENTITY_ONE, 0, 2)],
+    );
+    let err = validate_mentions(&end_inside).expect_err("split scalar");
+    assert_reason(err, ValidationReason::SplitScalar);
+}
+
+#[test]
+fn a_reversed_text_range_is_rejected() {
+    let err = apply_mention_edit(&base(), &replace(5, 2, "x")).expect_err("reversed");
+    assert_reason(err, ValidationReason::InvalidTextRange);
+}
+
+#[test]
+fn an_empty_body_without_mentions_is_valid() {
+    let body = annotated("", Vec::new());
+    validate_mentions(&body).expect("valid");
+    let outcome = apply_mention_edit(&body, &replace(0, 0, "x"));
+    assert_outcome(&outcome, "x", &[], &[]);
+}
+
+#[test]
+fn a_join_elsewhere_leaves_an_unrelated_link_intact() {
+    let body = annotated("ab", vec![mention(MENTION_ONE, ENTITY_ONE, 1, 2)]);
+    let outcome = apply_mention_edit(&body, &replace(1, 1, COMBINING_ACUTE));
+    assert_outcome(
+        &outcome,
+        &format!("a{COMBINING_ACUTE}b"),
+        &[(MENTION_ONE, ENTITY_ONE, 2, 3)],
+        &[],
+    );
+}
+
+#[test]
+fn a_successful_edit_does_not_change_the_input() {
+    let body = base();
+    let before = body.clone();
+    let outcome = apply_mention_edit(&body, &replace(0, 0, "Dear "));
+    assert_outcome(
+        &outcome,
+        "Dear Elara left",
+        &[(MENTION_ONE, ENTITY_ONE, 5, 10)],
+        &[],
+    );
+    assert_eq!(body, before);
+}
+
+#[test]
+fn a_link_whose_range_splits_a_cluster_is_rejected() {
+    let body = annotated(&format!("e{COMBINING_ACUTE}"), Vec::new());
+    let err = apply_mention_edit(&body, &link(mention(MENTION_ONE, ENTITY_ONE, 0, 1)))
+        .expect_err("split grapheme");
+    assert_reason(err, ValidationReason::SplitGrapheme);
+}
+
+#[test]
+fn a_link_may_be_adjacent_to_an_existing_mention() {
+    let body = annotated("ElaraElara", vec![mention(MENTION_ONE, ENTITY_ONE, 0, 5)]);
+    let outcome = apply_mention_edit(&body, &link(mention(MENTION_TWO, ENTITY_TWO, 5, 10)));
+    assert_outcome(
+        &outcome,
+        "ElaraElara",
+        &[
+            (MENTION_ONE, ENTITY_ONE, 0, 5),
+            (MENTION_TWO, ENTITY_TWO, 5, 10),
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn two_linked_occurrences_may_point_at_the_same_entity() {
+    let body = annotated("Elara met Elara", Vec::new());
+    let outcome = apply_mention_edit(&body, &link(mention(MENTION_ONE, ENTITY_ONE, 0, 5)));
+    let (linked, _) = outcome.expect("first link");
+    let outcome = apply_mention_edit(&linked, &link(mention(MENTION_TWO, ENTITY_ONE, 10, 15)));
+    assert_outcome(
+        &outcome,
+        "Elara met Elara",
+        &[
+            (MENTION_ONE, ENTITY_ONE, 0, 5),
+            (MENTION_TWO, ENTITY_ONE, 10, 15),
+        ],
+        &[],
+    );
+}
+
+#[test]
 fn insert_before_the_mention_shifts_it() {
     let outcome = apply_mention_edit(&base(), &replace(0, 0, "Dear "));
     assert_outcome(

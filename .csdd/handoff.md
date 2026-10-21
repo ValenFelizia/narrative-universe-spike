@@ -27,6 +27,5 @@ with `MentionId`, `Mention`, `AnnotatedBody`, `MentionEdit`,
 `tests/mentions.rs`. Nothing is persisted. No mention, page, entity, or canon
 is written anywhere, and `src/store.rs`, the schema, and the JSON exchange are
 untouched. Do not merge it, do not add persistence, and do not start PA-I2-B.
-The guard compares content, so an ABA change is not detected. Do not copy this
-unreviewed behavior into `.csdd/specs.md` or `.csdd/decisions.md` before the
-gate passes.
+Do not copy this unreviewed behavior into `.csdd/specs.md` or
+`.csdd/decisions.md` before the gate passes.

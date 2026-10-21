@@ -72,9 +72,36 @@ pub enum MentionEdit {
 /// grapheme cluster boundaries, no overlapping ranges, and no repeated
 /// mention id. Mentions may arrive in any order.
 pub fn validate_mentions(body: &AnnotatedBody) -> Result<()> {
-    let length = utf16_len(&body.body)?;
+    let index = TextIndex::new(&body.body)?;
+    validate_mentions_with(&index, &body.mentions)
+}
+
+/// Applies one operation to a body and returns the new body with the ids of
+/// the occurrences that the operation removed.
+///
+/// The input is never changed, on success and on failure. The returned
+/// mentions are canonical, sorted by start, then end, then id. The removed
+/// ids are sorted in ascending order.
+pub fn apply_mention_edit(
+    body: &AnnotatedBody,
+    edit: &MentionEdit,
+) -> Result<(AnnotatedBody, Vec<MentionId>)> {
+    let index = TextIndex::new(&body.body)?;
+    validate_mentions_with(&index, &body.mentions)?;
+    match edit {
+        MentionEdit::ReplaceText {
+            start_utf16,
+            end_utf16,
+            inserted_text,
+        } => replace_text(body, &index, *start_utf16, *end_utf16, inserted_text),
+        MentionEdit::Link { mention } => link(body, &index, mention),
+        MentionEdit::Unlink { mention_id } => unlink(body, mention_id),
+    }
+}
+
+fn validate_mentions_with(index: &TextIndex, mentions: &[Mention]) -> Result<()> {
     let mut seen: HashSet<&str> = HashSet::new();
-    for mention in &body.mentions {
+    for mention in mentions {
         if !seen.insert(mention.id.as_str()) {
             return Err(Error::validation(
                 ValidationReason::DuplicateMentionId,
@@ -82,9 +109,9 @@ pub fn validate_mentions(body: &AnnotatedBody) -> Result<()> {
                 Some(mention.id.as_str()),
             ));
         }
-        validate_mention_range(&body.body, length, mention)?;
+        validate_mention_range(index, mention)?;
     }
-    let mut ordered: Vec<&Mention> = body.mentions.iter().collect();
+    let mut ordered: Vec<&Mention> = mentions.iter().collect();
     ordered.sort_by_key(|mention| (mention.start_utf16, mention.end_utf16, mention.id.as_str()));
     for pair in ordered.windows(2) {
         let (first, second) = (pair[0], pair[1]);
@@ -99,36 +126,14 @@ pub fn validate_mentions(body: &AnnotatedBody) -> Result<()> {
     Ok(())
 }
 
-/// Applies one operation to a body and returns the new body with the ids of
-/// the occurrences that the operation removed.
-///
-/// The input is never changed, on success and on failure. The returned
-/// mentions are canonical, sorted by start, then end, then id. The removed
-/// ids are sorted in ascending order.
-pub fn apply_mention_edit(
-    body: &AnnotatedBody,
-    edit: &MentionEdit,
-) -> Result<(AnnotatedBody, Vec<MentionId>)> {
-    validate_mentions(body)?;
-    match edit {
-        MentionEdit::ReplaceText {
-            start_utf16,
-            end_utf16,
-            inserted_text,
-        } => replace_text(body, *start_utf16, *end_utf16, inserted_text),
-        MentionEdit::Link { mention } => link(body, mention),
-        MentionEdit::Unlink { mention_id } => unlink(body, mention_id),
-    }
-}
-
 fn replace_text(
     body: &AnnotatedBody,
+    index: &TextIndex,
     start_utf16: u32,
     end_utf16: u32,
     inserted_text: &str,
 ) -> Result<(AnnotatedBody, Vec<MentionId>)> {
-    let length = utf16_len(&body.body)?;
-    if start_utf16 > end_utf16 || end_utf16 > length {
+    if start_utf16 > end_utf16 || end_utf16 > index.length {
         return Err(Error::validation(
             ValidationReason::InvalidTextRange,
             "end_utf16",
@@ -141,6 +146,10 @@ fn replace_text(
     if start_utf16 == end_utf16 && inserted_length == 0 {
         return Ok((canonical(body), Vec::new()));
     }
+    let result_length =
+        u64::from(index.length) - u64::from(end_utf16 - start_utf16) + u64::from(inserted_length);
+    u32::try_from(result_length)
+        .map_err(|_| Error::validation(ValidationReason::CoordinateOverflow, "body", None))?;
 
     let mut text = String::with_capacity(body.body.len() + inserted_text.len());
     text.push_str(&body.body[..start_byte]);
@@ -175,7 +184,8 @@ fn replace_text(
         });
     }
 
-    let kept = keep_whole_clusters(&text, survivors, &mut removed);
+    let result_index = TextIndex::new(&text)?;
+    let kept = keep_whole_clusters(&result_index, survivors, &mut removed);
     removed.sort_by(|left, right| left.as_str().cmp(right.as_str()));
     Ok((
         AnnotatedBody {
@@ -186,9 +196,12 @@ fn replace_text(
     ))
 }
 
-fn link(body: &AnnotatedBody, mention: &Mention) -> Result<(AnnotatedBody, Vec<MentionId>)> {
-    let length = utf16_len(&body.body)?;
-    validate_mention_range(&body.body, length, mention)?;
+fn link(
+    body: &AnnotatedBody,
+    index: &TextIndex,
+    mention: &Mention,
+) -> Result<(AnnotatedBody, Vec<MentionId>)> {
+    validate_mention_range(index, mention)?;
     if let Some(existing) = body.mentions.iter().find(|held| held.id == mention.id) {
         if existing.entity_id == mention.entity_id
             && existing.start_utf16 == mention.start_utf16
@@ -243,29 +256,39 @@ fn unlink(body: &AnnotatedBody, mention_id: &MentionId) -> Result<(AnnotatedBody
     ))
 }
 
-fn validate_mention_range(body: &str, length: u32, mention: &Mention) -> Result<()> {
-    if mention.start_utf16 >= mention.end_utf16 || mention.end_utf16 > length {
+fn validate_mention_range(index: &TextIndex, mention: &Mention) -> Result<()> {
+    if mention.start_utf16 >= mention.end_utf16 || mention.end_utf16 > index.length {
         return Err(Error::validation(
             ValidationReason::InvalidMentionRange,
             "end_utf16",
             Some(mention.id.as_str()),
         ));
     }
-    let start = utf16_to_byte(
-        body,
-        mention.start_utf16,
-        ValidationReason::InvalidMentionRange,
-    )?;
-    let end = utf16_to_byte(
-        body,
-        mention.end_utf16,
-        ValidationReason::InvalidMentionRange,
-    )?;
-    let boundaries = grapheme_boundaries(body);
-    if !boundaries.contains(&start) || !boundaries.contains(&end) {
+    if !index.is_scalar_boundary(mention.start_utf16) {
+        return Err(Error::validation(
+            ValidationReason::SplitScalar,
+            "start_utf16",
+            Some(mention.id.as_str()),
+        ));
+    }
+    if !index.is_scalar_boundary(mention.end_utf16) {
+        return Err(Error::validation(
+            ValidationReason::SplitScalar,
+            "end_utf16",
+            Some(mention.id.as_str()),
+        ));
+    }
+    if !index.is_cluster_boundary(mention.start_utf16) {
         return Err(Error::validation(
             ValidationReason::SplitGrapheme,
             "start_utf16",
+            Some(mention.id.as_str()),
+        ));
+    }
+    if !index.is_cluster_boundary(mention.end_utf16) {
+        return Err(Error::validation(
+            ValidationReason::SplitGrapheme,
+            "end_utf16",
             Some(mention.id.as_str()),
         ));
     }
@@ -275,19 +298,19 @@ fn validate_mention_range(body: &str, length: u32, mention: &Mention) -> Result<
 /// Drops the survivors whose endpoints no longer sit on a cluster boundary of
 /// the complete result, and records their ids as removed.
 fn keep_whole_clusters(
-    text: &str,
+    index: &TextIndex,
     survivors: Vec<Mention>,
     removed: &mut Vec<MentionId>,
 ) -> Vec<Mention> {
-    let boundaries = grapheme_boundaries(text);
     let mut kept = Vec::new();
     for mention in survivors {
-        let start = utf16_to_byte(text, mention.start_utf16, ValidationReason::SplitScalar);
-        let end = utf16_to_byte(text, mention.end_utf16, ValidationReason::SplitScalar);
-        let whole = match (start, end) {
-            (Ok(start), Ok(end)) => boundaries.contains(&start) && boundaries.contains(&end),
-            _ => false,
-        };
+        // A survivor that no longer fits the result cannot stay linked, and a
+        // survivor whose endpoint is no longer a scalar or cluster boundary
+        // cannot point at whole characters any more.
+        let whole = index.is_scalar_boundary(mention.start_utf16)
+            && index.is_scalar_boundary(mention.end_utf16)
+            && index.is_cluster_boundary(mention.start_utf16)
+            && index.is_cluster_boundary(mention.end_utf16);
         if whole {
             kept.push(mention);
         } else {
@@ -314,13 +337,56 @@ fn canonical_order(mut mentions: Vec<Mention>) -> Vec<Mention> {
     mentions
 }
 
-fn grapheme_boundaries(text: &str) -> HashSet<usize> {
-    let mut boundaries: HashSet<usize> = text
-        .grapheme_indices(true)
-        .map(|(start, _)| start)
-        .collect();
-    boundaries.insert(text.len());
-    boundaries
+/// The positions of a text that the mention rules need.
+///
+/// The index keeps the UTF-16 position of every character and of every
+/// extended grapheme cluster, so a position can be checked with a binary
+/// search instead of a fresh scan of the text.
+struct TextIndex {
+    /// UTF-16 position of every character start.
+    scalars: Vec<u32>,
+    /// UTF-16 position of every extended grapheme cluster start.
+    clusters: Vec<u32>,
+    /// UTF-16 length of the text.
+    length: u32,
+}
+
+impl TextIndex {
+    fn new(text: &str) -> Result<Self> {
+        let length = utf16_len(text)?;
+        let cluster_bytes: Vec<usize> = text
+            .grapheme_indices(true)
+            .map(|(start, _)| start)
+            .collect();
+        let mut scalars = Vec::new();
+        let mut clusters = Vec::new();
+        let mut units: u32 = 0;
+        let mut next_cluster = 0usize;
+        for (byte, ch) in text.char_indices() {
+            scalars.push(units);
+            if next_cluster < cluster_bytes.len() && cluster_bytes[next_cluster] == byte {
+                clusters.push(units);
+                next_cluster += 1;
+            }
+            units += ch.len_utf16() as u32;
+        }
+        Ok(Self {
+            scalars,
+            clusters,
+            length,
+        })
+    }
+
+    /// Tells whether a position starts a character. The end of the text is
+    /// the end of its last character.
+    fn is_scalar_boundary(&self, position: u32) -> bool {
+        position == self.length || self.scalars.binary_search(&position).is_ok()
+    }
+
+    /// Tells whether a position starts an extended grapheme cluster.
+    fn is_cluster_boundary(&self, position: u32) -> bool {
+        position == self.length || self.clusters.binary_search(&position).is_ok()
+    }
 }
 
 fn utf16_len(text: &str) -> Result<u32> {
