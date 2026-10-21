@@ -171,6 +171,51 @@ impl Store {
         required_page(&self.conn, id)
     }
 
+    /// Saves a page only while the stored title and body still match `expected`.
+    ///
+    /// `expected` is the page as the caller read it and `replacement` carries
+    /// the desired title and body. Both must share the same page id. The
+    /// comparison is content based, so a change that moves the content away
+    /// and back to the original text is not detected.
+    pub fn save_page(&mut self, expected: &Page, replacement: Page) -> Result<Page> {
+        if expected.id != replacement.id {
+            return Err(Error::validation(
+                ValidationReason::PageIdMismatch,
+                "id",
+                Some(expected.id.as_str()),
+            ));
+        }
+        let id = replacement.id.clone();
+        self.write(|tx| {
+            let changed = tx
+                .execute(
+                    "UPDATE pages SET title = ?1, body = ?2
+                     WHERE id = ?3 AND title = ?4 AND body = ?5",
+                    params![
+                        replacement.title,
+                        replacement.body,
+                        id.as_str(),
+                        expected.title,
+                        expected.body,
+                    ],
+                )
+                .map_err(|err| map_sql("save page", err))?;
+            if changed == 1 {
+                return required_page(tx, &id);
+            }
+            if lookup_page(tx, &id)?.is_none() {
+                return Err(Error::validation(
+                    ValidationReason::NotFound,
+                    "id",
+                    Some(id.as_str()),
+                ));
+            }
+            Err(Error::StalePage {
+                id: id.as_str().to_string(),
+            })
+        })
+    }
+
     pub fn create_entity_type(&mut self, entity_type: EntityType) -> Result<EntityType> {
         let id = entity_type.id.clone();
         self.write(|tx| {
