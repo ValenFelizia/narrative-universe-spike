@@ -56,6 +56,14 @@ pub enum ValidationReason {
     ValueMismatch,
     ArchivedDefinition,
     InputTooLarge,
+    InvalidTextRange,
+    InvalidMentionRange,
+    SplitScalar,
+    SplitGrapheme,
+    OverlappingMentions,
+    DuplicateMentionId,
+    MentionIdConflict,
+    CoordinateOverflow,
 }
 
 impl Error {

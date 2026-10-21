@@ -47,6 +47,9 @@ pub struct DefinitionId(Id);
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AssertionId(Id);
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MentionId(Id);
+
 impl UniverseId {
     pub fn parse(raw: &str) -> Result<Self> {
         Id::parse(raw).map(Self)
@@ -138,6 +141,22 @@ impl std::fmt::Display for DefinitionId {
 }
 
 impl std::fmt::Display for AssertionId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl MentionId {
+    pub fn parse(raw: &str) -> Result<Self> {
+        Id::parse(raw).map(Self)
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl std::fmt::Display for MentionId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(formatter)
     }
