@@ -15,10 +15,11 @@
 //! the middle of a character sequence. Text edits may fall inside a cluster
 //! so a writer can really edit combining marks.
 //!
-//! Two limits are deliberate and provisional. The reducer compares content,
-//! so it cannot detect a change that moves the text away and back. And when
-//! an edit makes a surviving link endpoint fall inside a cluster, the prose
-//! is preserved and the link is dropped instead of being moved elsewhere.
+//! Two limits are deliberate and provisional. The reducer keeps no revision
+//! history and no edit log, so it cannot report how a link came to be, and
+//! restoring one is an explicit operation. And when an edit makes a
+//! surviving link endpoint fall inside a cluster, the prose is preserved and
+//! the link is dropped instead of being moved elsewhere.
 
 use std::collections::HashSet;
 
