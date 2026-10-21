@@ -23,6 +23,7 @@ const REGIONAL_INDICATOR_B: &str = "\u{1F1E7}";
 const REGIONAL_INDICATOR_C: &str = "\u{1F1E8}";
 const REGIONAL_INDICATOR_D: &str = "\u{1F1E9}";
 const REGIONAL_INDICATOR_E: &str = "\u{1F1EA}";
+const DEVANAGARI_CONJUNCT: &str = "\u{0915}\u{094D}\u{0937}";
 const WOMAN: &str = "\u{1F469}";
 const GIRL: &str = "\u{1F467}";
 const BOOK: &str = "\u{1F4DA}";
@@ -125,6 +126,39 @@ fn slice_utf16(text: &str, start: u32, end: u32) -> String {
 fn base_body_validates() {
     validate_mentions(&base()).expect("valid");
     assert_eq!(slice_utf16("Elara left", 0, 5), "Elara");
+}
+
+#[test]
+fn a_text_edit_may_fall_inside_a_grapheme_cluster() {
+    let body = annotated(
+        &format!("e{COMBINING_ACUTE}x"),
+        vec![mention(MENTION_ONE, ENTITY_ONE, 2, 3)],
+    );
+    validate_mentions(&body).expect("valid");
+    let outcome = apply_mention_edit(&body, &replace(0, 1, "y"));
+    assert_outcome(
+        &outcome,
+        &format!("y{COMBINING_ACUTE}x"),
+        &[(MENTION_ONE, ENTITY_ONE, 2, 3)],
+        &[],
+    );
+}
+
+#[test]
+fn an_indic_conjunct_is_one_extended_cluster() {
+    let body = annotated(
+        DEVANAGARI_CONJUNCT,
+        vec![mention(MENTION_ONE, ENTITY_ONE, 0, 3)],
+    );
+    validate_mentions(&body).expect("valid");
+    assert_eq!(slice_utf16(DEVANAGARI_CONJUNCT, 0, 3), DEVANAGARI_CONJUNCT);
+
+    let split = annotated(
+        DEVANAGARI_CONJUNCT,
+        vec![mention(MENTION_ONE, ENTITY_ONE, 0, 2)],
+    );
+    let err = validate_mentions(&split).expect_err("split grapheme");
+    assert_reason(err, ValidationReason::SplitGrapheme);
 }
 
 #[test]
