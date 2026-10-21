@@ -177,6 +177,74 @@ fn pa_t02_stale_save_keeps_the_committed_page() {
 }
 
 #[test]
+fn pa_t02_stale_detects_a_body_only_change() {
+    let (scratch, mut store) = created("pa-t02-body.sqlite");
+    let original = store
+        .create_page(make_page(KEPT, "Original", "original body"))
+        .expect("create");
+    drop(store);
+
+    let mut a = Store::open(&scratch.path).expect("open a");
+    let mut b = Store::open(&scratch.path).expect("open b");
+    let seen_by_a = a.page(&original.id).expect("a read");
+    let seen_by_b = b.page(&original.id).expect("b read");
+
+    let committed = b
+        .save_page(&seen_by_b, make_page(KEPT, "Original", "body changed by b"))
+        .expect("b save");
+    assert_eq!(committed.body, "body changed by b");
+    assert_eq!(committed.title, "Original");
+
+    let stale = a
+        .save_page(&seen_by_a, make_page(KEPT, "Original", "body lost update"))
+        .expect_err("stale");
+    assert_stale(stale, original.id.as_str());
+    assert_eq!(a.page(&original.id).expect("b commit kept"), committed);
+    drop(a);
+    drop(b);
+
+    let store = Store::open(&scratch.path).expect("reopen");
+    assert_eq!(store.page(&original.id).expect("persisted"), committed);
+}
+
+#[test]
+fn pa_t02_stale_detects_a_title_only_change() {
+    let (scratch, mut store) = created("pa-t02-title.sqlite");
+    let original = store
+        .create_page(make_page(KEPT, "Original", "original body"))
+        .expect("create");
+    drop(store);
+
+    let mut a = Store::open(&scratch.path).expect("open a");
+    let mut b = Store::open(&scratch.path).expect("open b");
+    let seen_by_a = a.page(&original.id).expect("a read");
+    let seen_by_b = b.page(&original.id).expect("b read");
+
+    let committed = b
+        .save_page(
+            &seen_by_b,
+            make_page(KEPT, "title changed by b", "original body"),
+        )
+        .expect("b save");
+    assert_eq!(committed.title, "title changed by b");
+    assert_eq!(committed.body, "original body");
+
+    let stale = a
+        .save_page(
+            &seen_by_a,
+            make_page(KEPT, "title lost update", "original body"),
+        )
+        .expect_err("stale");
+    assert_stale(stale, original.id.as_str());
+    assert_eq!(a.page(&original.id).expect("b commit kept"), committed);
+    drop(a);
+    drop(b);
+
+    let store = Store::open(&scratch.path).expect("reopen");
+    assert_eq!(store.page(&original.id).expect("persisted"), committed);
+}
+
+#[test]
 fn pa_t03_identical_save_is_a_noop() {
     let (scratch, mut store) = created("pa-t03.sqlite");
     let created_page = store
@@ -311,6 +379,24 @@ fn pa_t05_edits_roundtrip_without_touching_other_page() {
     assert_eq!(loaded.body, unicode);
     assert_eq!(loaded.title, "Title only");
     assert_eq!(loaded.id.as_str(), KEPT);
+
+    let empty_title = round_trip(
+        &scratch.path,
+        &loaded,
+        make_page(KEPT, "", "body under an empty title"),
+        &unrelated,
+    );
+    assert_eq!(empty_title.title, "");
+
+    let unicode_title = "Título con acento áéíóú ñ y emoji 📚\nsegunda línea";
+    let loaded = round_trip(
+        &scratch.path,
+        &empty_title,
+        make_page(KEPT, unicode_title, "body under a unicode title"),
+        &unrelated,
+    );
+    assert_eq!(loaded.title, unicode_title);
+    assert_eq!(loaded.body, "body under a unicode title");
 }
 
 #[test]
