@@ -17,6 +17,9 @@ pub enum Error {
         class: &'static str,
         id: String,
     },
+    StalePage {
+        id: String,
+    },
     WrongUniverse {
         expected: String,
         found: String,
@@ -42,6 +45,7 @@ pub enum ValidationReason {
     ForeignDatabase,
     NotFound,
     DuplicateId,
+    PageIdMismatch,
     UnknownSubject,
     UnknownEntity,
     UnknownTarget,
@@ -82,6 +86,7 @@ impl fmt::Display for Error {
             Self::ImportConflict { class, id } => {
                 write!(formatter, "import conflict {class} {id}")
             }
+            Self::StalePage { id } => write!(formatter, "stale page {id}"),
             Self::WrongUniverse { expected, found } => {
                 write!(
                     formatter,
