@@ -893,7 +893,7 @@ fn a_batch_that_ends_where_it_started_keeps_the_revision() {
 
 #[test]
 fn the_export_refuses_a_page_with_mentions() {
-    let (scratch, mut store) = created("export-guard.sqlite");
+    let (_scratch, mut store) = created("export-guard.sqlite");
     store
         .create_page(new_page(PAGE_ONE, "Meeting", "Elara"))
         .expect("page");
@@ -1005,6 +1005,86 @@ fn an_import_without_occurrences_cannot_erase_the_links() {
     assert_eq!(document.body.mentions.len(), 1);
     assert_eq!(document.body.mentions[0].id.as_str(), MENTION_ONE);
     assert_eq!(document.revision, PageRevision::new(1).expect("revision"));
+}
+
+#[test]
+fn a_link_that_borrows_a_foreign_occurrence_id_is_refused_even_inside_a_batch() {
+    let (scratch, mut store) = created("foreign-id-batch.sqlite");
+    store
+        .create_page(new_page(PAGE_ONE, "First", "Elara"))
+        .expect("page");
+    store
+        .create_page(new_page(PAGE_TWO, "Second", "Elara"))
+        .expect("page");
+    store
+        .create_entity(new_entity(ENTITY_ONE, "First"))
+        .expect("entity");
+    let first = store.page_document(&page_id(PAGE_ONE)).expect("document");
+    store
+        .save_page_edits(
+            &page_id(PAGE_ONE),
+            first.revision,
+            &[link(mention(MENTION_ONE, ENTITY_ONE, 0, 5))],
+        )
+        .expect("link");
+
+    let second = store.page_document(&page_id(PAGE_TWO)).expect("document");
+    let err = store
+        .save_page_edits(
+            &page_id(PAGE_TWO),
+            second.revision,
+            &[
+                link(mention(MENTION_ONE, ENTITY_ONE, 0, 5)),
+                unlink(MENTION_ONE),
+            ],
+        )
+        .expect_err("foreign id");
+    assert_validation(err, ValidationReason::MentionIdConflict, "mention_id");
+    drop(store);
+
+    let store = Store::open(&scratch.path).expect("reopen");
+    let first = store.page_document(&page_id(PAGE_ONE)).expect("first");
+    assert_eq!(first.body.mentions.len(), 1);
+    let second = store.page_document(&page_id(PAGE_TWO)).expect("second");
+    assert!(second.body.mentions.is_empty());
+    assert_eq!(second.revision, PageRevision::ZERO);
+}
+
+#[test]
+fn a_stored_mention_that_points_at_a_missing_entity_is_refused() {
+    let (scratch, mut store) = created("dangling-entity.sqlite");
+    store
+        .create_page(new_page(PAGE_ONE, "Meeting", "Elara"))
+        .expect("page");
+    store
+        .create_entity(new_entity(ENTITY_ONE, "First"))
+        .expect("entity");
+    let document = store.page_document(&page_id(PAGE_ONE)).expect("document");
+    store
+        .save_page_edits(
+            &page_id(PAGE_ONE),
+            document.revision,
+            &[link(mention(MENTION_ONE, ENTITY_ONE, 0, 5))],
+        )
+        .expect("link");
+    drop(store);
+
+    let conn = Connection::open(&scratch.path).expect("raw");
+    conn.execute_batch("PRAGMA foreign_keys = OFF").expect("fk");
+    conn.execute("DELETE FROM entities WHERE id = ?1", [ENTITY_ONE])
+        .expect("delete");
+    drop(conn);
+
+    let store = Store::open(&scratch.path).expect("open");
+    let err = store
+        .page_document(&page_id(PAGE_ONE))
+        .expect_err("dangling mention");
+    assert!(matches!(err, Error::Storage { .. }), "{err}");
+    // The backlink query answers that the entity is not there.
+    let err = store
+        .mentions_for_entity(&entity(ENTITY_ONE))
+        .expect_err("missing entity");
+    assert_validation(err, ValidationReason::NotFound, "id");
 }
 
 #[test]
