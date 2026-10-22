@@ -202,6 +202,10 @@ impl Store {
     pub fn create_page(&mut self, page: Page) -> Result<Page> {
         let id = page.id.clone();
         self.write(|tx| {
+            // Only an out-of-band deletion with foreign keys disabled can leave
+            // occurrences behind without their page. Reusing that id would bind
+            // them to this body, so the page is refused instead.
+            require_no_orphan_mentions(tx, &id)?;
             tx.execute(
                 "INSERT INTO pages (id, title, body) VALUES (?1, ?2, ?3)",
                 params![page.id.as_str(), page.title, page.body],
@@ -1268,7 +1272,34 @@ fn require_definition_owner(tx: &Transaction, definition: &Definition) -> Result
     Ok(())
 }
 
+/// Refuses to create a page while stored occurrences still point at its id.
+///
+/// A row can only be orphaned by a deletion performed outside SQLite with
+/// foreign keys disabled. Creating the same id again would make those rows
+/// valid again and bind them to different prose, so the page is refused. The
+/// rows are never deleted, relinked or adopted, and the enclosing transaction
+/// leaves the corrupt state untouched.
+fn require_no_orphan_mentions(tx: &Transaction, id: &PageId) -> Result<()> {
+    let stored: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM mentions WHERE page_id = ?1",
+            [id.as_str()],
+            |row| row.get(0),
+        )
+        .map_err(|err| map_sql("mentions", err))?;
+    if stored > 0 {
+        return Err(Error::Storage {
+            message: format!(
+                "{stored} stored occurrences still point at missing page {}",
+                id.as_str()
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn insert_page(tx: &Transaction, page: &Page) -> Result<()> {
+    require_no_orphan_mentions(tx, &page.id)?;
     tx.execute(
         "INSERT INTO pages (id, title, body) VALUES (?1, ?2, ?3)",
         params![page.id.as_str(), page.title, page.body],
@@ -1765,28 +1796,38 @@ fn list_assertions(
     Ok(assertions)
 }
 
+/// Reads a stored page row and validates its revision.
+///
+/// The revision is checked here so every caller that reconciles or reads a
+/// page fails closed on a value the aggregate read already refuses, instead
+/// of committing around it.
 fn lookup_page(conn: &Connection, id: &PageId) -> Result<Option<Page>> {
-    conn.query_row(
-        "SELECT id, title, body FROM pages WHERE id = ?1",
-        [id.as_str()],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        },
-    )
-    .optional()
-    .map_err(|err| map_sql("page", err))?
-    .map(|(raw_id, title, body)| {
-        Ok(Page {
-            id: parse_stored_id("page", &raw_id, PageId::parse)?,
-            title,
-            body,
-        })
-    })
-    .transpose()
+    let row = conn
+        .query_row(
+            "SELECT id, title, body, revision FROM pages WHERE id = ?1",
+            [id.as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|err| map_sql("page", err))?;
+    let Some((raw_id, title, body, raw_revision)) = row else {
+        return Ok(None);
+    };
+    let id = parse_stored_id("page", &raw_id, PageId::parse)?;
+    PageRevision::new(raw_revision).map_err(|_| Error::Storage {
+        message: format!(
+            "invalid stored revision {raw_revision} on page {}",
+            id.as_str()
+        ),
+    })?;
+    Ok(Some(Page { id, title, body }))
 }
 
 fn required_page(conn: &Connection, id: &PageId) -> Result<Page> {
