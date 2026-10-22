@@ -1,13 +1,15 @@
 CREATE TABLE metadata (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    universe_id TEXT NOT NULL CHECK (length(universe_id) = 36),
-    format_version INTEGER NOT NULL CHECK (format_version = 1)
+    universe_id TEXT NOT NULL CHECK (length(universe_id) = 36)
 );
 
 CREATE TABLE pages (
     id TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 36),
     title TEXT NOT NULL,
-    body TEXT NOT NULL
+    body TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0 CHECK (
+        typeof(revision) = 'integer' AND revision >= 0 AND revision <= 9223372036854775807
+    )
 );
 
 CREATE TABLE types (
@@ -21,6 +23,23 @@ CREATE TABLE entities (
     type_id TEXT NULL REFERENCES types (id),
     page_id TEXT NULL REFERENCES pages (id)
 );
+
+-- One occurrence of an entity inside a page. The id is unique across every
+-- page, so an occurrence keeps its identity wherever the prose moves.
+CREATE TABLE mentions (
+    id TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 36),
+    page_id TEXT NOT NULL REFERENCES pages (id) ON DELETE RESTRICT,
+    entity_id TEXT NOT NULL REFERENCES entities (id) ON DELETE RESTRICT,
+    start_utf16 INTEGER NOT NULL CHECK (
+        typeof(start_utf16) = 'integer' AND start_utf16 >= 0 AND start_utf16 <= 4294967295
+    ),
+    end_utf16 INTEGER NOT NULL CHECK (
+        typeof(end_utf16) = 'integer' AND end_utf16 > start_utf16 AND end_utf16 <= 4294967295
+    )
+);
+
+CREATE INDEX idx_mentions_page ON mentions (page_id, start_utf16, end_utf16);
+CREATE INDEX idx_mentions_entity ON mentions (entity_id, page_id, start_utf16);
 
 CREATE TABLE definitions (
     id TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 36),

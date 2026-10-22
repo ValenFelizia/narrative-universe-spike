@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
@@ -7,9 +8,11 @@ use rusqlite::{
 };
 
 use crate::error::{Error, Result, ValidationReason};
+use crate::mentions::{apply_mention_edit, validate_mentions, AnnotatedBody, Mention, MentionEdit};
 use crate::model::{
     value_fits, Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId, Entity,
-    EntityId, EntityType, Owner, Page, PageId, Provenance, TypeId, UniverseId, Value, ValueClass,
+    EntityId, EntityType, MentionId, Owner, Page, PageId, PageRevision, Provenance, TypeId,
+    UniverseId, Value, ValueClass,
 };
 
 const SCHEMA: &str = include_str!("schema.sql");
@@ -17,6 +20,7 @@ const HEADER_LEN: usize = 100;
 const MAGIC: &[u8] = b"SQLite format 3\0";
 const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
 const SQLITE_CONSTRAINT_PRIMARYKEY: i32 = 1555;
+const LEGACY_SCHEMA_VERSION: i32 = 1;
 
 const ASSERTION_COLUMNS: &str = "id, subject_id, definition_id, value_kind, text_value, bool_value, target_entity_id, canon, source_status_raw, provenance_external_ref, provenance_locator, provenance_fragment, provenance_source_revision, scope_note, archived";
 
@@ -55,11 +59,48 @@ pub struct PossibleIncompatibility {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub universe_id: UniverseId,
-    pub pages: Vec<Page>,
+    pub pages: Vec<PageSnapshot>,
     pub types: Vec<EntityType>,
     pub entities: Vec<Entity>,
     pub definitions: Vec<Definition>,
     pub assertions: Vec<Assertion>,
+}
+
+/// One page with the complete canonical mention set that points into it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageSnapshot {
+    pub page: Page,
+    pub mentions: Vec<Mention>,
+}
+
+/// A page read as one consistent aggregate.
+///
+/// The body carries its mentions, so a caller never has to combine a body
+/// with a mention list that belongs to another version of that body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageDocument {
+    pub id: PageId,
+    pub title: String,
+    pub body: AnnotatedBody,
+    pub revision: PageRevision,
+}
+
+/// One transient editing command for a page.
+///
+/// The operations are applied in order, each one in the coordinates of the
+/// body that the previous operation produced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PageEdit {
+    SetTitle { title: String },
+    Mention(MentionEdit),
+}
+
+/// One occurrence of an entity found through a backlink query.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MentionOccurrence {
+    pub page_id: PageId,
+    pub page_revision: PageRevision,
+    pub mention: Mention,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,6 +159,9 @@ impl Store {
         }
         let header = read_header(path)?;
         if header.user_version != crate::SCHEMA_VERSION {
+            if header.user_version == LEGACY_SCHEMA_VERSION {
+                return Err(legacy_outcome(path)?);
+            }
             return Err(Error::UnsupportedVersion {
                 found: header.user_version,
             });
@@ -171,49 +215,138 @@ impl Store {
         required_page(&self.conn, id)
     }
 
-    /// Saves a page only while the stored title and body still match `expected`.
+    /// Reads a page as one aggregate: title, body with its mentions, and the
+    /// revision of that aggregate.
     ///
-    /// `expected` is the page as the caller read it and `replacement` carries
-    /// the desired title and body. Both must share the same page id. The
-    /// comparison is content based, so a change that moves the content away
-    /// and back to the original text is not detected.
-    pub fn save_page(&mut self, expected: &Page, replacement: Page) -> Result<Page> {
-        if expected.id != replacement.id {
-            return Err(Error::validation(
-                ValidationReason::PageIdMismatch,
-                "id",
-                Some(expected.id.as_str()),
-            ));
+    /// The page and its mentions are read in one transaction, so the caller
+    /// never sees a body and a mention list that belong to different
+    /// versions of the page.
+    pub fn page_document(&self, id: &PageId) -> Result<PageDocument> {
+        let transaction = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| map_sql("begin", err))?;
+        let document = require_page_aggregate(&transaction, id);
+        match document {
+            Ok(document) => {
+                transaction.commit().map_err(|err| map_sql("commit", err))?;
+                Ok(document)
+            }
+            Err(err) => Err(err),
         }
-        let id = replacement.id.clone();
+    }
+
+    /// Applies ordered edits to a page and stores the whole aggregate.
+    ///
+    /// The page is only written when its revision still matches
+    /// `expected_revision`. A stale request is refused, even when it would
+    /// produce the aggregate that is already stored. The edits are applied
+    /// in memory first, so a rejected batch leaves the caller's draft and
+    /// the stored page untouched.
+    pub fn save_page_edits(
+        &mut self,
+        id: &PageId,
+        expected_revision: PageRevision,
+        edits: &[PageEdit],
+    ) -> Result<PageDocument> {
         self.write(|tx| {
-            let changed = tx
-                .execute(
-                    "UPDATE pages SET title = ?1, body = ?2
-                     WHERE id = ?3 AND title = ?4 AND body = ?5",
+            let stored = require_page_row(tx, id)?;
+            if stored.revision != expected_revision {
+                return Err(Error::StaleRevision {
+                    page_id: id.as_str().to_string(),
+                    expected: expected_revision.as_i64(),
+                    found: stored.revision.as_i64(),
+                });
+            }
+            let mut title = stored.title.clone();
+            let stored_body = read_page_annotated(tx, id, &stored.body)?;
+            let stored_mentions = stored_body.mentions.clone();
+            let mut body = stored_body;
+            for edit in edits {
+                match edit {
+                    PageEdit::SetTitle { title: next } => title = next.clone(),
+                    PageEdit::Mention(operation) => {
+                        if let MentionEdit::Link { mention } = operation {
+                            if lookup_entity(tx, &mention.entity_id)?.is_none() {
+                                return Err(Error::validation(
+                                    ValidationReason::UnknownEntity,
+                                    "entity_id",
+                                    Some(mention.entity_id.as_str()),
+                                ));
+                            }
+                        }
+                        let (next, _removed) = apply_mention_edit(&body, operation)?;
+                        body = next;
+                    }
+                }
+            }
+            for mention in &body.mentions {
+                if let Some(owner) = lookup_mention_owner(tx, &mention.id)? {
+                    if owner != *id {
+                        return Err(Error::validation(
+                            ValidationReason::MentionIdConflict,
+                            "mention_id",
+                            Some(mention.id.as_str()),
+                        ));
+                    }
+                }
+            }
+            let changed = title != stored.title
+                || body.body != stored.body
+                || body.mentions != stored_mentions;
+            let revision = if changed {
+                expected_revision.checked_next()?
+            } else {
+                expected_revision
+            };
+            tx.execute(
+                "UPDATE pages SET title = ?1, body = ?2, revision = ?3 WHERE id = ?4",
+                params![title, body.body, revision.as_i64(), id.as_str()],
+            )
+            .map_err(|err| map_sql("save page", err))?;
+            tx.execute("DELETE FROM mentions WHERE page_id = ?1", [id.as_str()])
+                .map_err(|err| map_sql("clear mentions", err))?;
+            for mention in &body.mentions {
+                tx.execute(
+                    "INSERT INTO mentions (id, page_id, entity_id, start_utf16, end_utf16)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
                     params![
-                        replacement.title,
-                        replacement.body,
+                        mention.id.as_str(),
                         id.as_str(),
-                        expected.title,
-                        expected.body,
+                        mention.entity_id.as_str(),
+                        mention.start_utf16,
+                        mention.end_utf16,
                     ],
                 )
-                .map_err(|err| map_sql("save page", err))?;
-            if changed == 1 {
-                return required_page(tx, &id);
+                .map_err(|err| map_write("mention", mention.id.as_str(), err))?;
             }
-            if lookup_page(tx, &id)?.is_none() {
-                return Err(Error::validation(
-                    ValidationReason::NotFound,
-                    "id",
-                    Some(id.as_str()),
-                ));
-            }
-            Err(Error::StalePage {
-                id: id.as_str().to_string(),
+            Ok(PageDocument {
+                id: id.clone(),
+                title,
+                body,
+                revision,
             })
         })
+    }
+
+    /// Finds every occurrence that points at an entity.
+    ///
+    /// The occurrences are sorted by page, then offset, then mention id. An
+    /// entity that does not exist is not found, and an entity without links
+    /// has no occurrences.
+    pub fn mentions_for_entity(&self, entity: &EntityId) -> Result<Vec<MentionOccurrence>> {
+        let transaction = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| map_sql("begin", err))?;
+        let occurrences = mentions_for_entity_in(&transaction, entity);
+        match occurrences {
+            Ok(occurrences) => {
+                transaction.commit().map_err(|err| map_sql("commit", err))?;
+                Ok(occurrences)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     pub fn create_entity_type(&mut self, entity_type: EntityType) -> Result<EntityType> {
@@ -501,7 +634,7 @@ impl Store {
             .map_err(|err| map_sql("begin", err))?;
         let snapshot = Snapshot {
             universe_id: self.universe_id.clone(),
-            pages: list_pages(&transaction)?,
+            pages: list_page_snapshots(&transaction)?,
             types: list_types(&transaction)?,
             entities: list_entities(&transaction)?,
             definitions: list_definitions(&transaction)?,
@@ -518,6 +651,7 @@ impl Store {
     pub fn import_snapshot(&mut self, snapshot: Snapshot) -> Result<ImportOutcome> {
         ensure_unique_snapshot(&snapshot)?;
         let universe_id = self.universe_id.clone();
+        let snapshot = normalize_snapshot(snapshot);
         self.write(|tx| {
             if snapshot.universe_id != universe_id {
                 return Err(Error::WrongUniverse {
@@ -536,6 +670,7 @@ impl Store {
 
     pub fn import_new(path: &Path, snapshot: Snapshot) -> Result<(Self, ImportOutcome)> {
         ensure_unique_snapshot(&snapshot)?;
+        let snapshot = normalize_snapshot(snapshot);
         reserve_new_file(path)?;
         let mut conn = match open_read_write(path) {
             Ok(conn) => conn,
@@ -600,8 +735,8 @@ fn write_schema(transaction: &Transaction, universe_id: &UniverseId) -> Result<(
         .map_err(|err| map_sql("schema", err))?;
     transaction
         .execute(
-            "INSERT INTO metadata (singleton, universe_id, format_version) VALUES (1, ?1, ?2)",
-            params![universe_id.as_str(), crate::FORMAT_VERSION],
+            "INSERT INTO metadata (singleton, universe_id) VALUES (1, ?1)",
+            params![universe_id.as_str()],
         )
         .map_err(|err| map_sql("metadata", err))?;
     // ROLLBACK undoes PRAGMA user_version on this bundled SQLite, so the pragma is committed with the schema.
@@ -687,6 +822,7 @@ fn require_tables(conn: &Connection) -> Result<()> {
         "assertions",
         "definitions",
         "entities",
+        "mentions",
         "metadata",
         "pages",
         "types",
@@ -712,30 +848,81 @@ fn require_tables(conn: &Connection) -> Result<()> {
 fn read_universe(conn: &Connection) -> Result<UniverseId> {
     let row = conn
         .query_row(
-            "SELECT universe_id, format_version FROM metadata WHERE singleton = 1",
+            "SELECT universe_id FROM metadata WHERE singleton = 1",
             [],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            |row| row.get::<_, String>(0),
         )
         .optional()
         .map_err(|err| map_sql("metadata", err))?;
-    let Some((raw, version)) = row else {
+    let Some(raw) = row else {
         return Err(Error::validation(
             ValidationReason::MissingMetadata,
             "metadata",
             None,
         ));
     };
-    if version != i64::from(crate::FORMAT_VERSION) {
-        let Ok(found) = i32::try_from(version) else {
-            return Err(Error::Storage {
-                message: format!("format_version {version} does not fit a schema version"),
-            });
-        };
-        return Err(Error::UnsupportedVersion { found });
-    }
     UniverseId::parse(&raw).map_err(|_| {
         Error::validation(ValidationReason::ForeignDatabase, "universe_id", Some(&raw))
     })
+}
+
+/// Tells a historical version 1 database apart from a foreign file.
+///
+/// A version 1 database keeps its format version inside the metadata table.
+/// A file that only claims the version number is not one of ours.
+fn is_legacy_v1(conn: &Connection) -> Result<bool> {
+    let mut statement = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+        .map_err(|err| map_sql("schema", err))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|err| map_sql("schema", err))?;
+    let mut tables: Vec<String> = Vec::new();
+    for row in rows {
+        tables.push(row.map_err(|err| map_sql("schema", err))?);
+    }
+    for name in [
+        "assertions",
+        "definitions",
+        "entities",
+        "metadata",
+        "pages",
+        "types",
+    ] {
+        if !tables.iter().any(|table| table == name) {
+            return Ok(false);
+        }
+    }
+    let mut statement = conn
+        .prepare("PRAGMA table_info(metadata)")
+        .map_err(|err| map_sql("schema", err))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| map_sql("schema", err))?;
+    for row in rows {
+        if row.map_err(|err| map_sql("schema", err))? == "format_version" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Decides what a historical database needs, without touching it.
+///
+/// The file is only inspected through a read-only connection, so a version 1
+/// database is never modified, upgraded or copied.
+fn legacy_outcome(path: &Path) -> Result<Error> {
+    let inspected = open_read_only(path)?;
+    if is_legacy_v1(&inspected)? {
+        return Ok(Error::MigrationRequired {
+            found: LEGACY_SCHEMA_VERSION,
+        });
+    }
+    Ok(Error::validation(
+        ValidationReason::ForeignDatabase,
+        "schema",
+        None,
+    ))
 }
 
 struct Header {
@@ -795,7 +982,11 @@ fn residual(path: &Path, err: Error) -> Error {
 }
 
 fn ensure_unique_snapshot(snapshot: &Snapshot) -> Result<()> {
-    unique_ids(snapshot.pages.iter().map(|page| page.id.as_str()), "page")?;
+    unique_ids(
+        snapshot.pages.iter().map(|page| page.page.id.as_str()),
+        "page",
+    )?;
+    unique_mention_ids(snapshot)?;
     unique_ids(
         snapshot
             .types
@@ -838,20 +1029,66 @@ fn unique_ids<'a>(ids: impl Iterator<Item = &'a str>, class: &'static str) -> Re
     Ok(())
 }
 
+/// An occurrence id belongs to exactly one page, so the same id cannot
+/// appear on two pages of the same document.
+fn unique_mention_ids(snapshot: &Snapshot) -> Result<()> {
+    let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for page in &snapshot.pages {
+        for mention in &page.mentions {
+            if !seen.insert(mention.id.as_str()) {
+                return Err(Error::validation(
+                    ValidationReason::MentionIdConflict,
+                    "mention_id",
+                    Some(mention.id.as_str()),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Puts the mentions of every page in the canonical order, so two documents
+/// with the same occurrences compare equal.
+fn normalize_snapshot(mut snapshot: Snapshot) -> Snapshot {
+    for page in &mut snapshot.pages {
+        page.mentions.sort_by(|left, right| {
+            left.start_utf16
+                .cmp(&right.start_utf16)
+                .then(left.end_utf16.cmp(&right.end_utf16))
+                .then(left.id.as_str().cmp(right.id.as_str()))
+        });
+    }
+    snapshot
+}
+
 fn import_records(
     tx: &Transaction,
     snapshot: &Snapshot,
     outcome: &mut ImportOutcome,
 ) -> Result<()> {
-    for page in &snapshot.pages {
-        reconcile(
-            outcome,
-            "page",
-            page.id.as_str(),
-            lookup_page(tx, &page.id)?,
-            page,
-            || insert_page(tx, page),
-        )?;
+    let mut inserted_pages: Vec<&PageSnapshot> = Vec::new();
+    for page_snapshot in &snapshot.pages {
+        let annotated = AnnotatedBody {
+            body: page_snapshot.page.body.clone(),
+            mentions: page_snapshot.mentions.clone(),
+        };
+        validate_mentions(&annotated)?;
+        match lookup_page_snapshot(tx, &page_snapshot.page.id)? {
+            Some(existing) => {
+                if existing != *page_snapshot {
+                    return Err(Error::ImportConflict {
+                        class: "page",
+                        id: page_snapshot.page.id.as_str().to_string(),
+                    });
+                }
+                outcome.unchanged += 1;
+            }
+            None => {
+                insert_page(tx, &page_snapshot.page)?;
+                outcome.inserted += 1;
+                inserted_pages.push(page_snapshot);
+            }
+        }
     }
     for entity_type in &snapshot.types {
         reconcile(
@@ -901,6 +1138,29 @@ fn import_records(
                 insert_assertion(tx, assertion)
             },
         )?;
+    }
+    // The mentions go in after the entities exist, so a document may point at
+    // an entity that the same import creates.
+    for page_snapshot in inserted_pages {
+        for mention in &page_snapshot.mentions {
+            if lookup_entity(tx, &mention.entity_id)?.is_none() {
+                return Err(Error::validation(
+                    ValidationReason::UnknownEntity,
+                    "entity_id",
+                    Some(mention.entity_id.as_str()),
+                ));
+            }
+            if let Some(owner) = lookup_mention_owner(tx, &mention.id)? {
+                if owner != page_snapshot.page.id {
+                    return Err(Error::validation(
+                        ValidationReason::MentionIdConflict,
+                        "mention_id",
+                        Some(mention.id.as_str()),
+                    ));
+                }
+            }
+            insert_mention(tx, &page_snapshot.page.id, mention)?;
+        }
     }
     Ok(())
 }
@@ -983,6 +1243,22 @@ fn insert_page(tx: &Transaction, page: &Page) -> Result<()> {
     )
     .map(|_| ())
     .map_err(|err| map_write("id", page.id.as_str(), err))
+}
+
+fn insert_mention(tx: &Transaction, page_id: &PageId, mention: &Mention) -> Result<()> {
+    tx.execute(
+        "INSERT INTO mentions (id, page_id, entity_id, start_utf16, end_utf16)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            mention.id.as_str(),
+            page_id.as_str(),
+            mention.entity_id.as_str(),
+            mention.start_utf16,
+            mention.end_utf16,
+        ],
+    )
+    .map(|_| ())
+    .map_err(|err| map_write("mention", mention.id.as_str(), err))
 }
 
 fn insert_type(tx: &Transaction, entity_type: &EntityType) -> Result<()> {
@@ -1093,6 +1369,24 @@ fn list_pages(conn: &Connection) -> Result<Vec<Page>> {
         });
     }
     Ok(pages)
+}
+
+/// Reads every page with its complete canonical mention set.
+fn list_page_snapshots(conn: &Connection) -> Result<Vec<PageSnapshot>> {
+    let mut snapshots = Vec::new();
+    for page in list_pages(conn)? {
+        let mentions = read_page_annotated(conn, &page.id, &page.body)?.mentions;
+        snapshots.push(PageSnapshot { page, mentions });
+    }
+    Ok(snapshots)
+}
+
+fn lookup_page_snapshot(conn: &Connection, id: &PageId) -> Result<Option<PageSnapshot>> {
+    let Some(page) = lookup_page(conn, id)? else {
+        return Ok(None);
+    };
+    let mentions = read_page_annotated(conn, id, &page.body)?.mentions;
+    Ok(Some(PageSnapshot { page, mentions }))
 }
 
 fn list_types(conn: &Connection) -> Result<Vec<EntityType>> {
@@ -1447,6 +1741,197 @@ fn lookup_page(conn: &Connection, id: &PageId) -> Result<Option<Page>> {
 fn required_page(conn: &Connection, id: &PageId) -> Result<Page> {
     lookup_page(conn, id)?
         .ok_or_else(|| Error::validation(ValidationReason::NotFound, "id", Some(id.as_str())))
+}
+
+/// One stored page row with its local revision.
+struct PageRow {
+    title: String,
+    body: String,
+    revision: PageRevision,
+}
+
+fn require_page_row(conn: &Connection, id: &PageId) -> Result<PageRow> {
+    let row = conn
+        .query_row(
+            "SELECT title, body, revision FROM pages WHERE id = ?1",
+            [id.as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|err| map_sql("page", err))?;
+    let Some((title, body, raw_revision)) = row else {
+        return Err(Error::validation(
+            ValidationReason::NotFound,
+            "id",
+            Some(id.as_str()),
+        ));
+    };
+    let revision = PageRevision::new(raw_revision).map_err(|_| Error::Storage {
+        message: format!(
+            "invalid stored revision {raw_revision} on page {}",
+            id.as_str()
+        ),
+    })?;
+    Ok(PageRow {
+        title,
+        body,
+        revision,
+    })
+}
+
+/// Reads the mentions of a page and checks them against the exact body.
+///
+/// A stored mention that is out of range, splits a grapheme cluster, or
+/// overlaps another one makes the whole page unreadable. Nothing is dropped
+/// and nothing is repaired.
+fn read_page_annotated(conn: &Connection, page_id: &PageId, body: &str) -> Result<AnnotatedBody> {
+    let mut statement = conn
+        .prepare(
+            "SELECT id, entity_id, start_utf16, end_utf16 FROM mentions
+             WHERE page_id = ?1 ORDER BY start_utf16, end_utf16, id",
+        )
+        .map_err(|err| map_sql("prepare", err))?;
+    let rows = statement
+        .query_map([page_id.as_str()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(|err| map_sql("query", err))?;
+    let mut mentions: Vec<Mention> = Vec::new();
+    for row in rows {
+        let (raw_id, raw_entity, start, end) = row.map_err(|err| map_sql("row", err))?;
+        let id = MentionId::parse(&raw_id).map_err(|_| Error::Storage {
+            message: format!("invalid stored mention id {raw_id}"),
+        })?;
+        let entity_id = EntityId::parse(&raw_entity).map_err(|_| Error::Storage {
+            message: format!("invalid stored mention entity id {raw_entity}"),
+        })?;
+        let start = u32::try_from(start).map_err(|_| Error::Storage {
+            message: format!("invalid stored mention offset {start}"),
+        })?;
+        let end = u32::try_from(end).map_err(|_| Error::Storage {
+            message: format!("invalid stored mention offset {end}"),
+        })?;
+        mentions.push(Mention {
+            id,
+            entity_id,
+            start_utf16: start,
+            end_utf16: end,
+        });
+    }
+    let annotated = AnnotatedBody {
+        body: body.to_string(),
+        mentions,
+    };
+    validate_mentions(&annotated).map_err(|err| Error::Storage {
+        message: format!(
+            "stored mentions of page {} are invalid: {err}",
+            page_id.as_str()
+        ),
+    })?;
+    Ok(annotated)
+}
+
+fn require_page_aggregate(conn: &Connection, id: &PageId) -> Result<PageDocument> {
+    let row = require_page_row(conn, id)?;
+    let body = read_page_annotated(conn, id, &row.body)?;
+    Ok(PageDocument {
+        id: id.clone(),
+        title: row.title,
+        body,
+        revision: row.revision,
+    })
+}
+
+fn lookup_mention_owner(conn: &Connection, id: &MentionId) -> Result<Option<PageId>> {
+    let found = conn
+        .query_row(
+            "SELECT page_id FROM mentions WHERE id = ?1",
+            [id.as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|err| map_sql("mention", err))?;
+    let Some(raw) = found else {
+        return Ok(None);
+    };
+    Ok(Some(PageId::parse(&raw).map_err(|_| Error::Storage {
+        message: format!("invalid stored mention page id {raw}"),
+    })?))
+}
+
+fn mentions_for_entity_in(conn: &Connection, entity: &EntityId) -> Result<Vec<MentionOccurrence>> {
+    if lookup_entity(conn, entity)?.is_none() {
+        return Err(Error::validation(
+            ValidationReason::NotFound,
+            "id",
+            Some(entity.as_str()),
+        ));
+    }
+    let mut statement = conn
+        .prepare(
+            "SELECT page_id, id, start_utf16, end_utf16 FROM mentions
+             WHERE entity_id = ?1 ORDER BY page_id, start_utf16, end_utf16, id",
+        )
+        .map_err(|err| map_sql("prepare", err))?;
+    let rows = statement
+        .query_map([entity.as_str()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(|err| map_sql("query", err))?;
+    let mut by_page: BTreeMap<String, (PageId, Vec<Mention>)> = BTreeMap::new();
+    for row in rows {
+        let (raw_page, raw_id, start, end) = row.map_err(|err| map_sql("row", err))?;
+        let page_id = PageId::parse(&raw_page).map_err(|_| Error::Storage {
+            message: format!("invalid stored mention page id {raw_page}"),
+        })?;
+        let id = MentionId::parse(&raw_id).map_err(|_| Error::Storage {
+            message: format!("invalid stored mention id {raw_id}"),
+        })?;
+        let start = u32::try_from(start).map_err(|_| Error::Storage {
+            message: format!("invalid stored mention offset {start}"),
+        })?;
+        let end = u32::try_from(end).map_err(|_| Error::Storage {
+            message: format!("invalid stored mention offset {end}"),
+        })?;
+        let entry = by_page
+            .entry(page_id.as_str().to_string())
+            .or_insert_with(|| (page_id, Vec::new()));
+        entry.1.push(Mention {
+            id,
+            entity_id: entity.clone(),
+            start_utf16: start,
+            end_utf16: end,
+        });
+    }
+    let mut occurrences: Vec<MentionOccurrence> = Vec::new();
+    for (_key, (page_id, mentions)) in by_page {
+        let row = require_page_row(conn, &page_id)?;
+        read_page_annotated(conn, &page_id, &row.body)?;
+        for mention in mentions {
+            occurrences.push(MentionOccurrence {
+                page_id: page_id.clone(),
+                page_revision: row.revision,
+                mention,
+            });
+        }
+    }
+    Ok(occurrences)
 }
 
 fn lookup_entity_type(conn: &Connection, id: &TypeId) -> Result<Option<EntityType>> {

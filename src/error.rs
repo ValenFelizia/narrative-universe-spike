@@ -17,9 +17,15 @@ pub enum Error {
         class: &'static str,
         id: String,
     },
-    StalePage {
-        id: String,
+    StaleRevision {
+        page_id: String,
+        expected: i64,
+        found: i64,
     },
+    MigrationRequired {
+        found: i32,
+    },
+    MentionsNotExported,
     WrongUniverse {
         expected: String,
         found: String,
@@ -45,7 +51,6 @@ pub enum ValidationReason {
     ForeignDatabase,
     NotFound,
     DuplicateId,
-    PageIdMismatch,
     UnknownSubject,
     UnknownEntity,
     UnknownTarget,
@@ -64,6 +69,8 @@ pub enum ValidationReason {
     DuplicateMentionId,
     MentionIdConflict,
     CoordinateOverflow,
+    InvalidRevision,
+    RevisionExhausted,
 }
 
 impl Error {
@@ -94,7 +101,20 @@ impl fmt::Display for Error {
             Self::ImportConflict { class, id } => {
                 write!(formatter, "import conflict {class} {id}")
             }
-            Self::StalePage { id } => write!(formatter, "stale page {id}"),
+            Self::StaleRevision {
+                page_id,
+                expected,
+                found,
+            } => write!(
+                formatter,
+                "stale page {page_id}: expected revision {expected}, found {found}"
+            ),
+            Self::MigrationRequired { found } => {
+                write!(formatter, "schema version {found} needs a migration")
+            }
+            Self::MentionsNotExported => formatter.write_str(
+                "a page with mentions cannot be exported before the JSON format 2 exchange exists",
+            ),
             Self::WrongUniverse { expected, found } => {
                 write!(
                     formatter,

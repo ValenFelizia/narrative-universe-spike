@@ -11,9 +11,13 @@ pub use exchange::{
 pub use mentions::{apply_mention_edit, validate_mentions, AnnotatedBody, Mention, MentionEdit};
 pub use model::{
     Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId, Entity, EntityId,
-    EntityType, MentionId, Owner, Page, PageId, Provenance, TypeId, UniverseId, Value, ValueClass,
+    EntityType, MentionId, Owner, Page, PageId, PageRevision, Provenance, TypeId, UniverseId,
+    Value, ValueClass,
 };
-pub use store::{Counts, ImportOutcome, PossibleIncompatibility, Snapshot, Store};
+pub use store::{
+    Counts, ImportOutcome, MentionOccurrence, PageDocument, PageEdit, PageSnapshot,
+    PossibleIncompatibility, Snapshot, Store,
+};
 
-pub const SCHEMA_VERSION: i32 = 1;
+pub const SCHEMA_VERSION: i32 = 2;
 pub const FORMAT_VERSION: i32 = 1;

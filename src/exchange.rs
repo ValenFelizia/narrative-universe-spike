@@ -7,12 +7,17 @@ use crate::model::{
     Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId, Entity, EntityId,
     EntityType, Owner, Page, PageId, Provenance, TypeId, UniverseId, Value, ValueClass,
 };
-use crate::store::{ImportOutcome, Snapshot, Store};
+use crate::store::{ImportOutcome, PageSnapshot, Snapshot, Store};
 
 pub const MAX_DOCUMENT_BYTES: usize = 10 * 1024 * 1024;
 
 pub fn export_json(store: &mut Store) -> Result<Vec<u8>> {
     let snapshot = store.export_snapshot()?;
+    if snapshot.pages.iter().any(|page| !page.mentions.is_empty()) {
+        // The JSON format 2 exchange does not exist yet. Exporting a document
+        // that drops the occurrences would lose the anchors silently.
+        return Err(Error::MentionsNotExported);
+    }
     let bytes = encode(&snapshot)?;
     if bytes.len() > MAX_DOCUMENT_BYTES {
         return Err(Error::validation(
@@ -103,7 +108,11 @@ fn encode(snapshot: &Snapshot) -> Result<Vec<u8>> {
     let envelope = Envelope {
         format_version: crate::FORMAT_VERSION,
         universe_id: snapshot.universe_id.as_str().to_string(),
-        pages: snapshot.pages.iter().map(PageDto::from_page).collect(),
+        pages: snapshot
+            .pages
+            .iter()
+            .map(|page| PageDto::from_page(&page.page))
+            .collect(),
         types: snapshot.types.iter().map(TypeDto::from_type).collect(),
         entities: snapshot
             .entities
@@ -203,11 +212,16 @@ impl PageDto {
         }
     }
 
-    fn into_page(self) -> Result<Page> {
-        Ok(Page {
-            id: PageId::parse(&self.id)?,
-            title: self.title,
-            body: self.body,
+    /// A version 1 page carries no occurrences, so it is read as an empty
+    /// mention set.
+    fn into_page(self) -> Result<PageSnapshot> {
+        Ok(PageSnapshot {
+            page: Page {
+                id: PageId::parse(&self.id)?,
+                title: self.title,
+                body: self.body,
+            },
+            mentions: Vec::new(),
         })
     }
 }
