@@ -18,7 +18,7 @@ that cap plus one byte, and a failed export keeps its residual file instead
 of deleting the path. Those fixes are on `feat/4-json-exchange` and still
 need re-review. Schema version 1 is unchanged.
 
-## PA-I2-A merged, PA-I2-B checkpoint B1 pending review
+## PA-I2-A merged, PA-I2-B checkpoint pending review
 
 PA-I2-A is the reviewed baseline. It added the pure mention contract in
 `src/mentions.rs` with `MentionId`, `Mention`, `AnnotatedBody`, `MentionEdit`,
@@ -34,3 +34,11 @@ separate concepts. Do not merge it, do not add a migration, and do not start
 PA-I2-C. A version 1 database still fails closed with a migration outcome,
 and that migration belongs to PA-I2-C. Do not copy this unreviewed behavior
 into `.csdd/specs.md` or `.csdd/decisions.md` before the gate passes.
+
+The Astra review found three fail-closed defects on `cbbe0b8`. All three are
+fixed on the branch and waiting for the delta gate: a page id whose occurrence
+rows survived its page is refused by `create_page`, both JSON imports and the
+snapshot import; an import reconciles a page only after its stored revision
+passes `PageRevision`; and a positional JSON array is refused wherever the
+format defines a record. Schema and format stay at version 2, `src/mentions.rs`
+is still byte identical to `main`, and no migration was added.
