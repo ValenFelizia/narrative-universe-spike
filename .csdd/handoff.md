@@ -18,14 +18,27 @@ that cap plus one byte, and a failed export keeps its residual file instead
 of deleting the path. Those fixes are on `feat/4-json-exchange` and still
 need re-review. Schema version 1 is unchanged.
 
-## PA-I2-A pending review
+## PA-I2-A merged, PA-I2-B checkpoint pending review
 
-Issue #12 is the authorized PA-I2-A increment. The branch
-`feat/12-mention-edits` adds the pure mention contract in `src/mentions.rs`,
-with `MentionId`, `Mention`, `AnnotatedBody`, `MentionEdit`,
-`validate_mentions`, and `apply_mention_edit`, plus tests in
-`tests/mentions.rs`. Nothing is persisted. No mention, page, entity, or canon
-is written anywhere, and `src/store.rs`, the schema, and the JSON exchange are
-untouched. Do not merge it, do not add persistence, and do not start PA-I2-B.
-Do not copy this unreviewed behavior into `.csdd/specs.md` or
-`.csdd/decisions.md` before the gate passes.
+PA-I2-A is the reviewed baseline. It added the pure mention contract in
+`src/mentions.rs` with `MentionId`, `Mention`, `AnnotatedBody`, `MentionEdit`,
+`validate_mentions`, and `apply_mention_edit`. That module is pure and stays
+unchanged.
+
+Issue #14 is the authorized PA-I2-B increment. The branch
+`feat/14-page-mention-persistence` holds the complete candidate: checkpoint B2
+adds the JSON format 2 exchange, so an export carries the occurrences and a
+version 1 JSON document still imports as a universe without occurrences. The
+storage schema is version 2 and the JSON format is version 2, and they are
+separate concepts. Do not merge it, do not add a migration, and do not start
+PA-I2-C. A version 1 database still fails closed with a migration outcome,
+and that migration belongs to PA-I2-C. Do not copy this unreviewed behavior
+into `.csdd/specs.md` or `.csdd/decisions.md` before the gate passes.
+
+The Astra review found three fail-closed defects on `cbbe0b8`. All three are
+fixed on the branch and waiting for the delta gate: a page id whose occurrence
+rows survived its page is refused by `create_page`, both JSON imports and the
+snapshot import; an import reconciles a page only after its stored revision
+passes `PageRevision`; and a positional JSON array is refused wherever the
+format defines a record. Schema and format stay at version 2, `src/mentions.rs`
+is still byte identical to `main`, and no migration was added.

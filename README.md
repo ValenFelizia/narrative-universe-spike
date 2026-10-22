@@ -6,7 +6,7 @@ Narrative Universe aims to combine freeform pages with structured entities, user
 
 ## Current scope
 
-**I1 — Persistence and relationships** and **I2 — Canon alternatives and reversible archival** are the reviewed baseline. **I3 — Versioned JSON exchange** is implemented on this branch and is waiting for G3 review. **PA-I2-A — pure mention editing semantics** is implemented on this branch and is waiting for review.
+**I1 — Persistence and relationships** and **I2 — Canon alternatives and reversible archival** are the reviewed baseline. **I3 — Versioned JSON exchange** is implemented on this branch and is waiting for G3 review. **PA-I2-A — pure mention editing semantics** is implemented on this branch and is waiting for review. **PA-I2-B — page occurrences with a local revision and the JSON format 2 exchange** is implemented on this branch and is waiting for review. An occurrence is stored with its page, the JSON exchange carries it, and a version 1 JSON document still imports as a universe without occurrences.
 
 The spike covers:
 
@@ -23,7 +23,7 @@ The spike covers:
 - A read-only query for possible incompatibilities: two active `ACORDADO` assertions with different known values on the same subject and the same active singular definition.
 - Versioned JSON export, import into the same universe, and import into a new file. A conflicting record rolls back the whole batch. Import can restore an assertion whose definition is already archived. Creating a new assertion on an archived definition still fails.
 
-**Not implemented:** editing UI, Tauri, MCP, full history, a fictional timeline engine, or stored mentions. I3 is not accepted until G3 review, and the mention contract is not accepted until its own review. A green test suite does not authorize merge.
+**Not implemented:** editing UI, Tauri, MCP, full history, a fictional timeline engine. I3 is not accepted until G3 review, and the mention contract is not accepted until its own review. A green test suite does not authorize merge.
 
 ## Getting started
 
@@ -57,7 +57,7 @@ The fixture is synthetic, not War Archivist canon. See [fixture notes](tests/fix
 | `src/model.rs` | Typed IDs, record types, canon, values, and property ownership |
 | `src/store.rs` | Synchronous domain checks, transactions, SQLite reads and writes |
 | `src/exchange.rs` | Versioned JSON parse, encode, and the 10 MiB input cap |
-| `src/mentions.rs` | Pure mention identity and single-edit semantics, not persisted |
+| `src/mentions.rs` | Pure mention identity and single-edit semantics |
 | `src/schema.sql` | Persistent tables, foreign keys, and constraints |
 | `src/bin/spike.rs` | Minimal `seed` / `inspect` demonstration |
 | `tests/` | Real-file tests, process replay, validation, and concurrency regressions |
@@ -72,6 +72,12 @@ This is an experimental format intended for disposable test universes. Do **not*
 - If initialization fails after that reservation, it leaves a **residual file** and reports its location instead of risking deletion of another process's database.
 - A successful JSON export is compact UTF-8 and must fit the same 10 MiB cap as import. An oversized universe fails export before the destination file is created.
 - A failed export write keeps the reserved file and reports `residual file` plus the path. It does not delete that path.
+- An import refuses a document that repeats a JSON key, because a repeated key would otherwise hide one of its values.
+- An import refuses a positional JSON array where the format defines a record, so a page, an occurrence or a nested record is never read by position.
+- An import into a new file checks the occurrence geometry of the document before it reserves the destination, so a malformed document leaves no file behind.
+- An export refuses a page whose stored revision is not a checked nonnegative integer, so a corrupt row cannot leave the database as part of a healthy universe.
+- An import refuses to reconcile a page whose stored revision is not a checked nonnegative integer, and rolls the whole batch back.
+- Creating a page refuses an id whose occurrence rows still exist without their page row, which only a deletion outside SQLite with foreign keys disabled can produce. Those rows are never adopted, relinked or deleted.
 - SQLite transactions protect individual writes, but there is no workspace-level multiwriter coordination or supported backup workflow yet.
 - JSON portability and safe restoration are part of a later increment, not I1.
 

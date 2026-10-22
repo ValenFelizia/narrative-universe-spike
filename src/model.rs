@@ -50,6 +50,48 @@ pub struct AssertionId(Id);
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MentionId(Id);
 
+/// The revision of one page aggregate inside one database.
+///
+/// The token is database-local. It counts committed aggregate changes and is
+/// not a portable identity, a timestamp, or a document revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PageRevision(i64);
+
+impl PageRevision {
+    /// The revision of a page that never changed.
+    pub const ZERO: Self = Self(0);
+
+    /// Builds a revision from a stored value. A negative value is malformed.
+    pub fn new(raw: i64) -> Result<Self> {
+        if raw < 0 {
+            return Err(Error::validation(
+                ValidationReason::InvalidRevision,
+                "revision",
+                None,
+            ));
+        }
+        Ok(Self(raw))
+    }
+
+    pub fn as_i64(self) -> i64 {
+        self.0
+    }
+
+    /// The next revision, or an explicit failure when the counter is spent.
+    pub fn checked_next(self) -> Result<Self> {
+        self.0
+            .checked_add(1)
+            .map(Self)
+            .ok_or_else(|| Error::validation(ValidationReason::RevisionExhausted, "revision", None))
+    }
+}
+
+impl std::fmt::Display for PageRevision {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 impl UniverseId {
     pub fn parse(raw: &str) -> Result<Self> {
         Id::parse(raw).map(Self)
