@@ -148,12 +148,16 @@ fn decode(bytes: &[u8]) -> Result<Snapshot> {
         serde_json::from_slice(bytes).map_err(|err| Error::InvalidDocument {
             message: err.to_string(),
         })?;
-    let version = document
-        .get("format_version")
-        .and_then(serde_json::Value::as_i64)
-        .ok_or_else(|| Error::InvalidDocument {
-            message: "the document has no integer format_version".to_string(),
-        })?;
+    let version = match document.get("format_version") {
+        None => {
+            return Err(Error::InvalidDocument {
+                message: "the document has no format_version".to_string(),
+            })
+        }
+        Some(value) => value.as_i64().ok_or_else(|| Error::InvalidDocument {
+            message: "the format_version of the document is not an integer".to_string(),
+        })?,
+    };
     match version {
         1 => decode_v1(document),
         2 => decode_v2(document),
@@ -342,8 +346,16 @@ impl MentionDto {
 
     fn into_mention(self) -> Result<Mention> {
         Ok(Mention {
-            id: MentionId::parse(&self.id)?,
-            entity_id: EntityId::parse(&self.entity_id)?,
+            id: MentionId::parse(&self.id).map_err(|_| {
+                Error::validation(ValidationReason::InvalidId, "mention_id", Some(&self.id))
+            })?,
+            entity_id: EntityId::parse(&self.entity_id).map_err(|_| {
+                Error::validation(
+                    ValidationReason::InvalidId,
+                    "entity_id",
+                    Some(&self.entity_id),
+                )
+            })?,
             start_utf16: self.start_utf16,
             end_utf16: self.end_utf16,
         })
