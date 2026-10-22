@@ -141,6 +141,10 @@ fn encode(snapshot: &Snapshot) -> Result<Vec<u8>> {
 /// always decoded straight from the original bytes. A generic value collapses
 /// duplicate object keys, so decoding from it would read a page that carries
 /// two `mentions` members as if one of them did not exist.
+///
+/// The generic value also carries the shape gate: a derived struct
+/// deserializer accepts a JSON array and matches its members by position, so
+/// the records are checked to be objects before the typed decode runs.
 fn decode(bytes: &[u8]) -> Result<Snapshot> {
     if bytes.len() > MAX_DOCUMENT_BYTES {
         return Err(Error::validation(
@@ -163,6 +167,7 @@ fn decode(bytes: &[u8]) -> Result<Snapshot> {
             message: "the format_version of the document is not an integer".to_string(),
         })?,
     };
+    require_no_positional_records(&probe)?;
     match version {
         1 => decode_v1(bytes),
         2 => decode_v2(bytes),
@@ -170,6 +175,76 @@ fn decode(bytes: &[u8]) -> Result<Snapshot> {
             found: i32::try_from(other).unwrap_or(i32::MAX),
         }),
     }
+}
+
+/// Rejects a record that is sent as a positional JSON array.
+///
+/// The version 1 and version 2 formats define the document, the pages, the
+/// occurrences and every other record as JSON objects. A derived struct
+/// deserializer would also accept `["id", "title", "body"]` and bind it by
+/// position, so the shape is refused before the typed decode.
+fn require_no_positional_records(document: &serde_json::Value) -> Result<()> {
+    require_object(document, "the document")?;
+    for field in ["pages", "types", "entities", "definitions", "assertions"] {
+        require_record_array(document, field, field)?;
+    }
+    for (index, page) in records(document, "pages").iter().enumerate() {
+        require_record_array(page, "mentions", &format!("pages[{index}].mentions"))?;
+    }
+    for (index, definition) in records(document, "definitions").iter().enumerate() {
+        require_object_field(definition, "owner", &format!("definitions[{index}].owner"))?;
+    }
+    for (index, assertion) in records(document, "assertions").iter().enumerate() {
+        require_object_field(assertion, "value", &format!("assertions[{index}].value"))?;
+        require_object_field(
+            assertion,
+            "provenance",
+            &format!("assertions[{index}].provenance"),
+        )?;
+    }
+    Ok(())
+}
+
+fn require_object(value: &serde_json::Value, path: &str) -> Result<()> {
+    if value.is_object() {
+        return Ok(());
+    }
+    Err(Error::InvalidDocument {
+        message: format!("{path} must be a JSON object, not a positional array"),
+    })
+}
+
+fn require_record_array(value: &serde_json::Value, field: &str, path: &str) -> Result<()> {
+    let Some(items) = value.get(field) else {
+        // A missing field is the typed decode's business, not the shape gate's.
+        return Ok(());
+    };
+    let Some(items) = items.as_array() else {
+        return Err(Error::InvalidDocument {
+            message: format!("{path} must be a JSON array of objects"),
+        });
+    };
+    for (index, item) in items.iter().enumerate() {
+        require_object(item, &format!("{path}[{index}]"))?;
+    }
+    Ok(())
+}
+
+fn require_object_field(value: &serde_json::Value, field: &str, path: &str) -> Result<()> {
+    let Some(field_value) = value.get(field) else {
+        return Ok(());
+    };
+    require_object(field_value, path)
+}
+
+/// The record arrays that the shape gate already verified, or an empty slice
+/// when the field is absent.
+fn records<'a>(document: &'a serde_json::Value, field: &str) -> &'a [serde_json::Value] {
+    document
+        .get(field)
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 fn decode_v1(bytes: &[u8]) -> Result<Snapshot> {
