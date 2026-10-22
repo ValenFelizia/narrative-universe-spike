@@ -685,6 +685,10 @@ impl Store {
     pub fn import_new(path: &Path, snapshot: Snapshot) -> Result<(Self, ImportOutcome)> {
         ensure_unique_snapshot(&snapshot)?;
         let snapshot = normalize_snapshot(snapshot);
+        // The geometry of an occurrence is local to the document, so it is
+        // checked before the destination is reserved: a malformed document
+        // must not leave a residual file behind.
+        validate_snapshot_mentions(&snapshot)?;
         reserve_new_file(path)?;
         let mut conn = match open_read_write(path) {
             Ok(conn) => conn,
@@ -1061,6 +1065,20 @@ fn unique_mention_ids(snapshot: &Snapshot) -> Result<()> {
     Ok(())
 }
 
+/// Checks the geometry of every occurrence against its own body.
+///
+/// This is a document-local shape check: it needs no database, so an import
+/// into a new path can run it before the destination exists.
+fn validate_snapshot_mentions(snapshot: &Snapshot) -> Result<()> {
+    for page_snapshot in &snapshot.pages {
+        validate_mentions(&AnnotatedBody {
+            body: page_snapshot.page.body.clone(),
+            mentions: page_snapshot.mentions.clone(),
+        })?;
+    }
+    Ok(())
+}
+
 /// Puts the mentions of every page in the canonical order, so two documents
 /// with the same occurrences compare equal.
 fn normalize_snapshot(mut snapshot: Snapshot) -> Snapshot {
@@ -1360,9 +1378,14 @@ fn lookup_assertion(conn: &Connection, id: &AssertionId) -> Result<Option<Assert
     Ok(found.into_iter().next())
 }
 
+/// Lists the stored pages, failing closed when a stored revision is not a
+/// checked nonnegative integer.
+///
+/// The export reads the pages through here, so a row that `page_document`
+/// already refuses cannot leave the database as part of a healthy universe.
 fn list_pages(conn: &Connection) -> Result<Vec<Page>> {
     let mut statement = conn
-        .prepare("SELECT id, title, body FROM pages ORDER BY id")
+        .prepare("SELECT id, title, body, revision FROM pages ORDER BY id")
         .map_err(|err| map_sql("prepare", err))?;
     let rows = statement
         .query_map([], |row| {
@@ -1370,17 +1393,21 @@ fn list_pages(conn: &Connection) -> Result<Vec<Page>> {
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
             ))
         })
         .map_err(|err| map_sql("query", err))?;
     let mut pages = Vec::new();
     for row in rows {
-        let (id, title, body) = row.map_err(|err| map_sql("row", err))?;
-        pages.push(Page {
-            id: parse_stored_id("page", &id, PageId::parse)?,
-            title,
-            body,
-        });
+        let (id, title, body, raw_revision) = row.map_err(|err| map_sql("row", err))?;
+        let id = parse_stored_id("page", &id, PageId::parse)?;
+        PageRevision::new(raw_revision).map_err(|_| Error::Storage {
+            message: format!(
+                "invalid stored revision {raw_revision} on page {}",
+                id.as_str()
+            ),
+        })?;
+        pages.push(Page { id, title, body });
     }
     Ok(pages)
 }
