@@ -72,6 +72,9 @@ This is an experimental format intended for disposable test universes. Do **not*
 - If initialization fails after that reservation, it leaves a **residual file** and reports its location instead of risking deletion of another process's database.
 - A successful JSON export is compact UTF-8 and must fit the same 10 MiB cap as import. An oversized universe fails export before the destination file is created.
 - A failed export write keeps the reserved file and reports `residual file` plus the path. It does not delete that path.
+- An import refuses a document that repeats a JSON key, because a repeated key would otherwise hide one of its values.
+- An import into a new file checks the occurrence geometry of the document before it reserves the destination, so a malformed document leaves no file behind.
+- An export refuses a page whose stored revision is not a checked nonnegative integer, so a corrupt row cannot leave the database as part of a healthy universe.
 - SQLite transactions protect individual writes, but there is no workspace-level multiwriter coordination or supported backup workflow yet.
 - JSON portability and safe restoration are part of a later increment, not I1.
 
