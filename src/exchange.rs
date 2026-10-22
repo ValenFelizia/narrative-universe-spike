@@ -136,6 +136,11 @@ fn encode(snapshot: &Snapshot) -> Result<Vec<u8>> {
 /// A version 1 document has no occurrences, because the field did not exist
 /// then. A version 1 page that carries the field anyway is malformed, never
 /// an empty occurrence set.
+///
+/// The version is probed through a generic value, but the document itself is
+/// always decoded straight from the original bytes. A generic value collapses
+/// duplicate object keys, so decoding from it would read a page that carries
+/// two `mentions` members as if one of them did not exist.
 fn decode(bytes: &[u8]) -> Result<Snapshot> {
     if bytes.len() > MAX_DOCUMENT_BYTES {
         return Err(Error::validation(
@@ -144,11 +149,11 @@ fn decode(bytes: &[u8]) -> Result<Snapshot> {
             None,
         ));
     }
-    let document: serde_json::Value =
+    let probe: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|err| Error::InvalidDocument {
             message: err.to_string(),
         })?;
-    let version = match document.get("format_version") {
+    let version = match probe.get("format_version") {
         None => {
             return Err(Error::InvalidDocument {
                 message: "the document has no format_version".to_string(),
@@ -159,17 +164,17 @@ fn decode(bytes: &[u8]) -> Result<Snapshot> {
         })?,
     };
     match version {
-        1 => decode_v1(document),
-        2 => decode_v2(document),
+        1 => decode_v1(bytes),
+        2 => decode_v2(bytes),
         other => Err(Error::UnsupportedVersion {
             found: i32::try_from(other).unwrap_or(i32::MAX),
         }),
     }
 }
 
-fn decode_v1(document: serde_json::Value) -> Result<Snapshot> {
+fn decode_v1(bytes: &[u8]) -> Result<Snapshot> {
     let envelope: EnvelopeV1 =
-        serde_json::from_value(document).map_err(|err| Error::InvalidDocument {
+        serde_json::from_slice(bytes).map_err(|err| Error::InvalidDocument {
             message: err.to_string(),
         })?;
     Ok(Snapshot {
@@ -202,9 +207,9 @@ fn decode_v1(document: serde_json::Value) -> Result<Snapshot> {
     })
 }
 
-fn decode_v2(document: serde_json::Value) -> Result<Snapshot> {
+fn decode_v2(bytes: &[u8]) -> Result<Snapshot> {
     let envelope: EnvelopeV2 =
-        serde_json::from_value(document).map_err(|err| Error::InvalidDocument {
+        serde_json::from_slice(bytes).map_err(|err| Error::InvalidDocument {
             message: err.to_string(),
         })?;
     Ok(Snapshot {
