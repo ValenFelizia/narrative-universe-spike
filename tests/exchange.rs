@@ -303,13 +303,14 @@ fn t08_roundtrip_matches_literal_fields_and_json_shape() {
     persist(&mut store, &fixture);
     let bytes = narrative_universe::export_json(&mut store).expect("export");
     let document: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    assert_eq!(document["format_version"], 1);
+    assert_eq!(document["format_version"], 2);
     assert_eq!(document["universe_id"], universe().as_str());
     assert_eq!(
         document["pages"][0]["id"],
         "22222222-2222-4222-8222-222222222221"
     );
     assert_eq!(document["pages"][0]["body"], fixture.page.body);
+    assert_eq!(document["pages"][0]["mentions"], serde_json::json!([]));
     assert_eq!(document["entities"][0]["type_id"], serde_json::Value::Null);
     assert_eq!(document["entities"][0]["page_id"], serde_json::Value::Null);
     let assertions = document["assertions"].as_array().expect("assertions");
@@ -492,12 +493,12 @@ fn t11_rejected_documents_do_not_write() {
         "assertions": []
     });
     let mut version = base.clone();
-    version["format_version"] = serde_json::json!(2);
+    version["format_version"] = serde_json::json!(3);
     expect_unchanged(
         &scratch.path,
         &before,
         &serde_json::to_vec(&version).unwrap(),
-        |err| matches!(err, Error::UnsupportedVersion { found: 2 }),
+        |err| matches!(err, Error::UnsupportedVersion { found: 3 }),
     );
     let mut other = base.clone();
     other["universe_id"] = serde_json::json!("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
@@ -813,12 +814,13 @@ fn import_new_refuses_an_existing_path_and_a_failed_batch_is_not_a_universe() {
 
 fn compact_page_document(body: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
-        "format_version": 1,
+        "format_version": 2,
         "universe_id": universe().as_str(),
         "pages": [{
             "id": "22222222-2222-4222-8222-222222222222",
             "title": "Limite",
-            "body": body
+            "body": body,
+            "mentions": []
         }],
         "types": [],
         "entities": [],

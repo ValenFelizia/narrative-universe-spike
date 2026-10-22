@@ -26,11 +26,11 @@ PA-I2-A is the reviewed baseline. It added the pure mention contract in
 unchanged.
 
 Issue #14 is the authorized PA-I2-B increment. The branch
-`feat/14-page-mention-persistence` holds checkpoint B1. It raises the storage
-schema to version 2, gives every page a local revision, and stores the
-occurrences with the page. Do not merge it, do not start the JSON format 2
-exchange, and do not add a migration. A version 1 database now fails closed
-with a migration outcome, and that migration belongs to PA-I2-C. The JSON
-export refuses a universe that holds occurrences, so the exchange is still
-missing. Do not copy this unreviewed behavior into `.csdd/specs.md` or
-`.csdd/decisions.md` before the gate passes.
+`feat/14-page-mention-persistence` holds the complete candidate: checkpoint B2
+adds the JSON format 2 exchange, so an export carries the occurrences and a
+version 1 JSON document still imports as a universe without occurrences. The
+storage schema is version 2 and the JSON format is version 2, and they are
+separate concepts. Do not merge it, do not add a migration, and do not start
+PA-I2-C. A version 1 database still fails closed with a migration outcome,
+and that migration belongs to PA-I2-C. Do not copy this unreviewed behavior
+into `.csdd/specs.md` or `.csdd/decisions.md` before the gate passes.

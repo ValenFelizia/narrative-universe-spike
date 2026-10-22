@@ -6,7 +6,7 @@ Narrative Universe aims to combine freeform pages with structured entities, user
 
 ## Current scope
 
-**I1 — Persistence and relationships** and **I2 — Canon alternatives and reversible archival** are the reviewed baseline. **I3 — Versioned JSON exchange** is implemented on this branch and is waiting for G3 review. **PA-I2-A — pure mention editing semantics** is implemented on this branch and is waiting for review. **PA-I2-B — page occurrences with a local revision** is implemented on this branch and is waiting for review. An occurrence is stored with its page, but the JSON exchange does not carry occurrences yet, so a universe that holds occurrences cannot be exported.
+**I1 — Persistence and relationships** and **I2 — Canon alternatives and reversible archival** are the reviewed baseline. **I3 — Versioned JSON exchange** is implemented on this branch and is waiting for G3 review. **PA-I2-A — pure mention editing semantics** is implemented on this branch and is waiting for review. **PA-I2-B — page occurrences with a local revision and the JSON format 2 exchange** is implemented on this branch and is waiting for review. An occurrence is stored with its page, the JSON exchange carries it, and a version 1 JSON document still imports as a universe without occurrences.
 
 The spike covers:
 
@@ -23,7 +23,7 @@ The spike covers:
 - A read-only query for possible incompatibilities: two active `ACORDADO` assertions with different known values on the same subject and the same active singular definition.
 - Versioned JSON export, import into the same universe, and import into a new file. A conflicting record rolls back the whole batch. Import can restore an assertion whose definition is already archived. Creating a new assertion on an archived definition still fails.
 
-**Not implemented:** editing UI, Tauri, MCP, full history, a fictional timeline engine, or a JSON exchange that carries occurrences. I3 is not accepted until G3 review, and the mention contract is not accepted until its own review. A green test suite does not authorize merge.
+**Not implemented:** editing UI, Tauri, MCP, full history, a fictional timeline engine. I3 is not accepted until G3 review, and the mention contract is not accepted until its own review. A green test suite does not authorize merge.
 
 ## Getting started
 

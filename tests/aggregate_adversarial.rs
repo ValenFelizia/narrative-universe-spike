@@ -1067,7 +1067,7 @@ fn the_revision_never_reaches_the_json() {
     let bytes = export_json(&mut store).expect("export");
     let text = String::from_utf8(bytes).expect("utf8");
     assert!(!text.contains("revision"), "{text}");
-    assert!(text.contains("\"format_version\":1"), "{text}");
+    assert!(text.contains("\"format_version\":2"), "{text}");
 }
 
 #[test]

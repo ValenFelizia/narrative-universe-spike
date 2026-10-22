@@ -909,10 +909,15 @@ fn the_export_refuses_a_page_with_mentions() {
         )
         .expect("link");
 
-    // The JSON format 2 exchange does not exist yet. The export must not
-    // produce a document that drops the occurrence.
-    let err = export_json(&mut store).expect_err("mentions");
-    assert!(matches!(err, Error::MentionsNotExported), "{err}");
+    // The JSON format 2 exchange exists, so an export never drops an
+    // occurrence.
+    let bytes = export_json(&mut store).expect("export");
+    let document: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(document["format_version"], 2);
+    assert_eq!(document["pages"][0]["mentions"][0]["id"], MENTION_ONE);
+    assert_eq!(document["pages"][0]["mentions"][0]["entity_id"], ENTITY_ONE);
+    assert_eq!(document["pages"][0]["mentions"][0]["start_utf16"], 0);
+    assert_eq!(document["pages"][0]["mentions"][0]["end_utf16"], 5);
 }
 
 #[test]
