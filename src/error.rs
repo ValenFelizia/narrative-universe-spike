@@ -25,7 +25,6 @@ pub enum Error {
     MigrationRequired {
         found: i32,
     },
-    MentionsNotExported,
     WrongUniverse {
         expected: String,
         found: String,
@@ -112,9 +111,6 @@ impl fmt::Display for Error {
             Self::MigrationRequired { found } => {
                 write!(formatter, "schema version {found} needs a migration")
             }
-            Self::MentionsNotExported => formatter.write_str(
-                "a page with mentions cannot be exported before the JSON format 2 exchange exists",
-            ),
             Self::WrongUniverse { expected, found } => {
                 write!(
                     formatter,

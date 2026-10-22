@@ -20,4 +20,4 @@ pub use store::{
 };
 
 pub const SCHEMA_VERSION: i32 = 2;
-pub const FORMAT_VERSION: i32 = 1;
+pub const FORMAT_VERSION: i32 = 2;

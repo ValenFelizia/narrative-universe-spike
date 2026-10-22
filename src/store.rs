@@ -1388,9 +1388,19 @@ fn list_pages(conn: &Connection) -> Result<Vec<Page>> {
 /// Reads every page with its complete canonical mention set.
 fn list_page_snapshots(conn: &Connection) -> Result<Vec<PageSnapshot>> {
     let mut snapshots = Vec::new();
+    let mut counted: u64 = 0;
     for page in list_pages(conn)? {
         let mentions = read_page_annotated(conn, &page.id, &page.body)?.mentions;
+        counted += mentions.len() as u64;
         snapshots.push(PageSnapshot { page, mentions });
+    }
+    // An occurrence that belongs to no stored page would be dropped by an
+    // export, so the export refuses the universe instead.
+    let stored = count(conn, "SELECT COUNT(*) FROM mentions")?;
+    if stored != counted {
+        return Err(Error::Storage {
+            message: format!("{stored} stored occurrences but {counted} belong to a stored page"),
+        });
     }
     Ok(snapshots)
 }

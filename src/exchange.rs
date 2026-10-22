@@ -3,9 +3,10 @@ use std::io::{Read, Write};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result, ValidationReason};
+use crate::mentions::Mention;
 use crate::model::{
     Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId, Entity, EntityId,
-    EntityType, Owner, Page, PageId, Provenance, TypeId, UniverseId, Value, ValueClass,
+    EntityType, MentionId, Owner, Page, PageId, Provenance, TypeId, UniverseId, Value, ValueClass,
 };
 use crate::store::{ImportOutcome, PageSnapshot, Snapshot, Store};
 
@@ -13,11 +14,6 @@ pub const MAX_DOCUMENT_BYTES: usize = 10 * 1024 * 1024;
 
 pub fn export_json(store: &mut Store) -> Result<Vec<u8>> {
     let snapshot = store.export_snapshot()?;
-    if snapshot.pages.iter().any(|page| !page.mentions.is_empty()) {
-        // The JSON format 2 exchange does not exist yet. Exporting a document
-        // that drops the occurrences would lose the anchors silently.
-        return Err(Error::MentionsNotExported);
-    }
     let bytes = encode(&snapshot)?;
     if bytes.len() > MAX_DOCUMENT_BYTES {
         return Err(Error::validation(
@@ -105,13 +101,13 @@ pub fn import_new_json(path: &std::path::Path, bytes: &[u8]) -> Result<(Store, I
 }
 
 fn encode(snapshot: &Snapshot) -> Result<Vec<u8>> {
-    let envelope = Envelope {
+    let envelope = EnvelopeV2 {
         format_version: crate::FORMAT_VERSION,
         universe_id: snapshot.universe_id.as_str().to_string(),
         pages: snapshot
             .pages
             .iter()
-            .map(|page| PageDto::from_page(&page.page))
+            .map(PageDtoV2::from_snapshot)
             .collect(),
         types: snapshot.types.iter().map(TypeDto::from_type).collect(),
         entities: snapshot
@@ -135,6 +131,11 @@ fn encode(snapshot: &Snapshot) -> Result<Vec<u8>> {
     })
 }
 
+/// Reads a document and sends it to the shape of its version.
+///
+/// A version 1 document has no occurrences, because the field did not exist
+/// then. A version 1 page that carries the field anyway is malformed, never
+/// an empty occurrence set.
 fn decode(bytes: &[u8]) -> Result<Snapshot> {
     if bytes.len() > MAX_DOCUMENT_BYTES {
         return Err(Error::validation(
@@ -143,22 +144,36 @@ fn decode(bytes: &[u8]) -> Result<Snapshot> {
             None,
         ));
     }
-    let envelope: Envelope =
+    let document: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|err| Error::InvalidDocument {
             message: err.to_string(),
         })?;
-    if envelope.format_version != crate::FORMAT_VERSION {
-        return Err(Error::UnsupportedVersion {
-            found: envelope.format_version,
-        });
+    let version = document
+        .get("format_version")
+        .and_then(serde_json::Value::as_i64)
+        .ok_or_else(|| Error::InvalidDocument {
+            message: "the document has no integer format_version".to_string(),
+        })?;
+    match version {
+        1 => decode_v1(document),
+        2 => decode_v2(document),
+        other => Err(Error::UnsupportedVersion {
+            found: i32::try_from(other).unwrap_or(i32::MAX),
+        }),
     }
-    let universe_id = UniverseId::parse(&envelope.universe_id)?;
+}
+
+fn decode_v1(document: serde_json::Value) -> Result<Snapshot> {
+    let envelope: EnvelopeV1 =
+        serde_json::from_value(document).map_err(|err| Error::InvalidDocument {
+            message: err.to_string(),
+        })?;
     Ok(Snapshot {
-        universe_id,
+        universe_id: UniverseId::parse(&envelope.universe_id)?,
         pages: envelope
             .pages
             .into_iter()
-            .map(PageDto::into_page)
+            .map(PageDtoV1::into_snapshot)
             .collect::<Result<Vec<_>>>()?,
         types: envelope
             .types
@@ -183,12 +198,62 @@ fn decode(bytes: &[u8]) -> Result<Snapshot> {
     })
 }
 
+fn decode_v2(document: serde_json::Value) -> Result<Snapshot> {
+    let envelope: EnvelopeV2 =
+        serde_json::from_value(document).map_err(|err| Error::InvalidDocument {
+            message: err.to_string(),
+        })?;
+    Ok(Snapshot {
+        universe_id: UniverseId::parse(&envelope.universe_id)?,
+        pages: envelope
+            .pages
+            .into_iter()
+            .map(PageDtoV2::into_snapshot)
+            .collect::<Result<Vec<_>>>()?,
+        types: envelope
+            .types
+            .into_iter()
+            .map(TypeDto::into_type)
+            .collect::<Result<Vec<_>>>()?,
+        entities: envelope
+            .entities
+            .into_iter()
+            .map(EntityDto::into_entity)
+            .collect::<Result<Vec<_>>>()?,
+        definitions: envelope
+            .definitions
+            .into_iter()
+            .map(DefinitionDto::into_definition)
+            .collect::<Result<Vec<_>>>()?,
+        assertions: envelope
+            .assertions
+            .into_iter()
+            .map(AssertionDto::into_assertion)
+            .collect::<Result<Vec<_>>>()?,
+    })
+}
+
+/// The version 2 envelope. Every page carries its occurrences, even when
+/// there are none, and no local revision is ever written.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Envelope {
+struct EnvelopeV2 {
     format_version: i32,
     universe_id: String,
-    pages: Vec<PageDto>,
+    pages: Vec<PageDtoV2>,
+    types: Vec<TypeDto>,
+    entities: Vec<EntityDto>,
+    definitions: Vec<DefinitionDto>,
+    assertions: Vec<AssertionDto>,
+}
+
+/// The historical version 1 envelope. Its pages have no occurrence field.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct EnvelopeV1 {
+    format_version: i32,
+    universe_id: String,
+    pages: Vec<PageDtoV1>,
     types: Vec<TypeDto>,
     entities: Vec<EntityDto>,
     definitions: Vec<DefinitionDto>,
@@ -197,24 +262,15 @@ struct Envelope {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct PageDto {
+struct PageDtoV1 {
     id: String,
     title: String,
     body: String,
 }
 
-impl PageDto {
-    fn from_page(page: &Page) -> Self {
-        Self {
-            id: page.id.as_str().to_string(),
-            title: page.title.clone(),
-            body: page.body.clone(),
-        }
-    }
-
-    /// A version 1 page carries no occurrences, so it is read as an empty
-    /// mention set.
-    fn into_page(self) -> Result<PageSnapshot> {
+impl PageDtoV1 {
+    /// A version 1 page has no occurrences, so it is read as an empty set.
+    fn into_snapshot(self) -> Result<PageSnapshot> {
         Ok(PageSnapshot {
             page: Page {
                 id: PageId::parse(&self.id)?,
@@ -226,6 +282,73 @@ impl PageDto {
     }
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PageDtoV2 {
+    id: String,
+    title: String,
+    body: String,
+    mentions: Vec<MentionDto>,
+}
+
+impl PageDtoV2 {
+    fn from_snapshot(snapshot: &PageSnapshot) -> Self {
+        Self {
+            id: snapshot.page.id.as_str().to_string(),
+            title: snapshot.page.title.clone(),
+            body: snapshot.page.body.clone(),
+            mentions: snapshot
+                .mentions
+                .iter()
+                .map(MentionDto::from_mention)
+                .collect(),
+        }
+    }
+
+    fn into_snapshot(self) -> Result<PageSnapshot> {
+        Ok(PageSnapshot {
+            page: Page {
+                id: PageId::parse(&self.id)?,
+                title: self.title,
+                body: self.body,
+            },
+            mentions: self
+                .mentions
+                .into_iter()
+                .map(MentionDto::into_mention)
+                .collect::<Result<Vec<_>>>()?,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MentionDto {
+    id: String,
+    entity_id: String,
+    start_utf16: u32,
+    end_utf16: u32,
+}
+
+impl MentionDto {
+    fn from_mention(mention: &Mention) -> Self {
+        Self {
+            id: mention.id.as_str().to_string(),
+            entity_id: mention.entity_id.as_str().to_string(),
+            start_utf16: mention.start_utf16,
+            end_utf16: mention.end_utf16,
+        }
+    }
+
+    fn into_mention(self) -> Result<Mention> {
+        Ok(Mention {
+            id: MentionId::parse(&self.id)?,
+            entity_id: EntityId::parse(&self.entity_id)?,
+            start_utf16: self.start_utf16,
+            end_utf16: self.end_utf16,
+        })
+    }
+}
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct TypeDto {
