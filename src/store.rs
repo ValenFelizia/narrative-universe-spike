@@ -274,6 +274,18 @@ impl Store {
                                     Some(mention.entity_id.as_str()),
                                 ));
                             }
+                            // An occurrence id belongs to one page, so a link
+                            // may never claim an id that another page owns,
+                            // not even for a moment inside one batch.
+                            if let Some(owner) = lookup_mention_owner(tx, &mention.id)? {
+                                if owner != *id {
+                                    return Err(Error::validation(
+                                        ValidationReason::MentionIdConflict,
+                                        "mention_id",
+                                        Some(mention.id.as_str()),
+                                    ));
+                                }
+                            }
                         }
                         let (next, _removed) = apply_mention_edit(&body, operation)?;
                         body = next;
@@ -299,26 +311,28 @@ impl Store {
             } else {
                 expected_revision
             };
-            tx.execute(
-                "UPDATE pages SET title = ?1, body = ?2, revision = ?3 WHERE id = ?4",
-                params![title, body.body, revision.as_i64(), id.as_str()],
-            )
-            .map_err(|err| map_sql("save page", err))?;
-            tx.execute("DELETE FROM mentions WHERE page_id = ?1", [id.as_str()])
-                .map_err(|err| map_sql("clear mentions", err))?;
-            for mention in &body.mentions {
+            if changed {
                 tx.execute(
-                    "INSERT INTO mentions (id, page_id, entity_id, start_utf16, end_utf16)
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![
-                        mention.id.as_str(),
-                        id.as_str(),
-                        mention.entity_id.as_str(),
-                        mention.start_utf16,
-                        mention.end_utf16,
-                    ],
+                    "UPDATE pages SET title = ?1, body = ?2, revision = ?3 WHERE id = ?4",
+                    params![title, body.body, revision.as_i64(), id.as_str()],
                 )
-                .map_err(|err| map_write("mention", mention.id.as_str(), err))?;
+                .map_err(|err| map_sql("save page", err))?;
+                tx.execute("DELETE FROM mentions WHERE page_id = ?1", [id.as_str()])
+                    .map_err(|err| map_sql("clear mentions", err))?;
+                for mention in &body.mentions {
+                    tx.execute(
+                        "INSERT INTO mentions (id, page_id, entity_id, start_utf16, end_utf16)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![
+                            mention.id.as_str(),
+                            id.as_str(),
+                            mention.entity_id.as_str(),
+                            mention.start_utf16,
+                            mention.end_utf16,
+                        ],
+                    )
+                    .map_err(|err| map_write("mention", mention.id.as_str(), err))?;
+                }
             }
             Ok(PageDocument {
                 id: id.clone(),
@@ -1816,6 +1830,14 @@ fn read_page_annotated(conn: &Connection, page_id: &PageId, body: &str) -> Resul
         let entity_id = EntityId::parse(&raw_entity).map_err(|_| Error::Storage {
             message: format!("invalid stored mention entity id {raw_entity}"),
         })?;
+        if lookup_entity(conn, &entity_id)?.is_none() {
+            return Err(Error::Storage {
+                message: format!(
+                    "stored mention {} points at the missing entity {raw_entity}",
+                    id.as_str()
+                ),
+            });
+        }
         let start = u32::try_from(start).map_err(|_| Error::Storage {
             message: format!("invalid stored mention offset {start}"),
         })?;
