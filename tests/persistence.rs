@@ -54,7 +54,7 @@ fn create_reopen_reads_empty_universe_and_schema_version() {
         }
     );
     drop(store);
-    assert_eq!(user_version(&scratch.path), 1);
+    assert_eq!(user_version(&scratch.path), 2);
     let store = Store::open(&scratch.path).expect("open");
     assert_eq!(store.universe_id().as_str(), universe().as_str());
     let conn = Connection::open(&scratch.path).expect("raw");
@@ -74,6 +74,7 @@ fn create_reopen_reads_empty_universe_and_schema_version() {
             "assertions",
             "definitions",
             "entities",
+            "mentions",
             "metadata",
             "pages",
             "types"

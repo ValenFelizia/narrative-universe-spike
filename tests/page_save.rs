@@ -2,14 +2,17 @@
 #[allow(dead_code)]
 mod support;
 
-use std::path::Path;
-
-use narrative_universe::{Counts, Error, Page, PageId, Store, UniverseId, ValidationReason};
+use narrative_universe::{
+    apply_mention_edit, AnnotatedBody, EntityId, Error, Mention, MentionEdit, MentionId, PageEdit,
+    PageRevision, Store, UniverseId, ValidationReason,
+};
 use support::scratch;
 
 const KEPT: &str = "22222222-2222-4222-8222-222222222222";
 const OTHER: &str = "44444444-4444-4444-8444-444444444444";
 const ABSENT: &str = "99999999-9999-4999-8999-999999999999";
+const ENTITY_ONE: &str = "11111111-1111-4111-8111-111111111111";
+const MENTION_ONE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 fn universe() -> UniverseId {
     UniverseId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").expect("universe")
@@ -21,20 +24,28 @@ fn created(name: &str) -> (support::Scratch, Store) {
     (scratch, store)
 }
 
-fn make_page(id: &str, title: &str, body: &str) -> Page {
-    Page {
-        id: PageId::parse(id).expect("page id"),
-        title: title.to_string(),
-        body: body.to_string(),
+fn page_id(raw: &str) -> narrative_universe::PageId {
+    narrative_universe::PageId::parse(raw).expect("page")
+}
+
+fn mention(raw: &str, entity_raw: &str, start_utf16: u32, end_utf16: u32) -> Mention {
+    Mention {
+        id: MentionId::parse(raw).expect("mention id"),
+        entity_id: EntityId::parse(entity_raw).expect("entity"),
+        start_utf16,
+        end_utf16,
     }
 }
 
-fn persisted(path: &Path, id: &PageId) -> Page {
-    let store = Store::open(path).expect("reopen");
-    store.page(id).expect("page")
+fn replace(start_utf16: u32, end_utf16: u32, inserted_text: &str) -> PageEdit {
+    PageEdit::Mention(MentionEdit::ReplaceText {
+        start_utf16,
+        end_utf16,
+        inserted_text: inserted_text.to_string(),
+    })
 }
 
-fn assert_validation(err: Error, reason: ValidationReason, field: &str, id: &str) {
+fn assert_validation(err: Error, reason: ValidationReason, field: &str, id: Option<&str>) {
     match err {
         Error::Validation {
             reason: got_reason,
@@ -43,379 +54,374 @@ fn assert_validation(err: Error, reason: ValidationReason, field: &str, id: &str
         } => {
             assert_eq!(got_reason, reason);
             assert_eq!(got_field, field);
-            assert_eq!(got_id.as_deref(), Some(id));
+            assert_eq!(got_id.as_deref(), id);
         }
         other => panic!("expected validation {reason:?}, got {other}"),
     }
 }
 
-fn assert_stale(err: Error, id: &str) {
+fn assert_stale(err: Error, page: &str, expected: i64, found: i64) {
     match err {
-        Error::StalePage { id: got } => assert_eq!(got, id),
-        other => panic!("expected stale page {id}, got {other}"),
-    }
-}
-
-fn assert_stale_is_distinct_from_missing(stale: &Error, missing: &Error) {
-    match (stale, missing) {
-        (
-            Error::StalePage { .. },
-            Error::Validation {
-                reason: ValidationReason::NotFound,
-                ..
-            },
-        ) => {}
-        _ => panic!("stale and missing-page failures must differ, got {stale} and {missing}"),
-    }
-}
-
-fn one_page() -> Counts {
-    Counts {
-        pages: 1,
-        types: 0,
-        entities: 0,
-        definitions: 0,
-        assertions: 0,
-    }
-}
-
-fn round_trip(path: &Path, expected: &Page, replacement: Page, unrelated: &Page) -> Page {
-    let mut store = Store::open(path).expect("open");
-    let saved = store.save_page(expected, replacement).expect("save");
-    let id = saved.id.clone();
-    drop(store);
-    let store = Store::open(path).expect("reopen");
-    let loaded = store.page(&id).expect("page");
-    assert_eq!(loaded, saved);
-    assert_eq!(store.page(&unrelated.id).expect("other"), *unrelated);
-    assert_eq!(
-        store.counts().expect("counts"),
-        Counts {
-            pages: 2,
-            types: 0,
-            entities: 0,
-            definitions: 0,
-            assertions: 0,
+        Error::StaleRevision {
+            page_id,
+            expected: got_expected,
+            found: got_found,
+        } => {
+            assert_eq!(page_id, page);
+            assert_eq!(got_expected, expected);
+            assert_eq!(got_found, found);
         }
-    );
-    loaded
+        other => panic!("expected stale revision, got {other}"),
+    }
 }
 
 #[test]
 fn pa_t01_save_persists_and_reopens() {
     let (scratch, mut store) = created("pa-t01.sqlite");
-    let created_page = store
-        .create_page(make_page(KEPT, "Original", "original body"))
-        .expect("create");
-    let original = store.page(&created_page.id).expect("read");
-    assert_eq!(original, created_page);
+    let id = page_id(KEPT);
+    store
+        .create_page(narrative_universe::Page {
+            id: id.clone(),
+            title: "Original".to_string(),
+            body: "original body".to_string(),
+        })
+        .expect("page");
+    let document = store.page_document(&id).expect("document");
+    assert_eq!(document.revision, PageRevision::ZERO);
+    assert_eq!(document.title, "Original");
+    assert_eq!(document.body.body, "original body");
 
     let saved = store
-        .save_page(&original, make_page(KEPT, "Saved title", "Saved body"))
+        .save_page_edits(
+            &id,
+            document.revision,
+            &[
+                PageEdit::SetTitle {
+                    title: "Saved title".to_string(),
+                },
+                replace(0, 13, "Saved body"),
+            ],
+        )
         .expect("save");
-    assert_eq!(saved.id.as_str(), KEPT);
     assert_eq!(saved.title, "Saved title");
-    assert_eq!(saved.body, "Saved body");
-    assert_eq!(store.page(&original.id).expect("read back"), saved);
+    assert_eq!(saved.body.body, "Saved body");
+    assert_eq!(saved.revision, PageRevision::new(1).expect("revision"));
     drop(store);
 
-    let loaded = persisted(&scratch.path, &original.id);
-    assert_eq!(loaded.id.as_str(), KEPT);
-    assert_eq!(loaded.title, "Saved title");
-    assert_eq!(loaded.body, "Saved body");
-    assert_eq!(loaded, saved);
+    let store = Store::open(&scratch.path).expect("reopen");
+    let reloaded = store.page_document(&id).expect("document");
+    assert_eq!(reloaded.title, "Saved title");
+    assert_eq!(reloaded.body.body, "Saved body");
+    assert_eq!(reloaded.revision, PageRevision::new(1).expect("revision"));
+    assert_eq!(reloaded.id, id);
 }
 
 #[test]
 fn pa_t02_stale_save_keeps_the_committed_page() {
     let (scratch, mut store) = created("pa-t02.sqlite");
-    let original = store
-        .create_page(make_page(KEPT, "Original", "original body"))
-        .expect("create");
+    let id = page_id(KEPT);
+    store
+        .create_page(narrative_universe::Page {
+            id: id.clone(),
+            title: "Original".to_string(),
+            body: "original body".to_string(),
+        })
+        .expect("page");
     drop(store);
 
     let mut a = Store::open(&scratch.path).expect("open a");
     let mut b = Store::open(&scratch.path).expect("open b");
-    let seen_by_a = a.page(&original.id).expect("a read");
-    let seen_by_b = b.page(&original.id).expect("b read");
-    assert_eq!(seen_by_a, original);
-    assert_eq!(seen_by_b, original);
+    let seen_by_a = a.page_document(&id).expect("a read");
+    let seen_by_b = b.page_document(&id).expect("b read");
+    assert_eq!(seen_by_a.revision, seen_by_b.revision);
 
     let committed = b
-        .save_page(&seen_by_b, make_page(KEPT, "From B", "committed by b"))
+        .save_page_edits(&id, seen_by_b.revision, &[replace(0, 13, "committed by b")])
         .expect("b save");
-    assert_eq!(committed, make_page(KEPT, "From B", "committed by b"));
+    assert_eq!(committed.body.body, "committed by b");
 
     let stale = a
-        .save_page(&seen_by_a, make_page(KEPT, "From A", "lost update"))
+        .save_page_edits(&id, seen_by_a.revision, &[replace(0, 13, "lost update")])
         .expect_err("stale");
-    let absent = make_page(ABSENT, "Ghost", "not stored");
-    let missing = a.save_page(&absent, absent.clone()).expect_err("missing");
-    assert_stale_is_distinct_from_missing(&stale, &missing);
-    assert_stale(stale, original.id.as_str());
-    assert_validation(
-        missing,
-        ValidationReason::NotFound,
-        "id",
-        absent.id.as_str(),
-    );
-
-    assert_eq!(a.page(&original.id).expect("a sees commit"), committed);
-    assert_eq!(b.page(&original.id).expect("b unchanged"), committed);
+    assert_stale(stale, KEPT, 0, 1);
     drop(a);
     drop(b);
 
     let store = Store::open(&scratch.path).expect("reopen");
-    assert_eq!(store.page(&original.id).expect("persisted"), committed);
-    assert_eq!(store.counts().expect("counts"), one_page());
-    assert_validation(
-        store.page(&absent.id).expect_err("absent"),
-        ValidationReason::NotFound,
-        "id",
-        ABSENT,
-    );
-}
-
-#[test]
-fn pa_t02_stale_detects_a_body_only_change() {
-    let (scratch, mut store) = created("pa-t02-body.sqlite");
-    let original = store
-        .create_page(make_page(KEPT, "Original", "original body"))
-        .expect("create");
-    drop(store);
-
-    let mut a = Store::open(&scratch.path).expect("open a");
-    let mut b = Store::open(&scratch.path).expect("open b");
-    let seen_by_a = a.page(&original.id).expect("a read");
-    let seen_by_b = b.page(&original.id).expect("b read");
-
-    let committed = b
-        .save_page(&seen_by_b, make_page(KEPT, "Original", "body changed by b"))
-        .expect("b save");
-    assert_eq!(committed.body, "body changed by b");
-    assert_eq!(committed.title, "Original");
-
-    let stale = a
-        .save_page(&seen_by_a, make_page(KEPT, "Original", "body lost update"))
-        .expect_err("stale");
-    assert_stale(stale, original.id.as_str());
-    assert_eq!(a.page(&original.id).expect("b commit kept"), committed);
-    drop(a);
-    drop(b);
-
-    let store = Store::open(&scratch.path).expect("reopen");
-    assert_eq!(store.page(&original.id).expect("persisted"), committed);
-}
-
-#[test]
-fn pa_t02_stale_detects_a_title_only_change() {
-    let (scratch, mut store) = created("pa-t02-title.sqlite");
-    let original = store
-        .create_page(make_page(KEPT, "Original", "original body"))
-        .expect("create");
-    drop(store);
-
-    let mut a = Store::open(&scratch.path).expect("open a");
-    let mut b = Store::open(&scratch.path).expect("open b");
-    let seen_by_a = a.page(&original.id).expect("a read");
-    let seen_by_b = b.page(&original.id).expect("b read");
-
-    let committed = b
-        .save_page(
-            &seen_by_b,
-            make_page(KEPT, "title changed by b", "original body"),
-        )
-        .expect("b save");
-    assert_eq!(committed.title, "title changed by b");
-    assert_eq!(committed.body, "original body");
-
-    let stale = a
-        .save_page(
-            &seen_by_a,
-            make_page(KEPT, "title lost update", "original body"),
-        )
-        .expect_err("stale");
-    assert_stale(stale, original.id.as_str());
-    assert_eq!(a.page(&original.id).expect("b commit kept"), committed);
-    drop(a);
-    drop(b);
-
-    let store = Store::open(&scratch.path).expect("reopen");
-    assert_eq!(store.page(&original.id).expect("persisted"), committed);
+    let document = store.page_document(&id).expect("document");
+    assert_eq!(document.body.body, "committed by b");
+    assert_eq!(document.revision, PageRevision::new(1).expect("revision"));
 }
 
 #[test]
 fn pa_t03_identical_save_is_a_noop() {
     let (scratch, mut store) = created("pa-t03.sqlite");
-    let created_page = store
-        .create_page(make_page(KEPT, "Same", "same body"))
-        .expect("create");
-    let original = store.page(&created_page.id).expect("read");
-    assert_eq!(original, created_page);
+    let id = page_id(KEPT);
+    store
+        .create_page(narrative_universe::Page {
+            id: id.clone(),
+            title: "Same".to_string(),
+            body: "same body".to_string(),
+        })
+        .expect("page");
+    let document = store.page_document(&id).expect("document");
 
     let first = store
-        .save_page(&original, original.clone())
+        .save_page_edits(&id, document.revision, &[])
         .expect("first noop");
-    assert_eq!(first, original);
-    assert_eq!(store.page(&original.id).expect("after first"), original);
+    assert_eq!(first.revision, document.revision);
+    assert_eq!(first.body.body, "same body");
 
     let second = store
-        .save_page(&original, original.clone())
+        .save_page_edits(&id, first.revision, &[])
         .expect("second noop");
-    assert_eq!(second, original);
-    assert_eq!(store.page(&original.id).expect("after second"), original);
-    drop(store);
-
-    assert_eq!(persisted(&scratch.path, &original.id), original);
-}
-
-#[test]
-fn pa_t04_missing_and_mismatched_ids_do_not_write() {
-    let (scratch, mut store) = created("pa-t04.sqlite");
-    let stored = store
-        .create_page(make_page(KEPT, "Stored", "stored body"))
-        .expect("create");
-    assert_eq!(store.counts().expect("counts"), one_page());
-
-    let absent = make_page(ABSENT, "Ghost", "not stored");
-    let missing = store
-        .save_page(&absent, absent.clone())
-        .expect_err("missing");
-    assert_validation(
-        missing,
-        ValidationReason::NotFound,
-        "id",
-        absent.id.as_str(),
-    );
-    assert_eq!(store.counts().expect("counts"), one_page());
-    assert_eq!(store.page(&stored.id).expect("stored"), stored);
-    assert_validation(
-        store.page(&absent.id).expect_err("still absent"),
-        ValidationReason::NotFound,
-        "id",
-        absent.id.as_str(),
-    );
-
-    let mismatch = store
-        .save_page(&stored, make_page(OTHER, "Replacement", "should not land"))
-        .expect_err("mismatch");
-    assert_validation(
-        mismatch,
-        ValidationReason::PageIdMismatch,
-        "id",
-        stored.id.as_str(),
-    );
-    assert_eq!(store.counts().expect("counts"), one_page());
-    assert_eq!(store.page(&stored.id).expect("stored"), stored);
-    assert_validation(
-        store
-            .page(&PageId::parse(OTHER).expect("other id"))
-            .expect_err("not created"),
-        ValidationReason::NotFound,
-        "id",
-        OTHER,
-    );
-
-    let swapped = store
-        .save_page(&absent, make_page(KEPT, "Swapped", "should not replace"))
-        .expect_err("swapped mismatch");
-    assert_validation(
-        swapped,
-        ValidationReason::PageIdMismatch,
-        "id",
-        absent.id.as_str(),
-    );
-    assert_eq!(store.counts().expect("counts"), one_page());
-    assert_eq!(store.page(&stored.id).expect("stored"), stored);
+    assert_eq!(second.revision, document.revision);
+    assert_eq!(second.body.body, "same body");
     drop(store);
 
     let store = Store::open(&scratch.path).expect("reopen");
-    assert_eq!(store.page(&stored.id).expect("persisted"), stored);
-    assert_eq!(store.counts().expect("counts"), one_page());
+    let document = store.page_document(&id).expect("document");
+    assert_eq!(document.revision, PageRevision::ZERO);
+    assert_eq!(document.body.body, "same body");
+}
+
+#[test]
+fn pa_t04_absent_page_never_creates_a_record() {
+    let (scratch, mut store) = created("pa-t04.sqlite");
+    let absent = page_id(ABSENT);
+    let err = store
+        .save_page_edits(&absent, PageRevision::ZERO, &[replace(0, 0, "x")])
+        .expect_err("missing");
+    assert_validation(err, ValidationReason::NotFound, "id", Some(ABSENT));
+    assert_eq!(store.counts().expect("counts").pages, 0);
+    drop(store);
+
+    let store = Store::open(&scratch.path).expect("reopen");
+    assert_eq!(store.counts().expect("counts").pages, 0);
     assert_validation(
-        store.page(&absent.id).expect_err("absent"),
+        store.page(&absent).expect_err("absent"),
         ValidationReason::NotFound,
         "id",
-        ABSENT,
+        Some(ABSENT),
     );
+}
+
+#[test]
+fn a_write_only_touches_the_named_page() {
+    let (scratch, mut store) = created("pa-t04-other.sqlite");
+    let kept = page_id(KEPT);
+    let other = page_id(OTHER);
+    store
+        .create_page(narrative_universe::Page {
+            id: kept.clone(),
+            title: "Kept".to_string(),
+            body: "kept body".to_string(),
+        })
+        .expect("page");
+    store
+        .create_page(narrative_universe::Page {
+            id: other.clone(),
+            title: "Other".to_string(),
+            body: "other body".to_string(),
+        })
+        .expect("other");
+    let document = store.page_document(&kept).expect("document");
+    store
+        .save_page_edits(&kept, document.revision, &[replace(0, 4, "moved")])
+        .expect("save");
+    drop(store);
+
+    let store = Store::open(&scratch.path).expect("reopen");
+    assert_eq!(store.page(&kept).expect("kept").body, "moved body");
+    let untouched = store.page(&other).expect("other");
+    assert_eq!(untouched.title, "Other");
+    assert_eq!(untouched.body, "other body");
+    assert_eq!(
+        store.page_document(&other).expect("document").revision,
+        PageRevision::ZERO
+    );
+}
+
+#[test]
+fn a_mention_id_from_another_page_cannot_be_reused() {
+    let (scratch, mut store) = created("pa-t04-mention.sqlite");
+    let kept = page_id(KEPT);
+    let other = page_id(OTHER);
+    store
+        .create_page(narrative_universe::Page {
+            id: kept.clone(),
+            title: "Kept".to_string(),
+            body: "Elara".to_string(),
+        })
+        .expect("page");
+    store
+        .create_page(narrative_universe::Page {
+            id: other.clone(),
+            title: "Other".to_string(),
+            body: "Elara".to_string(),
+        })
+        .expect("other");
+    store
+        .create_entity(narrative_universe::Entity {
+            id: EntityId::parse(ENTITY_ONE).expect("entity"),
+            label: "Entity".to_string(),
+            type_id: None,
+            page_id: None,
+        })
+        .expect("entity");
+
+    let document = store.page_document(&kept).expect("document");
+    store
+        .save_page_edits(
+            &kept,
+            document.revision,
+            &[PageEdit::Mention(MentionEdit::Link {
+                mention: mention(MENTION_ONE, ENTITY_ONE, 0, 5),
+            })],
+        )
+        .expect("link");
+
+    let other_document = store.page_document(&other).expect("document");
+    let err = store
+        .save_page_edits(
+            &other,
+            other_document.revision,
+            &[PageEdit::Mention(MentionEdit::Link {
+                mention: mention(MENTION_ONE, ENTITY_ONE, 0, 5),
+            })],
+        )
+        .expect_err("collision");
+    assert_validation(
+        err,
+        ValidationReason::MentionIdConflict,
+        "mention_id",
+        Some(MENTION_ONE),
+    );
+    drop(store);
+
+    let store = Store::open(&scratch.path).expect("reopen");
+    let kept_document = store.page_document(&kept).expect("kept");
+    assert_eq!(kept_document.body.mentions.len(), 1);
+    assert_eq!(kept_document.body.mentions[0].id.as_str(), MENTION_ONE);
+    let other_document = store.page_document(&other).expect("other");
+    assert!(other_document.body.mentions.is_empty());
+    assert_eq!(other_document.revision, PageRevision::ZERO);
 }
 
 #[test]
 fn pa_t05_edits_roundtrip_without_touching_other_page() {
     let (scratch, mut store) = created("pa-t05.sqlite");
-    let current = store
-        .create_page(make_page(KEPT, "Initial", "Stable body"))
+    let kept = page_id(KEPT);
+    let other = page_id(OTHER);
+    store
+        .create_page(narrative_universe::Page {
+            id: kept.clone(),
+            title: "Initial".to_string(),
+            body: "Stable body".to_string(),
+        })
         .expect("page");
-    let unrelated = store
-        .create_page(make_page(OTHER, "Other", "Keep"))
+    store
+        .create_page(narrative_universe::Page {
+            id: other.clone(),
+            title: "Other".to_string(),
+            body: "Keep".to_string(),
+        })
         .expect("other");
     drop(store);
 
-    let current = round_trip(
-        &scratch.path,
-        &current,
-        make_page(KEPT, "Title only", "Stable body"),
-        &unrelated,
-    );
-    let current = round_trip(
-        &scratch.path,
-        &current,
-        make_page(KEPT, "Title only", "Body only"),
-        &unrelated,
-    );
-    let current = round_trip(
-        &scratch.path,
-        &current,
-        make_page(KEPT, "Title only", ""),
-        &unrelated,
-    );
+    let mut store = Store::open(&scratch.path).expect("reopen");
+    let document = store.page_document(&kept).expect("document");
+    let title_only = store
+        .save_page_edits(
+            &kept,
+            document.revision,
+            &[PageEdit::SetTitle {
+                title: "Title only".to_string(),
+            }],
+        )
+        .expect("title");
+    assert_eq!(title_only.title, "Title only");
+    assert_eq!(title_only.body.body, "Stable body");
+
+    let body_only = store
+        .save_page_edits(&kept, title_only.revision, &[replace(0, 11, "Body only")])
+        .expect("body");
+    assert_eq!(body_only.title, "Title only");
+    assert_eq!(body_only.body.body, "Body only");
+
+    let empty = store
+        .save_page_edits(&kept, body_only.revision, &[replace(0, 9, "")])
+        .expect("empty");
+    assert_eq!(empty.body.body, "");
+
     let unicode = "Texto con acento áéíóú ñ y emoji 📚\nsegunda línea";
-    let loaded = round_trip(
-        &scratch.path,
-        &current,
-        make_page(KEPT, "Title only", unicode),
-        &unrelated,
-    );
-    assert_eq!(loaded.body, unicode);
-    assert_eq!(loaded.title, "Title only");
-    assert_eq!(loaded.id.as_str(), KEPT);
+    let unicode = store
+        .save_page_edits(&kept, empty.revision, &[replace(0, 0, unicode)])
+        .expect("unicode");
+    assert_eq!(unicode.body.body, unicode_text());
+    drop(store);
 
-    let empty_title = round_trip(
-        &scratch.path,
-        &loaded,
-        make_page(KEPT, "", "body under an empty title"),
-        &unrelated,
-    );
-    assert_eq!(empty_title.title, "");
+    let store = Store::open(&scratch.path).expect("reopen");
+    let document = store.page_document(&kept).expect("document");
+    assert_eq!(document.body.body, unicode_text());
+    let untouched = store.page(&other).expect("other");
+    assert_eq!(untouched.title, "Other");
+    assert_eq!(untouched.body, "Keep");
+}
 
-    let unicode_title = "Título con acento áéíóú ñ y emoji 📚\nsegunda línea";
-    let loaded = round_trip(
-        &scratch.path,
-        &empty_title,
-        make_page(KEPT, unicode_title, "body under a unicode title"),
-        &unrelated,
-    );
-    assert_eq!(loaded.title, unicode_title);
-    assert_eq!(loaded.body, "body under a unicode title");
+fn unicode_text() -> String {
+    "Texto con acento áéíóú ñ y emoji 📚\nsegunda línea".to_string()
 }
 
 #[test]
-fn pa_t06_stale_snapshot_rejects_current_value() {
+fn pa_t06_stale_revision_rejects_the_current_value() {
     let (scratch, mut store) = created("pa-t06.sqlite");
-    let original = store
-        .create_page(make_page(KEPT, "Before", "before"))
-        .expect("create");
+    let id = page_id(KEPT);
+    store
+        .create_page(narrative_universe::Page {
+            id: id.clone(),
+            title: "Before".to_string(),
+            body: "before".to_string(),
+        })
+        .expect("page");
+    let original = store.page_document(&id).expect("document");
     let current = store
-        .save_page(&original, make_page(KEPT, "After", "after"))
+        .save_page_edits(&id, original.revision, &[replace(0, 6, "after")])
         .expect("update");
-    assert_eq!(current, make_page(KEPT, "After", "after"));
+    assert_eq!(current.body.body, "after");
 
+    // The desired value is the stored one, but the expectation is old.
     let stale = store
-        .save_page(&original, make_page(KEPT, "After", "after"))
+        .save_page_edits(&id, original.revision, &[replace(0, 6, "after")])
         .expect_err("stale");
-    assert_stale(stale, original.id.as_str());
-    assert_eq!(store.page(&original.id).expect("unchanged"), current);
+    assert_stale(stale, KEPT, 0, 1);
     drop(store);
 
-    assert_eq!(persisted(&scratch.path, &original.id), current);
+    let store = Store::open(&scratch.path).expect("reopen");
+    let document = store.page_document(&id).expect("document");
+    assert_eq!(document.body.body, "after");
+    assert_eq!(document.revision, PageRevision::new(1).expect("revision"));
+}
+
+#[test]
+fn the_pure_reducer_still_drives_the_mentions() {
+    let body = AnnotatedBody {
+        body: "Elara left".to_string(),
+        mentions: vec![mention(MENTION_ONE, ENTITY_ONE, 0, 5)],
+    };
+    let (edited, removed) = apply_mention_edit(
+        &body,
+        &MentionEdit::ReplaceText {
+            start_utf16: 2,
+            end_utf16: 2,
+            inserted_text: "x".to_string(),
+        },
+    )
+    .expect("edit");
+    assert_eq!(edited.body, "Elxara left");
+    assert!(edited.mentions.is_empty());
+    assert_eq!(
+        removed,
+        vec![MentionId::parse(MENTION_ONE).expect("mention id")]
+    );
 }
