@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -6,16 +7,18 @@ use rusqlite::{params, Connection, OpenFlags};
 use tempfile::TempDir;
 
 use crate::error::{Error, ValidationReason};
+use crate::mentions::{Mention, MentionEdit};
 use crate::model::{
     Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId, Entity, EntityId,
-    EntityType, Owner, Page, PageId, PageRevision, Provenance, TypeId, UniverseId, Value,
-    ValueClass,
+    EntityType, MentionId, Owner, Page, PageId, PageRevision, Provenance, TypeId, UniverseId,
+    Value, ValueClass,
 };
-use crate::store::{Counts, PageSnapshot, Snapshot, Store};
+use crate::store::{Counts, PageEdit, PageSnapshot, Snapshot, Store};
 
 use super::{
-    build_verified_candidate, preflight_source, sidecar_path, verify_candidate, MigrationStage,
-    PinnedSource, LEGACY_V1_EARLY, LEGACY_V1_LATE,
+    build_verified_candidate, migrate_v1_to_v2, preflight_source, run_migration, sidecar_path,
+    verify_candidate, verify_v2, Checkpoint, MigrationStage, PinnedSource, Publication,
+    LEGACY_V1_EARLY, LEGACY_V1_LATE,
 };
 
 const FIXTURE: &str = include_str!("../../tests/fixtures/v1_universe.sql");
@@ -363,7 +366,7 @@ fn assert_no_sidecars(path: &Path) {
 
 fn migration_error(source: &Path, candidate: &Path) -> (MigrationStage, Error) {
     let error = build_verified_candidate(source, candidate).expect_err("migration must fail");
-    (error.stage, error.cause)
+    (error.stage, *error.cause)
 }
 
 fn migrate_failure(source: &Path, candidate: &Path) -> (MigrationStage, Error) {
@@ -990,7 +993,7 @@ fn rejects_a_candidate_sidecar_before_creation() {
     fs::write(sidecar_path(&candidate, "-wal"), b"sidecar").expect("candidate sidecar");
 
     let (stage, cause) = migrate_failure(&source, &candidate);
-    assert_eq!(stage, MigrationStage::PreflightCandidate);
+    assert_eq!(stage, MigrationStage::PreflightDestination);
     assert!(
         matches!(
             cause,
@@ -1015,13 +1018,13 @@ fn refuses_an_existing_candidate_without_overwriting_it() {
     let entries = dir_names(source.parent().expect("source parent"));
 
     let (stage, cause) = migration_error(&source, &candidate);
-    assert_eq!(stage, MigrationStage::PreflightCandidate);
+    assert_eq!(stage, MigrationStage::PreflightDestination);
     assert!(
         matches!(
             cause,
             Error::Validation {
                 reason: ValidationReason::PathExists,
-                field: "candidate",
+                field: "destination",
                 ..
             }
         ),
@@ -1042,13 +1045,13 @@ fn refuses_to_use_the_source_or_its_sidecar_as_the_candidate() {
     let entries = dir_names(source.parent().expect("source parent"));
 
     let (stage, cause) = migration_error(&source, &source);
-    assert_eq!(stage, MigrationStage::PreflightCandidate);
+    assert_eq!(stage, MigrationStage::PreflightDestination);
     assert!(
         matches!(
             cause,
             Error::Validation {
                 reason: ValidationReason::PathExists,
-                field: "candidate",
+                field: "destination",
                 ..
             }
         ),
@@ -1059,13 +1062,13 @@ fn refuses_to_use_the_source_or_its_sidecar_as_the_candidate() {
     for suffix in ["-journal", "-wal", "-shm"] {
         let sidecar = sidecar_path(&source, suffix);
         let (stage, cause) = migration_error(&source, &sidecar);
-        assert_eq!(stage, MigrationStage::PreflightCandidate, "{suffix}");
+        assert_eq!(stage, MigrationStage::PreflightDestination, "{suffix}");
         assert!(
             matches!(
                 cause,
                 Error::Validation {
                     reason: ValidationReason::PathExists,
-                    field: "candidate",
+                    field: "destination",
                     ..
                 }
             ),
@@ -1090,14 +1093,14 @@ fn refuses_candidate_aliases_that_resolve_to_the_source_or_a_sidecar() {
 
     let source_alias = alias_parent.join(source_name.as_ref());
     let (stage, _cause) = migration_error(&source, &source_alias);
-    assert_eq!(stage, MigrationStage::PreflightCandidate);
+    assert_eq!(stage, MigrationStage::PreflightDestination);
     assert_source_unchanged(&source, &before, &entries);
 
     for suffix in ["-journal", "-wal", "-shm"] {
         let alias = alias_parent.join(format!("{source_name}{suffix}"));
         let sidecar = sidecar_path(&source, suffix);
         let (stage, _cause) = migration_error(&source, &alias);
-        assert_eq!(stage, MigrationStage::PreflightCandidate, "{suffix}");
+        assert_eq!(stage, MigrationStage::PreflightDestination, "{suffix}");
         assert!(!sidecar.exists(), "{suffix} was created through an alias");
         assert_source_unchanged(&source, &before, &entries);
     }
@@ -1106,7 +1109,7 @@ fn refuses_candidate_aliases_that_resolve_to_the_source_or_a_sidecar() {
     {
         let case_alias = source_parent.join(format!("{}-journal", source_name.to_uppercase()));
         let (stage, _cause) = migration_error(&source, &case_alias);
-        assert_eq!(stage, MigrationStage::PreflightCandidate, "case alias");
+        assert_eq!(stage, MigrationStage::PreflightDestination, "case alias");
         assert!(!sidecar_path(&source, "-journal").exists());
         assert_source_unchanged(&source, &before, &entries);
 
@@ -1116,7 +1119,7 @@ fn refuses_candidate_aliases_that_resolve_to_the_source_or_a_sidecar() {
         ] {
             let alias = source_parent.join(alias_name);
             let (stage, _cause) = migration_error(&source, &alias);
-            assert_eq!(stage, MigrationStage::PreflightCandidate, "{alias:?}");
+            assert_eq!(stage, MigrationStage::PreflightDestination, "{alias:?}");
             assert!(!sidecar_path(&source, "-journal").exists());
             assert_source_unchanged(&source, &before, &entries);
         }
@@ -1130,7 +1133,7 @@ fn refuses_candidate_aliases_that_resolve_to_the_source_or_a_sidecar() {
         let (stage, _cause) = migration_error(&source, &alias);
         assert_eq!(
             stage,
-            MigrationStage::PreflightCandidate,
+            MigrationStage::PreflightDestination,
             "symlinked parent"
         );
         assert!(!sidecar_path(&source, "-journal").exists());
@@ -1148,7 +1151,7 @@ fn refuses_an_unusable_source_or_candidate_path() {
         .join("missing")
         .join("candidate.sqlite");
     let (stage, cause) = migrate_failure(&source, &missing_parent);
-    assert_eq!(stage, MigrationStage::PreflightCandidate);
+    assert_eq!(stage, MigrationStage::PreflightDestination);
     assert!(
         matches!(
             cause,
@@ -1569,4 +1572,852 @@ fn migrates_a_page_larger_than_ten_mebibytes() {
     let mut store = Store::open(&candidate).expect("open candidate");
     let actual = store.export_snapshot().expect("export");
     assert!(actual == snapshot, "large snapshot differs");
+}
+
+fn candidate_entries(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .expect("read destination directory")
+        .map(|entry| {
+            entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.starts_with(".spike-migrate-"))
+        .collect();
+    names.sort();
+    names
+}
+
+fn assert_no_candidate_entries(dir: &Path) {
+    assert!(
+        candidate_entries(dir).is_empty(),
+        "unexpected candidate files: {:?}",
+        candidate_entries(dir)
+    );
+}
+
+/// Compares residual entries by file name.
+///
+/// Candidate paths are built from a canonicalized parent on Windows, so they
+/// may carry a `\\?\` prefix that a test-local join does not.
+fn residual_named(residuals: &[PathBuf], path: &Path) -> bool {
+    residuals
+        .iter()
+        .any(|residual| residual.file_name() == path.file_name())
+}
+
+#[test]
+fn publishes_a_complete_destination_and_removes_the_candidate() {
+    let (dir, source, destination) = layout();
+    let expected = base_snapshot();
+    write_v1(&source, LEGACY_V1_LATE, &expected);
+    let before = fs::read(&source).expect("source bytes");
+    let entries = dir_names(source.parent().expect("source parent"));
+
+    let report = migrate_v1_to_v2(&source, &destination).expect("published migration");
+    assert_eq!(report.universe_id, expected.universe_id);
+    assert_eq!(report.counts, expected_counts());
+    assert_eq!(report.destination, destination);
+    assert!(report.residuals.is_empty(), "{:?}", report.residuals);
+    assert_source_unchanged(&source, &before, &entries);
+    assert_no_sidecars(&destination);
+    assert_no_candidate_entries(dir.path());
+
+    let mut store = Store::open(&destination).expect("open destination");
+    assert_eq!(store.export_snapshot().expect("export"), expected);
+    for page in &expected.pages {
+        let document = store
+            .page_document(&page.page.id)
+            .expect("read destination page");
+        assert_eq!(document.revision, PageRevision::ZERO);
+        assert!(document.body.mentions.is_empty());
+    }
+    drop(store);
+
+    let verified = verify_v2(&destination).expect("general verification");
+    assert_eq!(verified.universe_id, expected.universe_id);
+    assert_eq!(verified.counts, expected_counts());
+    assert_eq!(verified.mentions, 0);
+}
+
+#[test]
+fn refuses_every_kind_of_existing_destination_without_touching_it() {
+    for kind in ["file", "directory"] {
+        let (_dir, source, destination) = layout();
+        write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+        if kind == "file" {
+            fs::write(&destination, b"sentinel").expect("destination");
+        } else {
+            fs::create_dir(&destination).expect("destination directory");
+        }
+        let before_destination = if kind == "file" {
+            fs::read(&destination).expect("destination bytes")
+        } else {
+            Vec::new()
+        };
+        let before_source = fs::read(&source).expect("source bytes");
+
+        let error = migrate_v1_to_v2(&source, &destination).expect_err("must refuse");
+        assert_eq!(error.stage, MigrationStage::PreflightDestination, "{kind}");
+        assert!(
+            matches!(
+                error.cause.as_ref(),
+                Error::Validation {
+                    reason: ValidationReason::PathExists,
+                    field: "destination",
+                    ..
+                }
+            ),
+            "{kind}: {}",
+            error.cause
+        );
+        assert!(!error.residuals.iter().any(|path| path == &destination));
+        assert_eq!(fs::read(&source).expect("source bytes"), before_source);
+        if kind == "file" {
+            assert_eq!(
+                fs::read(&destination).expect("destination bytes"),
+                before_destination
+            );
+        } else {
+            assert!(destination.is_dir());
+        }
+        assert_no_candidate_entries(destination.parent().expect("destination parent"));
+    }
+}
+
+#[test]
+fn refuses_a_destination_symlink_where_the_platform_allows_one() {
+    let (_dir, source, destination) = layout();
+    write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+    let target = source
+        .parent()
+        .expect("source parent")
+        .join("target.sqlite");
+    fs::write(&target, b"sentinel").expect("target");
+
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target, &destination).expect("symlink destination");
+    #[cfg(windows)]
+    {
+        match std::os::windows::fs::symlink_file(&target, &destination) {
+            Ok(()) => {}
+            Err(err)
+                if err.kind() == std::io::ErrorKind::PermissionDenied
+                    || err.raw_os_error() == Some(1314) =>
+            {
+                return
+            }
+            Err(err) => panic!("symlink destination: {err}"),
+        }
+    }
+
+    let before = fs::read(&target).expect("target bytes");
+    let error = migrate_v1_to_v2(&source, &destination).expect_err("must refuse");
+    assert_eq!(error.stage, MigrationStage::PreflightDestination);
+    assert!(matches!(
+        error.cause.as_ref(),
+        Error::Validation {
+            reason: ValidationReason::PathExists,
+            field: "destination",
+            ..
+        }
+    ));
+    assert_eq!(fs::read(&target).expect("target bytes"), before);
+}
+
+#[test]
+fn refuses_a_destination_sidecar_without_removing_it() {
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let (_dir, source, destination) = layout();
+        write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+        let sidecar = sidecar_path(&destination, suffix);
+        fs::write(&sidecar, b"sidecar").expect("sidecar");
+
+        let error = migrate_v1_to_v2(&source, &destination).expect_err("must refuse");
+        assert_eq!(
+            error.stage,
+            MigrationStage::PreflightDestination,
+            "{suffix}"
+        );
+        assert!(
+            matches!(
+                error.cause.as_ref(),
+                Error::Validation {
+                    reason: ValidationReason::ForeignDatabase,
+                    field: "sidecar",
+                    ..
+                }
+            ),
+            "{suffix}: {}",
+            error.cause
+        );
+        assert_eq!(fs::read(&sidecar).expect("sidecar bytes"), b"sidecar");
+        assert!(!destination.exists());
+    }
+}
+
+#[test]
+fn refuses_a_destination_that_aliases_the_source_or_its_sidecars() {
+    let (_dir, source, _candidate) = layout();
+    write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+
+    for destination in [
+        source.clone(),
+        sidecar_path(&source, "-journal"),
+        sidecar_path(&source, "-wal"),
+    ] {
+        let error = migrate_v1_to_v2(&source, &destination).expect_err("must refuse");
+        assert_eq!(error.stage, MigrationStage::PreflightDestination);
+        assert!(matches!(
+            error.cause.as_ref(),
+            Error::Validation {
+                reason: ValidationReason::PathExists,
+                field: "destination",
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
+fn keeps_the_source_pinned_through_publication_and_destination_verification() {
+    let (_dir, source, destination) = layout();
+    write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+    let checks = std::cell::Cell::new(0u32);
+
+    run_migration(
+        &source,
+        &destination,
+        Publication::HardLink,
+        &|point, view| {
+            if matches!(
+                point,
+                Checkpoint::Published
+                    | Checkpoint::DestinationVerified
+                    | Checkpoint::DestinationRechecked
+            ) {
+                let writer = Connection::open(&source).expect("writer");
+                writer
+                    .busy_timeout(Duration::from_millis(0))
+                    .expect("writer timeout");
+                let error = writer
+                    .execute_batch("BEGIN EXCLUSIVE")
+                    .expect_err("the source must stay pinned");
+                assert!(
+                    matches!(
+                        error,
+                        rusqlite::Error::SqliteFailure(ref ffi, _)
+                            if ffi.code == rusqlite::ErrorCode::DatabaseBusy
+                                || ffi.code == rusqlite::ErrorCode::DatabaseLocked
+                    ),
+                    "{error}"
+                );
+                checks.set(checks.get() + 1);
+            }
+            let _ = view;
+            Ok(())
+        },
+    )
+    .expect("migration");
+    assert_eq!(checks.get(), 3);
+}
+
+#[test]
+fn fails_closed_when_the_published_destination_is_tampered() {
+    let (_dir, source, destination) = layout();
+    write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+    let source_before = fs::read(&source).expect("source bytes");
+
+    let result = run_migration(
+        &source,
+        &destination,
+        Publication::HardLink,
+        &|point, view| {
+            if point == Checkpoint::Published {
+                let conn = Connection::open(view.destination)
+                    .map_err(|err| super::map_sql("tamper open", err))?;
+                conn.execute_batch("UPDATE pages SET body = body || 'x'")
+                    .map_err(|err| super::map_sql("tamper update", err))?;
+            }
+            Ok(())
+        },
+    );
+
+    let error = result.expect_err("post-publication tampering must fail");
+    assert_eq!(error.stage, MigrationStage::VerifyDestination);
+    assert!(
+        error.residuals.iter().any(|path| path == &destination),
+        "{:?}",
+        error.residuals
+    );
+    assert!(destination.is_file(), "the destination is the residual");
+    assert_eq!(fs::read(&source).expect("source bytes"), source_before);
+    // A published alias is never removed on failure: the destination may have
+    // been replaced and the alias may be the only complete copy.
+    let aliases = candidate_entries(destination.parent().expect("destination parent"));
+    assert_eq!(aliases.len(), 1, "{aliases:?}");
+    let alias = destination
+        .parent()
+        .expect("destination parent")
+        .join(&aliases[0]);
+    assert!(
+        residual_named(&error.residuals, &alias),
+        "{:?}",
+        error.residuals
+    );
+    assert_eq!(
+        fs::read(&alias).expect("alias bytes"),
+        fs::read(&destination).expect("destination bytes")
+    );
+    // The tampered file is still a healthy general v2 database; only the
+    // migration contract knows it differs from the pinned source.
+    verify_v2(&destination).expect("general verification accepts an edited database");
+}
+
+/// Rewrites one page body while keeping the observed header and length.
+///
+/// A SQLite `UPDATE` increments the file change counter in the first 100 bytes,
+/// so the original observed header is written back after the update. The
+/// corruption is then invisible to `require_*_observation` and only full
+/// verification can reject it.
+fn rewrite_page_body_with_same_size(path: &Path) -> super::SourceObservation {
+    let (header, len) = super::read_observation(path).expect("database observation");
+    let original = fs::read(path).expect("database bytes");
+
+    let conn = Connection::open(path).expect("tamper open");
+    let body: String = conn
+        .query_row("SELECT body FROM pages WHERE id = ?1", [PAGE_ONE], |row| {
+            row.get(0)
+        })
+        .expect("read body");
+    let mut bytes = body.into_bytes();
+    assert!(!bytes.is_empty(), "fixture body is empty");
+    bytes[0] = if bytes[0] == b'X' { b'Y' } else { b'X' };
+    let changed = String::from_utf8(bytes).expect("valid utf8");
+    conn.execute(
+        "UPDATE pages SET body = ?1 WHERE id = ?2",
+        params![changed, PAGE_ONE],
+    )
+    .expect("tamper body");
+    drop(conn);
+
+    let tampered = fs::read(path).expect("tampered bytes");
+    assert_eq!(
+        tampered.len(),
+        original.len(),
+        "the fixture update changed the file length"
+    );
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("reopen tampered database");
+    file.seek(SeekFrom::Start(0))
+        .expect("seek to the observed header");
+    file.write_all(&original[..super::HEADER_LEN])
+        .expect("restore the observed header");
+    file.sync_all().expect("flush the restored header");
+    drop(file);
+
+    let restored = fs::read(path).expect("restored bytes");
+    assert_eq!(
+        &restored[..super::HEADER_LEN],
+        &original[..super::HEADER_LEN],
+        "the observed header changed"
+    );
+    assert_eq!(restored.len(), original.len(), "the file length changed");
+    super::SourceObservation { header, len }
+}
+
+#[test]
+fn fails_closed_when_the_destination_changes_after_destination_verified() {
+    let (_dir, source, destination) = layout();
+    write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+    let source_before = fs::read(&source).expect("source bytes");
+    let observation = std::cell::RefCell::new(None);
+
+    let result = run_migration(
+        &source,
+        &destination,
+        Publication::HardLink,
+        &|point, view| {
+            if point == Checkpoint::DestinationVerified {
+                let expected = rewrite_page_body_with_same_size(view.destination);
+                // Positive control: the header and length observation must
+                // accept the tampered file, so only full verification can
+                // reject it.
+                super::require_destination_observation(view.destination, &expected)
+                    .expect("the tamper must preserve the observed header and length");
+                *observation.borrow_mut() = Some(expected);
+            }
+            Ok(())
+        },
+    );
+
+    let expected = observation.into_inner().expect("observation");
+    assert_eq!(
+        fs::metadata(&destination)
+            .expect("destination metadata")
+            .len(),
+        expected.len
+    );
+    let error = result.expect_err("same-size corruption must fail");
+    assert_eq!(error.stage, MigrationStage::VerifyDestination);
+    assert!(
+        error.residuals.iter().any(|path| path == &destination),
+        "{:?}",
+        error.residuals
+    );
+    assert_eq!(fs::read(&source).expect("source bytes"), source_before);
+    // The alias is preserved because publication already happened and the
+    // destination can no longer be trusted.
+    let aliases = candidate_entries(destination.parent().expect("destination parent"));
+    assert_eq!(aliases.len(), 1, "{aliases:?}");
+    let alias = destination
+        .parent()
+        .expect("destination parent")
+        .join(&aliases[0]);
+    assert!(alias.is_file(), "the alias must not be deleted");
+}
+
+#[test]
+fn preserves_the_alias_when_the_destination_disappears_after_destination_verified() {
+    let (_dir, source, destination) = layout();
+    write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+    let source_before = fs::read(&source).expect("source bytes");
+
+    let result = run_migration(
+        &source,
+        &destination,
+        Publication::HardLink,
+        &|point, view| {
+            if point == Checkpoint::DestinationVerified {
+                fs::remove_file(view.destination).expect("remove destination");
+            }
+            Ok(())
+        },
+    );
+
+    let error = result.expect_err("a vanished destination must fail");
+    assert_eq!(error.stage, MigrationStage::VerifyDestination);
+    assert!(!destination.exists());
+    assert!(
+        !error.residuals.iter().any(|path| path == &destination),
+        "an absent destination is not a residual"
+    );
+    let aliases = candidate_entries(destination.parent().expect("destination parent"));
+    assert_eq!(aliases.len(), 1, "{aliases:?}");
+    let alias = destination
+        .parent()
+        .expect("destination parent")
+        .join(&aliases[0]);
+    assert!(
+        residual_named(&error.residuals, &alias),
+        "{:?}",
+        error.residuals
+    );
+    verify_candidate(&alias, &base_snapshot()).expect("the alias is the surviving complete copy");
+    assert_eq!(fs::read(&source).expect("source bytes"), source_before);
+}
+
+#[test]
+fn preserves_the_alias_when_the_destination_disappears_after_destination_rechecked() {
+    let (_dir, source, destination) = layout();
+    write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+    let source_before = fs::read(&source).expect("source bytes");
+    let alias_path = std::cell::RefCell::new(None::<PathBuf>);
+
+    let result = run_migration(
+        &source,
+        &destination,
+        Publication::HardLink,
+        &|point, view| {
+            if point == Checkpoint::DestinationRechecked {
+                let parent = view.destination.parent().expect("destination parent");
+                let aliases = candidate_entries(parent);
+                assert_eq!(aliases.len(), 1, "{aliases:?}");
+                *alias_path.borrow_mut() = Some(parent.join(&aliases[0]));
+                fs::remove_file(view.destination).expect("remove destination");
+            }
+            Ok(())
+        },
+    );
+
+    let error = result.expect_err("a vanished destination must fail after recheck");
+    assert_eq!(error.stage, MigrationStage::VerifyDestination);
+    assert!(!destination.exists());
+    assert!(
+        !error.residuals.iter().any(|path| path == &destination),
+        "an absent destination is not a residual"
+    );
+    // The alias is removed only after the last fallible destination
+    // observation. A destination that vanishes before that observation must
+    // leave the complete alias behind instead of deleting the only copy.
+    let alias = alias_path.into_inner().expect("alias path");
+    assert!(alias.is_file(), "the alias was deleted");
+    assert!(
+        residual_named(&error.residuals, &alias),
+        "{:?}",
+        error.residuals
+    );
+    verify_candidate(&alias, &base_snapshot()).expect("the alias is the surviving complete copy");
+    assert_eq!(fs::read(&source).expect("source bytes"), source_before);
+}
+
+#[test]
+fn preserves_the_alias_when_the_destination_disappears_after_alias_verified() {
+    let (_dir, source, destination) = layout();
+    write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+    let source_before = fs::read(&source).expect("source bytes");
+    let alias_path = std::cell::RefCell::new(None::<PathBuf>);
+
+    let result = run_migration(
+        &source,
+        &destination,
+        Publication::HardLink,
+        &|point, view| {
+            if point == Checkpoint::AliasVerified {
+                let parent = view.destination.parent().expect("destination parent");
+                let aliases = candidate_entries(parent);
+                assert_eq!(aliases.len(), 1, "{aliases:?}");
+                *alias_path.borrow_mut() = Some(parent.join(&aliases[0]));
+                fs::remove_file(view.destination).expect("remove destination");
+            }
+            Ok(())
+        },
+    );
+
+    // The full alias verification is not the last check before the unlink. The
+    // destination observation is, so a destination removed during the alias
+    // scan must leave the alias behind and fail the migration.
+    let error = result.expect_err("a vanished destination must fail after alias verification");
+    assert_eq!(error.stage, MigrationStage::VerifyDestination);
+    assert!(!destination.exists());
+    let alias = alias_path.into_inner().expect("alias path");
+    assert!(alias.is_file(), "the alias was deleted");
+    assert!(
+        residual_named(&error.residuals, &alias),
+        "{:?}",
+        error.residuals
+    );
+    verify_candidate(&alias, &base_snapshot()).expect("the alias is the surviving complete copy");
+    assert_eq!(fs::read(&source).expect("source bytes"), source_before);
+}
+
+#[test]
+fn never_deletes_a_replaced_candidate_alias_on_success() {
+    let (_dir, source, destination) = layout();
+    write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+    let replacement = b"not the candidate this run built".to_vec();
+    let alias_path = std::cell::RefCell::new(None::<PathBuf>);
+
+    let report = run_migration(
+        &source,
+        &destination,
+        Publication::HardLink,
+        &|point, view| {
+            if point == Checkpoint::DestinationVerified {
+                let parent = view.destination.parent().expect("destination parent");
+                let aliases = candidate_entries(parent);
+                assert_eq!(aliases.len(), 1, "{aliases:?}");
+                let alias = parent.join(&aliases[0]);
+                fs::remove_file(&alias).expect("remove alias");
+                fs::write(&alias, &replacement).expect("replace alias");
+                *alias_path.borrow_mut() = Some(alias);
+            }
+            Ok(())
+        },
+    )
+    .expect("the published destination is still valid");
+
+    let alias = alias_path.into_inner().expect("alias path");
+    assert_eq!(
+        fs::read(&alias).expect("replacement bytes"),
+        replacement,
+        "an unknown file was deleted or rewritten"
+    );
+    assert!(
+        residual_named(&report.residuals, &alias),
+        "{:?}",
+        report.residuals
+    );
+    verify_v2(&destination).expect("published destination");
+}
+
+#[test]
+fn fails_closed_when_the_candidate_changes_after_candidate_verified() {
+    let (_dir, source, destination) = layout();
+    write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+    let source_before = fs::read(&source).expect("source bytes");
+    let candidate_path = std::cell::RefCell::new(None::<PathBuf>);
+
+    let result = run_migration(
+        &source,
+        &destination,
+        Publication::HardLink,
+        &|point, view| {
+            if point == Checkpoint::CandidateVerified {
+                let expected = rewrite_page_body_with_same_size(view.candidate);
+                // Positive control: the header and length observation must
+                // accept the tampered candidate, so the pre-publication full
+                // verification is the check under test.
+                super::require_candidate_observation(view.candidate, &expected)
+                    .expect("the tamper must preserve the observed header and length");
+                *candidate_path.borrow_mut() = Some(view.candidate.to_path_buf());
+            }
+            Ok(())
+        },
+    );
+
+    let error = result.expect_err("a changed candidate must not be published");
+    assert_eq!(error.stage, MigrationStage::VerifyCandidate);
+    assert!(!destination.exists(), "nothing may be published");
+    assert_eq!(fs::read(&source).expect("source bytes"), source_before);
+    let candidate = candidate_path.into_inner().expect("candidate path");
+    assert!(
+        residual_named(&error.residuals, &candidate),
+        "{:?}",
+        error.residuals
+    );
+    assert!(
+        candidate.is_file(),
+        "a changed candidate is reported, never deleted as if it were ours"
+    );
+}
+
+#[test]
+fn candidate_is_private_and_unpublished_before_publication() {
+    let (_dir, source, destination) = layout();
+    write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+    let observed = std::cell::Cell::new(false);
+
+    run_migration(
+        &source,
+        &destination,
+        Publication::HardLink,
+        &|point, view| {
+            if point == Checkpoint::CandidateBuilt {
+                observed.set(true);
+                assert!(!view.destination.exists(), "destination appeared early");
+                assert!(view.candidate.is_file(), "candidate is missing");
+                assert!(
+                    fs::metadata(view.candidate)
+                        .expect("candidate metadata")
+                        .len()
+                        > 0,
+                    "candidate is empty"
+                );
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = fs::metadata(view.candidate)
+                        .expect("candidate metadata")
+                        .permissions()
+                        .mode()
+                        & 0o777;
+                    assert_eq!(mode, 0o600, "candidate is not owner-only");
+                }
+            }
+            Ok(())
+        },
+    )
+    .expect("migration");
+    assert!(observed.get());
+}
+
+#[test]
+fn reports_a_leftover_candidate_sidecar_as_a_residual() {
+    let (_dir, source, destination) = layout();
+    write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+    let leftover = std::cell::RefCell::new(None);
+
+    let report = run_migration(
+        &source,
+        &destination,
+        Publication::HardLink,
+        &|point, view| {
+            if point == Checkpoint::DestinationVerified {
+                let sidecar = sidecar_path(view.candidate, "-wal");
+                fs::write(&sidecar, b"leftover").expect("leftover sidecar");
+                *leftover.borrow_mut() = Some(sidecar);
+            }
+            Ok(())
+        },
+    )
+    .expect("migration with a leftover");
+
+    let sidecar = leftover.into_inner().expect("sidecar path");
+    assert!(report.residuals.iter().any(|path| path == &sidecar));
+    assert!(destination.is_file());
+    assert!(sidecar.is_file(), "unknown file must not be deleted");
+}
+
+#[test]
+fn concurrent_migrations_publish_exactly_once() {
+    let (_dir, source, destination) = layout();
+    write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+    let source_before = fs::read(&source).expect("source bytes");
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(6));
+
+    let handles: Vec<_> = (0..6)
+        .map(|_| {
+            let source = source.clone();
+            let destination = destination.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                migrate_v1_to_v2(&source, &destination)
+            })
+        })
+        .collect();
+
+    let results: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().expect("migration thread"))
+        .collect();
+    let successes = results.iter().filter(|result| result.is_ok()).count();
+    assert_eq!(successes, 1, "exactly one migration must publish");
+    for result in results.iter().filter(|result| result.is_err()) {
+        let error = result.as_ref().expect_err("checked");
+        assert!(
+            matches!(
+                error.stage,
+                MigrationStage::PreflightDestination | MigrationStage::PublishDestination
+            ),
+            "{}",
+            error.stage
+        );
+        assert!(
+            matches!(
+                error.cause.as_ref(),
+                Error::Validation {
+                    reason: ValidationReason::PathExists,
+                    ..
+                }
+            ),
+            "{}",
+            error.cause
+        );
+    }
+    assert_eq!(fs::read(&source).expect("source bytes"), source_before);
+    assert_no_candidate_entries(destination.parent().expect("destination parent"));
+    verify_v2(&destination).expect("published destination");
+}
+
+#[test]
+fn general_verification_accepts_edited_v2_and_valid_mentions() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("edited.sqlite");
+    let mut store = Store::create(&path, universe_id()).expect("create");
+    store
+        .create_page(Page {
+            id: page_id(PAGE_ONE),
+            title: "edited".to_string(),
+            body: "Elara left".to_string(),
+        })
+        .expect("page");
+    store
+        .create_entity(Entity {
+            id: entity_id(ENTITY_ONE),
+            label: "Elara".to_string(),
+            type_id: None,
+            page_id: None,
+        })
+        .expect("entity");
+    let document = store
+        .save_page_edits(
+            &page_id(PAGE_ONE),
+            PageRevision::ZERO,
+            &[PageEdit::Mention(MentionEdit::Link {
+                mention: Mention {
+                    id: MentionId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+                        .expect("mention id"),
+                    entity_id: entity_id(ENTITY_ONE),
+                    start_utf16: 0,
+                    end_utf16: 5,
+                },
+            })],
+        )
+        .expect("link mention");
+    assert_eq!(
+        document.revision,
+        PageRevision::new(1).expect("revision one")
+    );
+    drop(store);
+
+    let before = fs::read(&path).expect("database bytes");
+    let report = verify_v2(&path).expect("general verification");
+    assert_eq!(report.universe_id, universe_id());
+    assert_eq!(report.mentions, 1);
+    assert_eq!(report.counts.pages, 1);
+    assert_eq!(report.counts.entities, 1);
+    assert_eq!(fs::read(&path).expect("database bytes"), before);
+    assert_no_sidecars(&path);
+}
+
+#[test]
+fn general_verification_rejects_invalid_mentions_and_corruption() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("edited.sqlite");
+    let mut store = Store::create(&path, universe_id()).expect("create");
+    store
+        .create_page(Page {
+            id: page_id(PAGE_ONE),
+            title: "edited".to_string(),
+            body: "Elara left".to_string(),
+        })
+        .expect("page");
+    store
+        .create_entity(Entity {
+            id: entity_id(ENTITY_ONE),
+            label: "Elara".to_string(),
+            type_id: None,
+            page_id: None,
+        })
+        .expect("entity");
+    store
+        .save_page_edits(
+            &page_id(PAGE_ONE),
+            PageRevision::ZERO,
+            &[PageEdit::Mention(MentionEdit::Link {
+                mention: Mention {
+                    id: MentionId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+                        .expect("mention id"),
+                    entity_id: entity_id(ENTITY_ONE),
+                    start_utf16: 0,
+                    end_utf16: 5,
+                },
+            })],
+        )
+        .expect("link mention");
+    drop(store);
+
+    let conn = Connection::open(&path).expect("open for tampering");
+    conn.execute_batch(
+        "PRAGMA ignore_check_constraints = ON;
+         UPDATE mentions SET end_utf16 = 9999;",
+    )
+    .expect("tamper mention");
+    drop(conn);
+    let error = verify_v2(&path).expect_err("invalid mention must fail");
+    assert!(
+        error.to_string().contains("mentions") || error.to_string().contains("invalid"),
+        "{error}"
+    );
+
+    let corrupt = dir.path().join("corrupt.sqlite");
+    fs::write(&corrupt, b"not a database").expect("corrupt file");
+    let error = verify_v2(&corrupt).expect_err("corruption must fail");
+    assert!(
+        matches!(
+            error.cause,
+            Error::Validation {
+                reason: ValidationReason::NotADatabase,
+                ..
+            }
+        ),
+        "{}",
+        error.cause
+    );
 }

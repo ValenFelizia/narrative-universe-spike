@@ -1,10 +1,6 @@
 mod error;
 mod exchange;
 mod mentions;
-// C1 keeps migration crate-private until C2 settles the public surface. Its
-// verified-candidate path is exercised by unit tests and has no library caller
-// yet, so allow the staging dead code in non-test builds until C2 publishes it.
-#[cfg_attr(not(test), allow(dead_code))]
 mod migration;
 mod model;
 mod store;
@@ -14,6 +10,10 @@ pub use exchange::{
     export_json, import_json, import_new_json, read_limited, write_exclusive, MAX_DOCUMENT_BYTES,
 };
 pub use mentions::{apply_mention_edit, validate_mentions, AnnotatedBody, Mention, MentionEdit};
+pub use migration::{
+    migrate_v1_to_v2, verify_v2, MigrationError, MigrationReport, MigrationStage,
+    VerificationError, VerificationReport,
+};
 pub use model::{
     Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId, Entity, EntityId,
     EntityType, MentionId, Owner, Page, PageId, PageRevision, Provenance, TypeId, UniverseId,

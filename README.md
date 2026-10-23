@@ -6,7 +6,7 @@ Narrative Universe aims to combine freeform pages with structured entities, user
 
 ## Current scope
 
-**I1 — Persistence and relationships** and **I2 — Canon alternatives and reversible archival** are the reviewed baseline. **I3 — Versioned JSON exchange** is implemented on this branch and is waiting for G3 review. **PA-I2-A — pure mention editing semantics** is implemented on this branch and is waiting for review. **PA-I2-B — page occurrences with a local revision and the JSON format 2 exchange** is merged into the reviewed baseline as PR #15 (`714260d`). An occurrence is stored with its page, the JSON exchange carries it, and a version 1 JSON document still imports as a universe without occurrences. **PA-I2-C — safe version 1 to version 2 migration** is in review; C1 only builds and verifies a private v2 candidate, and it does not publish or replace a database.
+**I1 — Persistence and relationships** and **I2 — Canon alternatives and reversible archival** are the reviewed baseline. **I3 — Versioned JSON exchange** is implemented on this branch and is waiting for G3 review. **PA-I2-A — pure mention editing semantics** is implemented on this branch and is waiting for review. **PA-I2-B — page occurrences with a local revision and the JSON format 2 exchange** is merged into the reviewed baseline as PR #15 (`714260d`). An occurrence is stored with its page, the JSON exchange carries it, and a version 1 JSON document still imports as a universe without occurrences. **PA-I2-C — safe version 1 to version 2 migration** is implemented on this branch and is waiting for review. C2 publishes a verified v2 candidate with one atomic no-overwrite hard link, keeps the source read transaction pinned through post-publication verification, and adds `spike migrate` and `spike verify`. The source is never modified.
 
 The spike covers:
 
@@ -48,6 +48,15 @@ cargo run --locked --bin spike -- import-new ./demo-copy.sqlite ./demo-universe.
 
 The two commands run in separate processes and should print the same fixture report: one page, two types, two entities, one definition, and one assertion. The same assertion ID appears when navigating from its subject and from its target. A second `seed` against an existing path fails without overwriting it.
 
+A version 1 database is migrated to a **new** destination path; neither command overwrites an existing file:
+
+```sh
+cargo run --locked --bin spike -- migrate ./legacy-universe.sqlite ./migrated-universe.sqlite
+cargo run --locked --bin spike -- verify ./migrated-universe.sqlite
+```
+
+`migrate` prints the universe id, counts, destination, and any residual path on success; on failure it prints the stage, both paths, the cause, and every residual path. `verify` is a read-only general check: it accepts an edited v2 database with nonzero page revisions and valid occurrences, and it does not upgrade or create anything.
+
 The fixture is synthetic, not War Archivist canon. See [fixture notes](tests/fixtures/README.md). The Spanish text inside the fixture and the canon values are intentional test data, **not documentation left untranslated**.
 
 ## Code map
@@ -58,8 +67,9 @@ The fixture is synthetic, not War Archivist canon. See [fixture notes](tests/fix
 | `src/store.rs` | Synchronous domain checks, transactions, SQLite reads and writes |
 | `src/exchange.rs` | Versioned JSON parse, encode, and the 10 MiB input cap |
 | `src/mentions.rs` | Pure mention identity and single-edit semantics |
+| `src/migration.rs` | Version 1 snapshot reading, v2 verification, and no-overwrite publication |
 | `src/schema.sql` | Persistent tables, foreign keys, and constraints |
-| `src/bin/spike.rs` | Minimal `seed` / `inspect` demonstration |
+| `src/bin/spike.rs` | Minimal `seed` / `inspect` / exchange / `migrate` / `verify` demonstration |
 | `tests/` | Real-file tests, process replay, validation, and concurrency regressions |
 
 Design principle: **prose belongs to pages; structured facts belong to assertions**. Writing a page does not automatically create or canonize facts.
@@ -78,6 +88,13 @@ This is an experimental format intended for disposable test universes. Do **not*
 - An export refuses a page whose stored revision is not a checked nonnegative integer, so a corrupt row cannot leave the database as part of a healthy universe.
 - An import refuses to reconcile a page whose stored revision is not a checked nonnegative integer, and rolls the whole batch back.
 - Creating a page refuses an id whose occurrence rows still exist without their page row, which only a deletion outside SQLite with foreign keys disabled can produce. Those rows are never adopted, relinked or deleted.
+- A migration refuses an existing destination, a symlink, and any destination sidecar. Publication is one atomic no-overwrite hard link inside the destination directory; there is no copy or rename fallback, and an existing file is never replaced.
+- The version 1 source is opened read-only and its read transaction stays pinned through candidate construction, candidate verification, publication, and post-publication destination verification. Boundary rechecks compare the regular-file type, sidecar absence, SQLite header, and length; a same-size out-of-band edit that preserves those fields is a documented path-race limit, not a byte-for-byte guarantee.
+- A migration candidate is a dot-prefixed private file in the destination directory (mode `0600` on Unix; on Windows it inherits the directory's ACL, and the leading dot is not a hidden attribute there). It is flushed and closed before verification and is never written through the alias again.
+- The published destination is fully re-verified while the source is still pinned. After the source is released, the alias is fully verified once more, then the destination's type, sidecars, header, and length are observed as the last check before the unlink. The alias is removed only when it matched the migrated database immediately before that observation; a changed, replaced, or unremovable alias is kept and reported.
+- Before publication, a failed run removes the candidate only when it still verifies against the pinned snapshot; otherwise the path is kept and reported. After publication, cleanup never deletes the destination or the alias, because either may be the only complete copy; every surviving path is reported for inspection.
+- A process crash can leave such a candidate or a complete published destination. A later run never resumes automatically, adopts, rewrites, or deletes an unknown file; report it for manual inspection instead. Windows directory-entry durability after power loss is not claimed.
+- Publication needs a filesystem with hard-link support. An unsupported filesystem fails closed instead of falling back to a copy.
 - SQLite transactions protect individual writes, but there is no workspace-level multiwriter coordination or supported backup workflow yet.
 - JSON portability and safe restoration are part of a later increment, not I1.
 

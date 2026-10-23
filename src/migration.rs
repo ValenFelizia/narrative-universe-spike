@@ -2,14 +2,15 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OpenFlags};
 
 use crate::error::{Error, Result, ValidationReason};
 use crate::model::{
     value_fits, Assertion, AssertionId, Cardinality, Definition, DefinitionId, Entity, EntityId,
-    EntityType, Owner, Page, PageId, TypeId, UniverseId, Value, ValueClass,
+    EntityType, Owner, Page, PageId, PageRevision, TypeId, UniverseId, Value, ValueClass,
 };
 use crate::store::{
     self, assertion_from_parts, ensure_unique_snapshot, read_flag, AssertionParts, Counts,
@@ -24,19 +25,30 @@ const CURRENT_USER_VERSION: i32 = 2;
 const LEGACY_FORMAT_VERSION: i64 = 1;
 const UTF8_ENCODING: i32 = 1;
 const SIDECARS: [&str; 3] = ["-journal", "-wal", "-shm"];
+const CANDIDATE_ATTEMPTS: u32 = 32;
+const CANDIDATE_PREFIX: &str = ".spike-migrate-";
+static CANDIDATE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const LEGACY_V1_EARLY: &str = include_str!("migration/legacy_v1_early.sql");
 const LEGACY_V1_LATE: &str = include_str!("migration/legacy_v1_late.sql");
 
+/// One observable boundary of a migration run.
+///
+/// The stage is part of the error so a caller can tell a malformed source from
+/// a destination collision, a failed candidate check, or a publication that
+/// was already visible when it failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MigrationStage {
+pub enum MigrationStage {
     PreflightSource,
     ReadSource,
     SnapshotSource,
-    PreflightCandidate,
+    PreflightDestination,
     BuildCandidate,
     VerifyCandidate,
-    FinishSource,
+    PublishDestination,
+    VerifyDestination,
+    ReleaseSource,
+    CleanupCandidate,
 }
 
 impl fmt::Display for MigrationStage {
@@ -45,22 +57,33 @@ impl fmt::Display for MigrationStage {
             Self::PreflightSource => "source preflight",
             Self::ReadSource => "source open",
             Self::SnapshotSource => "source snapshot",
-            Self::PreflightCandidate => "candidate preflight",
+            Self::PreflightDestination => "destination preflight",
             Self::BuildCandidate => "candidate build",
             Self::VerifyCandidate => "candidate verification",
-            Self::FinishSource => "source finish",
+            Self::PublishDestination => "destination publication",
+            Self::VerifyDestination => "destination verification",
+            Self::ReleaseSource => "source release",
+            Self::CleanupCandidate => "candidate cleanup",
         };
         formatter.write_str(name)
     }
 }
 
+/// A failed migration with its stage, both paths, and every residual file.
+///
+/// A pre-publication candidate this run owns is removed on failure only while
+/// it still verifies against the pinned snapshot. After a successful link the
+/// destination and the candidate alias are retained and reported, because
+/// either may be the only complete copy. A concurrent writer that replaces a
+/// path is outside the alpha's attribution guarantee, so an unexplained path is
+/// reported for inspection instead of being deleted.
 #[derive(Debug)]
-pub(crate) struct MigrationError {
-    pub(crate) stage: MigrationStage,
-    pub(crate) source: PathBuf,
-    pub(crate) candidate: PathBuf,
-    pub(crate) residuals: Vec<PathBuf>,
-    pub(crate) cause: Error,
+pub struct MigrationError {
+    pub stage: MigrationStage,
+    pub source: PathBuf,
+    pub destination: PathBuf,
+    pub residuals: Vec<PathBuf>,
+    pub cause: Box<Error>,
 }
 
 impl fmt::Display for MigrationError {
@@ -70,7 +93,7 @@ impl fmt::Display for MigrationError {
             "migration failed during {} for {} -> {}: {}",
             self.stage,
             self.source.display(),
-            self.candidate.display(),
+            self.destination.display(),
             self.cause
         )?;
         for residual in &self.residuals {
@@ -80,12 +103,56 @@ impl fmt::Display for MigrationError {
     }
 }
 
-impl std::error::Error for MigrationError {}
+impl std::error::Error for MigrationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.cause.as_ref())
+    }
+}
 
+/// The result of a completed migration.
+///
+/// `residuals` is normally empty. It lists paths this run did not remove, each
+/// for manual inspection. In particular, a candidate alias is removed only when
+/// it still reproduces the migrated database; a path that changed or was
+/// replaced is left in place and reported.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct MigrationReport {
-    pub(crate) universe_id: UniverseId,
-    pub(crate) counts: Counts,
+pub struct MigrationReport {
+    pub universe_id: UniverseId,
+    pub counts: Counts,
+    pub destination: PathBuf,
+    pub residuals: Vec<PathBuf>,
+}
+
+/// The result of a general version 2 verification.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerificationReport {
+    pub universe_id: UniverseId,
+    pub counts: Counts,
+    pub mentions: u64,
+}
+
+/// A failed general version 2 verification.
+#[derive(Debug)]
+pub struct VerificationError {
+    pub path: PathBuf,
+    pub cause: Error,
+}
+
+impl fmt::Display for VerificationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "verification failed for {}: {}",
+            self.path.display(),
+            self.cause
+        )
+    }
+}
+
+impl std::error::Error for VerificationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,111 +167,606 @@ struct SourceObservation {
     len: u64,
 }
 
-/// Builds a private v2 candidate and proves it matches the logical v1 source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Publication {
+    CandidateOnly,
+    HardLink,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Checkpoint {
+    CandidateBuilt,
+    CandidateVerified,
+    Published,
+    DestinationVerified,
+    DestinationRechecked,
+    AliasVerified,
+    CleanedUp,
+}
+
+// Test observers read these fields; the production observer is a no-op.
+#[allow(dead_code)]
+struct CheckpointView<'a> {
+    candidate: &'a Path,
+    destination: &'a Path,
+}
+
+#[derive(Default)]
+struct RunState {
+    candidate: Option<PathBuf>,
+    snapshot: Option<Snapshot>,
+    published: bool,
+}
+
+impl RunState {
+    fn residuals(&self, destination: &Path) -> Vec<PathBuf> {
+        let mut residuals = match &self.candidate {
+            Some(candidate) => residual_files(candidate),
+            None => Vec::new(),
+        };
+        // Before publication the destination is never this run's file, so a
+        // pre-existing file is not claimed. After publication the destination
+        // path belongs to this run; whatever is there now (the linked file, a
+        // replacement, or a leftover sidecar) is reported for inspection. It is
+        // never deleted, so misattributing a same-user replacement is safe.
+        if self.published {
+            for path in residual_files(destination) {
+                if !residuals.contains(&path) {
+                    residuals.push(path);
+                }
+            }
+        }
+        residuals
+    }
+}
+
+/// Migrates a version 1 database into a new version 2 destination.
 ///
-/// The requested final path is deliberately absent from this function. C2 owns
-/// publication, so a verified candidate can never be mistaken for a completed
-/// migration here.
-// The migration error intentionally carries the stage, both paths, and any
-// residual candidate paths for a fail-closed report. This is a one-shot CLI
-// path, so the error is not boxed just to shrink a cold return type.
-#[allow(clippy::result_large_err)]
+/// The source is opened read-only with one pinned read transaction and a
+/// captured canonical snapshot. The transaction stays alive through candidate
+/// construction, candidate verification, publication, and post-publication
+/// verification of the destination. Publication uses only an atomic
+/// no-overwrite hard link in the destination directory; there is no rename,
+/// copy, or replace fallback. A destination that appears by any other means is
+/// never overwritten. The published destination is fully re-verified while the
+/// source is still pinned. After the source is released, the candidate alias is
+/// fully verified once more, then the destination's type, sidecars, header, and
+/// length are observed as the last check before the unlink. Only then is the
+/// temporary alias removed, and only when it matched the migrated database
+/// immediately before that observation.
+///
+/// Source rechecks compare the regular-file type, the absence of sidecars, the
+/// SQLite header, and the file length. A same-size out-of-band edit that
+/// preserves those fields is part of the documented path-race limit, not a
+/// stronger byte-for-byte guarantee.
+///
+/// On error the destination is absent, or a file is present at the destination
+/// path this run published to (it may have been changed or replaced by an
+/// out-of-band writer); every surviving destination or candidate path is
+/// reported in `residuals`. Cleanup never deletes the destination after
+/// publication, and removes a pre-publication candidate only when it still
+/// verifies against the pinned snapshot.
+///
+/// Process crashes are tested cut points; Windows directory-entry durability
+/// after power loss is not claimed.
+pub fn migrate_v1_to_v2(
+    source: &Path,
+    destination: &Path,
+) -> std::result::Result<MigrationReport, MigrationError> {
+    run_migration(source, destination, Publication::HardLink, &crash_observer)
+}
+
+/// Debug-build fault injection for the process-level cut-point tests.
+///
+/// Setting `NARRATIVE_UNIVERSE_CRASH_AT` to one of `candidate-built`,
+/// `candidate-verified`, `published`, `destination-verified`,
+/// `destination-rechecked`, `alias-verified`, or `cleaned-up` aborts the
+/// process at that boundary. Release builds compile this out.
+fn crash_observer(point: Checkpoint, _view: CheckpointView<'_>) -> Result<()> {
+    #[cfg(debug_assertions)]
+    {
+        let name = match point {
+            Checkpoint::CandidateBuilt => "candidate-built",
+            Checkpoint::CandidateVerified => "candidate-verified",
+            Checkpoint::Published => "published",
+            Checkpoint::DestinationVerified => "destination-verified",
+            Checkpoint::DestinationRechecked => "destination-rechecked",
+            Checkpoint::AliasVerified => "alias-verified",
+            Checkpoint::CleanedUp => "cleaned-up",
+        };
+        if std::env::var("NARRATIVE_UNIVERSE_CRASH_AT").ok().as_deref() == Some(name) {
+            std::process::abort();
+        }
+    }
+    Ok(())
+}
+
+/// Verifies a general version 2 database without migrating or upgrading it.
+///
+/// The check is read-only. It accepts edited databases with nonzero page
+/// revisions and nonempty, geometrically valid, correctly referenced
+/// mentions. It rejects an unsupported version, a foreign schema, a hot
+/// sidecar, broken integrity, broken foreign keys, malformed identifiers, and
+/// malformed mention geometry. It never calls `Store::open`, so verification
+/// cannot silently create or upgrade a database.
+pub fn verify_v2(path: &Path) -> std::result::Result<VerificationReport, VerificationError> {
+    let facts = inspect_v2_database(path, "database").map_err(|cause| VerificationError {
+        path: path.to_path_buf(),
+        cause,
+    })?;
+    Ok(VerificationReport {
+        universe_id: facts.snapshot.universe_id,
+        counts: facts.counts,
+        mentions: facts.mentions,
+    })
+}
+
+/// C1's candidate-only orchestration, retained for the migration tests.
+///
+/// Production publication goes through [`migrate_v1_to_v2`], which uses the
+/// same lifecycle and keeps the source pinned through the final check.
+#[cfg(test)]
 pub(crate) fn build_verified_candidate(
     source: &Path,
     candidate: &Path,
 ) -> std::result::Result<MigrationReport, MigrationError> {
+    run_migration(
+        source,
+        candidate,
+        Publication::CandidateOnly,
+        &|_, _| Ok(()),
+    )
+}
+
+fn run_migration(
+    source: &Path,
+    destination: &Path,
+    publication: Publication,
+    observer: &dyn Fn(Checkpoint, CheckpointView<'_>) -> Result<()>,
+) -> std::result::Result<MigrationReport, MigrationError> {
+    let mut state = RunState::default();
+    match run_migration_inner(source, destination, publication, observer, &mut state) {
+        Ok(report) => Ok(report),
+        Err(mut error) => {
+            cleanup_failed_run(&mut state, &mut error);
+            Err(error)
+        }
+    }
+}
+
+fn run_migration_inner(
+    source: &Path,
+    destination: &Path,
+    publication: Publication,
+    observer: &dyn Fn(Checkpoint, CheckpointView<'_>) -> Result<()>,
+    state: &mut RunState,
+) -> std::result::Result<MigrationReport, MigrationError> {
     let observation = preflight_source(source).map_err(|cause| {
-        failure(
+        migration_failure(
             MigrationStage::PreflightSource,
             source,
-            candidate,
-            false,
+            destination,
+            state,
             cause,
         )
     })?;
 
-    preflight_candidate(source, candidate).map_err(|cause| {
-        failure(
-            MigrationStage::PreflightCandidate,
+    preflight_destination(source, destination).map_err(|cause| {
+        migration_failure(
+            MigrationStage::PreflightDestination,
             source,
-            candidate,
-            false,
+            destination,
+            state,
             cause,
         )
     })?;
 
-    let pinned = PinnedSource::open(source, &observation)
-        .map_err(|cause| failure(MigrationStage::ReadSource, source, candidate, false, cause))?;
+    let pinned = PinnedSource::open(source, &observation).map_err(|cause| {
+        migration_failure(
+            MigrationStage::ReadSource,
+            source,
+            destination,
+            state,
+            cause,
+        )
+    })?;
 
     let snapshot = pinned.snapshot().map_err(|cause| {
-        failure(
+        migration_failure(
             MigrationStage::SnapshotSource,
             source,
-            candidate,
-            false,
+            destination,
+            state,
             cause,
         )
     })?;
-
+    // Cleanup uses the captured snapshot to prove that a pre-publication
+    // candidate path still names the database this run built before deleting it.
+    state.snapshot = Some(snapshot.clone());
     require_source_observation(source, &observation).map_err(|cause| {
-        failure(
+        migration_failure(
             MigrationStage::SnapshotSource,
             source,
-            candidate,
-            false,
+            destination,
+            state,
             cause,
         )
     })?;
 
-    let store = Store::import_new(candidate, snapshot.clone()).map_err(|cause| {
-        failure(
+    let candidate = match publication {
+        Publication::CandidateOnly => destination.to_path_buf(),
+        Publication::HardLink => build_private_candidate(source, destination, &snapshot, state)?,
+    };
+    state.candidate = Some(candidate.clone());
+
+    if publication == Publication::CandidateOnly {
+        let store = Store::import_new(&candidate, snapshot.clone()).map_err(|cause| {
+            migration_failure(
+                MigrationStage::BuildCandidate,
+                source,
+                destination,
+                state,
+                cause,
+            )
+        })?;
+        drop(store);
+    }
+
+    let candidate_observation = flush_candidate(&candidate).map_err(|cause| {
+        migration_failure(
             MigrationStage::BuildCandidate,
             source,
-            candidate,
-            true,
+            destination,
+            state,
             cause,
         )
     })?;
-    drop(store);
+    observer(
+        Checkpoint::CandidateBuilt,
+        CheckpointView {
+            candidate: &candidate,
+            destination,
+        },
+    )
+    .map_err(|cause| {
+        migration_failure(
+            MigrationStage::BuildCandidate,
+            source,
+            destination,
+            state,
+            cause,
+        )
+    })?;
 
-    verify_candidate(candidate, &snapshot).map_err(|cause| {
-        failure(
+    verify_migration_database(&candidate, &snapshot, "candidate").map_err(|cause| {
+        migration_failure(
             MigrationStage::VerifyCandidate,
             source,
-            candidate,
-            true,
+            destination,
+            state,
+            cause,
+        )
+    })?;
+    require_candidate_observation(&candidate, &candidate_observation).map_err(|cause| {
+        migration_failure(
+            MigrationStage::VerifyCandidate,
+            source,
+            destination,
+            state,
+            cause,
+        )
+    })?;
+    require_source_observation(source, &observation).map_err(|cause| {
+        migration_failure(
+            MigrationStage::VerifyCandidate,
+            source,
+            destination,
+            state,
+            cause,
+        )
+    })?;
+    observer(
+        Checkpoint::CandidateVerified,
+        CheckpointView {
+            candidate: &candidate,
+            destination,
+        },
+    )
+    .map_err(|cause| {
+        migration_failure(
+            MigrationStage::VerifyCandidate,
+            source,
+            destination,
+            state,
             cause,
         )
     })?;
 
-    pinned
-        .finish(source, &observation)
-        .map_err(|cause| failure(MigrationStage::FinishSource, source, candidate, true, cause))?;
+    let mut destination_observation = None;
+    let mut residuals = Vec::new();
+    if publication == Publication::HardLink {
+        preflight_destination(source, destination).map_err(|cause| {
+            migration_failure(
+                MigrationStage::PublishDestination,
+                source,
+                destination,
+                state,
+                cause,
+            )
+        })?;
+        // Recheck the candidate immediately before the link. The bytes that
+        // become visible are then the bytes of a freshly verified database,
+        // not merely a database verified earlier in the run.
+        verify_migration_database(&candidate, &snapshot, "candidate").map_err(|cause| {
+            migration_failure(
+                MigrationStage::VerifyCandidate,
+                source,
+                destination,
+                state,
+                cause,
+            )
+        })?;
+        require_source_observation(source, &observation).map_err(|cause| {
+            migration_failure(
+                MigrationStage::PublishDestination,
+                source,
+                destination,
+                state,
+                cause,
+            )
+        })?;
+        publish(&candidate, destination).map_err(|cause| {
+            migration_failure(
+                MigrationStage::PublishDestination,
+                source,
+                destination,
+                state,
+                cause,
+            )
+        })?;
+        state.published = true;
+        observer(
+            Checkpoint::Published,
+            CheckpointView {
+                candidate: &candidate,
+                destination,
+            },
+        )
+        .map_err(|cause| {
+            migration_failure(
+                MigrationStage::VerifyDestination,
+                source,
+                destination,
+                state,
+                cause,
+            )
+        })?;
+
+        let observed = read_observation(destination)
+            .map(|(header, len)| SourceObservation { header, len })
+            .map_err(|cause| {
+                migration_failure(
+                    MigrationStage::VerifyDestination,
+                    source,
+                    destination,
+                    state,
+                    cause,
+                )
+            })?;
+        destination_observation = Some(observed.clone());
+        verify_migration_database(destination, &snapshot, "destination").map_err(|cause| {
+            migration_failure(
+                MigrationStage::VerifyDestination,
+                source,
+                destination,
+                state,
+                cause,
+            )
+        })?;
+        require_destination_observation(destination, &observed).map_err(|cause| {
+            migration_failure(
+                MigrationStage::VerifyDestination,
+                source,
+                destination,
+                state,
+                cause,
+            )
+        })?;
+        require_source_observation(source, &observation).map_err(|cause| {
+            migration_failure(
+                MigrationStage::VerifyDestination,
+                source,
+                destination,
+                state,
+                cause,
+            )
+        })?;
+        observer(
+            Checkpoint::DestinationVerified,
+            CheckpointView {
+                candidate: &candidate,
+                destination,
+            },
+        )
+        .map_err(|cause| {
+            migration_failure(
+                MigrationStage::VerifyDestination,
+                source,
+                destination,
+                state,
+                cause,
+            )
+        })?;
+
+        // Final success gate while the source is still pinned: verify the
+        // published destination again. The alias is not removed yet. It is
+        // removed only after the last fallible destination observation, which
+        // happens after the source is released, so a destination that
+        // disappears in between cannot leave the migrated data with no name.
+        verify_migration_database(destination, &snapshot, "destination").map_err(|cause| {
+            migration_failure(
+                MigrationStage::VerifyDestination,
+                source,
+                destination,
+                state,
+                cause,
+            )
+        })?;
+        require_destination_observation(destination, &observed).map_err(|cause| {
+            migration_failure(
+                MigrationStage::VerifyDestination,
+                source,
+                destination,
+                state,
+                cause,
+            )
+        })?;
+
+        observer(
+            Checkpoint::DestinationRechecked,
+            CheckpointView {
+                candidate: &candidate,
+                destination,
+            },
+        )
+        .map_err(|cause| {
+            migration_failure(
+                MigrationStage::VerifyDestination,
+                source,
+                destination,
+                state,
+                cause,
+            )
+        })?;
+    }
+
+    pinned.finish(source, &observation).map_err(|cause| {
+        migration_failure(
+            MigrationStage::ReleaseSource,
+            source,
+            destination,
+            state,
+            cause,
+        )
+    })?;
+    require_source_observation(source, &observation).map_err(|cause| {
+        migration_failure(
+            MigrationStage::ReleaseSource,
+            source,
+            destination,
+            state,
+            cause,
+        )
+    })?;
+
+    if publication == Publication::HardLink {
+        let observed = destination_observation
+            .as_ref()
+            .expect("a published destination has an observation");
+        // Verify the alias before the last destination observation. Ordering
+        // matters: the observation must be the last fallible check before the
+        // unlink, so a destination removed during the full alias scan is
+        // detected while the alias still names the complete database.
+        let alias_verified = verify_migration_database(&candidate, &snapshot, "candidate").is_ok();
+        observer(
+            Checkpoint::AliasVerified,
+            CheckpointView {
+                candidate: &candidate,
+                destination,
+            },
+        )
+        .map_err(|cause| {
+            migration_failure(
+                MigrationStage::CleanupCandidate,
+                source,
+                destination,
+                state,
+                cause,
+            )
+        })?;
+        require_destination_observation(destination, observed).map_err(|cause| {
+            migration_failure(
+                MigrationStage::VerifyDestination,
+                source,
+                destination,
+                state,
+                cause,
+            )
+        })?;
+        // The last destination observation passed. Remove the alias only when
+        // it still reproduced the migrated database immediately before that
+        // observation. A changed, replaced, or unremovable alias is kept and
+        // reported; a stale sidecar is reported and never scanned for.
+        if alias_verified && std::fs::remove_file(&candidate).is_ok() {
+            state.candidate = None;
+        }
+        residuals = residual_files(&candidate);
+        observer(
+            Checkpoint::CleanedUp,
+            CheckpointView {
+                candidate: &candidate,
+                destination,
+            },
+        )
+        .map_err(|cause| {
+            migration_failure(
+                MigrationStage::CleanupCandidate,
+                source,
+                destination,
+                state,
+                cause,
+            )
+        })?;
+    }
 
     Ok(MigrationReport {
         universe_id: snapshot.universe_id.clone(),
         counts: counts_of(&snapshot),
+        destination: destination.to_path_buf(),
+        residuals,
     })
 }
 
-fn failure(
+fn migration_failure(
     stage: MigrationStage,
     source: &Path,
-    candidate: &Path,
-    include_residuals: bool,
+    destination: &Path,
+    state: &RunState,
     cause: Error,
 ) -> MigrationError {
     MigrationError {
         stage,
         source: source.to_path_buf(),
-        candidate: candidate.to_path_buf(),
-        residuals: if include_residuals {
-            residual_files(candidate)
-        } else {
-            Vec::new()
-        },
-        cause,
+        destination: destination.to_path_buf(),
+        residuals: state.residuals(destination),
+        cause: Box::new(cause),
     }
+}
+
+fn cleanup_failed_run(state: &mut RunState, error: &mut MigrationError) {
+    // Before publication, this run owns the candidate only while the path still
+    // holds the database built from the pinned snapshot. Re-verifying before
+    // deleting means a path that was replaced is reported, never removed.
+    //
+    // After a successful link the candidate is a second name for the published
+    // destination. It is never removed here: the destination may have been
+    // removed or replaced, and the alias may be the only complete copy left.
+    if !state.published {
+        let owned = match (&state.candidate, &state.snapshot) {
+            (Some(candidate), Some(snapshot)) => {
+                verify_migration_database(candidate, snapshot, "candidate").is_ok()
+            }
+            _ => false,
+        };
+        if owned {
+            if let Some(candidate) = &state.candidate {
+                let _ = std::fs::remove_file(candidate);
+            }
+        }
+    }
+    // The destination is never removed here: after a successful link it is the
+    // only complete copy, and before a link this run did not create it.
+    error.residuals = state.residuals(&error.destination);
 }
 
 fn counts_of(snapshot: &Snapshot) -> Counts {
@@ -217,6 +779,98 @@ fn counts_of(snapshot: &Snapshot) -> Counts {
     }
 }
 
+fn build_private_candidate(
+    source: &Path,
+    destination: &Path,
+    snapshot: &Snapshot,
+    state: &mut RunState,
+) -> std::result::Result<PathBuf, MigrationError> {
+    for _ in 0..CANDIDATE_ATTEMPTS {
+        let candidate = candidate_path(source, destination).map_err(|cause| {
+            migration_failure(
+                MigrationStage::BuildCandidate,
+                source,
+                destination,
+                state,
+                cause,
+            )
+        })?;
+        // Record the path before reserving it, so a failure after `create_new`
+        // still knows which file this run owns and may remove.
+        state.candidate = Some(candidate.clone());
+        match Store::import_new_private(&candidate, snapshot.clone()) {
+            Ok(_) => return Ok(candidate),
+            Err(Error::Validation {
+                reason: ValidationReason::PathExists,
+                ..
+            }) => {
+                // This name was taken before the reservation; it is not ours.
+                state.candidate = None;
+            }
+            Err(cause) => {
+                return Err(migration_failure(
+                    MigrationStage::BuildCandidate,
+                    source,
+                    destination,
+                    state,
+                    cause,
+                ))
+            }
+        }
+    }
+    Err(migration_failure(
+        MigrationStage::BuildCandidate,
+        source,
+        destination,
+        state,
+        Error::Storage {
+            message: "could not reserve a unique candidate file".to_string(),
+        },
+    ))
+}
+
+/// Flushes the candidate and returns its exact header and length.
+///
+/// The store is already closed when this runs. The extra handle is opened for
+/// writing only to call `sync_all`; no SQLite page is written through it.
+fn flush_candidate(path: &Path) -> Result<SourceObservation> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|err| io_error("open", path, err))?;
+    file.sync_all()
+        .map_err(|err| io_error("flush", path, err))?;
+    drop(file);
+    let (header, len) = read_observation(path)?;
+    Ok(SourceObservation { header, len })
+}
+
+/// Publishes a verified candidate with one atomic no-overwrite hard link.
+///
+/// The candidate lives in the destination directory, so both names are on the
+/// same filesystem. A filesystem without hard-link support fails closed; there
+/// is no copy or rename fallback, and an existing destination is never
+/// replaced.
+fn publish(candidate: &Path, destination: &Path) -> Result<()> {
+    match std::fs::hard_link(candidate, destination) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(Error::validation(
+            ValidationReason::PathExists,
+            "destination",
+            None,
+        )),
+        Err(err) => Err(Error::Io {
+            message: format!(
+                "publish {} as {} with a no-overwrite hard link: {err}; \
+                 the filesystem must support hard links",
+                candidate.display(),
+                destination.display()
+            ),
+        }),
+    }
+}
+
 fn preflight_source(path: &Path) -> Result<SourceObservation> {
     require_regular_file(path, "source")?;
     require_no_sidecars(path)?;
@@ -226,21 +880,21 @@ fn preflight_source(path: &Path) -> Result<SourceObservation> {
     Ok(SourceObservation { header, len })
 }
 
-fn preflight_candidate(source: &Path, candidate: &Path) -> Result<()> {
-    if candidate.file_name().is_none() {
+fn preflight_destination(source: &Path, destination: &Path) -> Result<()> {
+    if destination.file_name().is_none() {
         return Err(Error::validation(
             ValidationReason::PathMissing,
-            "candidate",
+            "destination",
             None,
         ));
     }
-    let parent = candidate_parent(candidate);
+    let parent = destination_parent(destination);
     let parent_metadata = match std::fs::metadata(parent) {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Err(Error::validation(
                 ValidationReason::PathMissing,
-                "candidate_parent",
+                "destination_parent",
                 None,
             ))
         }
@@ -249,23 +903,23 @@ fn preflight_candidate(source: &Path, candidate: &Path) -> Result<()> {
     if !parent_metadata.is_dir() {
         return Err(Error::validation(
             ValidationReason::PathMissing,
-            "candidate_parent",
+            "destination_parent",
             None,
         ));
     }
-    match std::fs::symlink_metadata(candidate) {
+    match std::fs::symlink_metadata(destination) {
         Ok(_) => {
             return Err(Error::validation(
                 ValidationReason::PathExists,
-                "candidate",
+                "destination",
                 None,
             ))
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(io_error("inspect", candidate, err)),
+        Err(err) => return Err(io_error("inspect", destination, err)),
     }
-    require_no_sidecars(candidate)?;
-    let resolved_candidate = resolve_candidate_path(candidate)?;
+    require_no_sidecars(destination)?;
+    let resolved_destination = resolve_new_path(destination)?;
     let canonical_source = std::fs::canonicalize(source).map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             Error::validation(ValidationReason::PathMissing, "source", None)
@@ -273,64 +927,107 @@ fn preflight_candidate(source: &Path, candidate: &Path) -> Result<()> {
             io_error("resolve", source, err)
         }
     })?;
-    let collides_with_source = same_path(&resolved_candidate, &canonical_source);
+    let collides_with_source = same_path(&resolved_destination, &canonical_source);
     let collides_with_sidecar = SIDECARS.iter().any(|suffix| {
         same_path(
-            &resolved_candidate,
+            &resolved_destination,
             &sidecar_path(&canonical_source, suffix),
         )
     });
     if collides_with_source || collides_with_sidecar {
         return Err(Error::validation(
             ValidationReason::PathExists,
-            "candidate",
+            "destination",
             None,
         ));
     }
     Ok(())
 }
 
-fn candidate_parent(candidate: &Path) -> &Path {
-    candidate
+fn destination_parent(destination: &Path) -> &Path {
+    destination
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."))
 }
 
-/// Resolves the directory and the final component of a candidate that does not
-/// exist yet. `canonicalize` cannot be called on the candidate itself, but it
-/// resolves `..` and symlinked parents, and the final name is normalized for
-/// the alias rules of the host filesystem.
-fn resolve_candidate_path(candidate: &Path) -> Result<PathBuf> {
-    let parent = candidate_parent(candidate);
+/// Chooses one unique, dot-prefixed candidate name in the destination directory.
+///
+/// The name carries the process id, a clock-derived nonce, and an atomic
+/// sequence. It is only a proposal: `Store::import_new_private` reserves it
+/// with `create_new`, and the caller retries on a real collision.
+fn candidate_path(source: &Path, destination: &Path) -> Result<PathBuf> {
+    let parent = destination_parent(destination);
     let canonical_parent = std::fs::canonicalize(parent).map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
-            Error::validation(ValidationReason::PathMissing, "candidate_parent", None)
+            Error::validation(ValidationReason::PathMissing, "destination_parent", None)
         } else {
             io_error("resolve", parent, err)
         }
     })?;
-    let name = candidate
+    let canonical_source = std::fs::canonicalize(source).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            Error::validation(ValidationReason::PathMissing, "source", None)
+        } else {
+            io_error("resolve", source, err)
+        }
+    })?;
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let sequence = CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let name = format!(
+        "{CANDIDATE_PREFIX}{}-{nanos:x}-{sequence:x}",
+        std::process::id()
+    );
+    let path = canonical_parent.join(name);
+    let collides_with_source = same_path(&path, &canonical_source)
+        || SIDECARS
+            .iter()
+            .any(|suffix| same_path(&path, &sidecar_path(&canonical_source, suffix)));
+    if collides_with_source {
+        return Err(Error::Storage {
+            message: "could not choose a candidate name outside the source".to_string(),
+        });
+    }
+    Ok(path)
+}
+
+/// Resolves the directory and the final component of a path that does not
+/// exist yet. `canonicalize` cannot be called on the path itself, but it
+/// resolves `..` and symlinked parents, and the final name is normalized for
+/// the alias rules of the host filesystem.
+fn resolve_new_path(path: &Path) -> Result<PathBuf> {
+    let parent = destination_parent(path);
+    let canonical_parent = std::fs::canonicalize(parent).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            Error::validation(ValidationReason::PathMissing, "destination_parent", None)
+        } else {
+            io_error("resolve", parent, err)
+        }
+    })?;
+    let name = path
         .file_name()
-        .ok_or_else(|| Error::validation(ValidationReason::PathMissing, "candidate", None))?;
-    Ok(canonical_parent.join(normalized_candidate_name(name)?))
+        .ok_or_else(|| Error::validation(ValidationReason::PathMissing, "destination", None))?;
+    Ok(canonical_parent.join(normalized_new_name(name)?))
 }
 
 #[cfg(windows)]
-fn normalized_candidate_name(name: &std::ffi::OsStr) -> Result<std::ffi::OsString> {
+fn normalized_new_name(name: &std::ffi::OsStr) -> Result<std::ffi::OsString> {
     let text = name.to_string_lossy();
     let trimmed = text.trim_end_matches(['.', ' ']);
     if trimmed.is_empty() || trimmed != text.as_ref() {
         return Err(Error::validation(
             ValidationReason::PathMissing,
-            "candidate",
+            "destination",
             None,
         ));
     }
     if trimmed.contains(':') || is_windows_reserved_name(trimmed) {
         return Err(Error::validation(
             ValidationReason::PathMissing,
-            "candidate",
+            "destination",
             None,
         ));
     }
@@ -338,7 +1035,7 @@ fn normalized_candidate_name(name: &std::ffi::OsStr) -> Result<std::ffi::OsStrin
 }
 
 #[cfg(not(windows))]
-fn normalized_candidate_name(name: &std::ffi::OsStr) -> Result<std::ffi::OsString> {
+fn normalized_new_name(name: &std::ffi::OsStr) -> Result<std::ffi::OsString> {
     Ok(name.to_os_string())
 }
 
@@ -375,8 +1072,9 @@ fn same_path(left: &Path, right: &Path) -> bool {
     left == right
 }
 
-/// Keeps the source read transaction alive across candidate construction and
-/// verification. Dropping the guard rolls the transaction back.
+/// Keeps the source read transaction alive across candidate construction,
+/// verification, publication, and post-publication destination verification.
+/// Dropping the guard rolls the transaction back.
 struct PinnedSource {
     conn: Connection,
     transaction: bool,
@@ -424,6 +1122,7 @@ impl PinnedSource {
             .execute_batch("ROLLBACK")
             .map_err(|err| map_sql("rollback", err))?;
         self.transaction = false;
+        require_source_observation(path, observation)?;
         Ok(())
     }
 }
@@ -826,15 +1525,29 @@ fn canonicalize_snapshot(snapshot: &mut Snapshot) {
         .sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
 }
 
-fn verify_candidate(candidate: &Path, expected: &Snapshot) -> Result<()> {
-    require_regular_file(candidate, "candidate")?;
-    require_no_sidecars(candidate)?;
-    let (header, len) = read_observation(candidate)?;
+struct DatabaseFacts {
+    snapshot: Snapshot,
+    counts: Counts,
+    mentions: u64,
+    revised_pages: u64,
+}
+
+/// Runs the checks shared by general verification and migration verification.
+///
+/// It never opens a write handle and never calls `Store::open`, so it cannot
+/// change a database or trigger an upgrade. The returned snapshot is the typed,
+/// canonical page, type, entity, definition, and assertion reading, including
+/// mention geometry; page revisions are validated separately and counted in
+/// `DatabaseFacts::revised_pages`.
+fn inspect_v2_database(path: &Path, field: &'static str) -> Result<DatabaseFacts> {
+    require_regular_file(path, field)?;
+    require_no_sidecars(path)?;
+    let (header, len) = read_observation(path)?;
     validate_candidate_header(&header, len)?;
     let observation = SourceObservation { header, len };
 
-    let conn = Connection::open_with_flags(candidate, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|err| map_sql("open candidate", err))?;
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|err| map_sql("open database", err))?;
     conn.busy_timeout(SOURCE_BUSY_TIMEOUT)
         .map_err(|err| map_sql("busy_timeout", err))?;
     conn.execute_batch("PRAGMA query_only = ON")
@@ -843,15 +1556,15 @@ fn verify_candidate(candidate: &Path, expected: &Snapshot) -> Result<()> {
     conn.execute_batch("PRAGMA foreign_keys = ON")
         .map_err(|err| map_sql("foreign_keys", err))?;
     require_foreign_keys_enabled(&conn)?;
-    require_candidate_observation(candidate, &observation)?;
+    require_observed(path, field, &observation)?;
 
     conn.execute_batch("BEGIN DEFERRED")
-        .map_err(|err| map_sql("begin candidate", err))?;
+        .map_err(|err| map_sql("begin database", err))?;
     conn.query_row("SELECT COUNT(*) FROM sqlite_master", [], |row| {
         row.get::<_, i64>(0)
     })
-    .map_err(|err| map_sql("pin candidate snapshot", err))?;
-    require_candidate_observation(candidate, &observation)?;
+    .map_err(|err| map_sql("pin database snapshot", err))?;
+    require_observed(path, field, &observation)?;
 
     let user_version: i32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
@@ -877,63 +1590,105 @@ fn verify_candidate(candidate: &Path, expected: &Snapshot) -> Result<()> {
     require_integrity(&conn)?;
     require_foreign_keys(&conn)?;
 
-    let actual = store::read_snapshot(&conn)?;
+    let snapshot = store::read_snapshot(&conn)?;
+    let counts = counts_from_connection(&conn)?;
     let mentions = count_table(&conn, "mentions")?;
-    if mentions != 0 {
-        return Err(Error::Storage {
-            message: format!("candidate has {mentions} occurrences"),
-        });
-    }
-    let revised: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pages WHERE revision != 0",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|err| map_sql("candidate revisions", err))?;
-    let revised = u64::try_from(revised).map_err(|_| Error::Storage {
-        message: "negative candidate revision count".to_string(),
-    })?;
-    if revised != 0 {
-        return Err(Error::Storage {
-            message: format!("candidate has {revised} revised pages"),
-        });
-    }
+    let revised_pages = validate_page_revisions(&conn)?;
 
-    let actual_counts = counts_from_connection(&conn)?;
-    if actual_counts != counts_of(expected) {
-        return Err(Error::Storage {
-            message: "candidate record counts differ from the legacy snapshot".to_string(),
-        });
-    }
-    if &actual != expected {
-        return Err(Error::Storage {
-            message: "candidate records differ from the legacy snapshot".to_string(),
-        });
-    }
-
-    require_candidate_observation(candidate, &observation)?;
+    require_observed(path, field, &observation)?;
     conn.execute_batch("ROLLBACK")
-        .map_err(|err| map_sql("rollback candidate", err))?;
-    require_candidate_observation(candidate, &observation)?;
+        .map_err(|err| map_sql("rollback database", err))?;
+    require_observed(path, field, &observation)?;
+    Ok(DatabaseFacts {
+        snapshot,
+        counts,
+        mentions,
+        revised_pages,
+    })
+}
+
+#[cfg(test)]
+fn verify_candidate(candidate: &Path, expected: &Snapshot) -> Result<()> {
+    verify_migration_database(candidate, expected, "candidate")
+}
+
+/// Applies the strict migration contract on top of general verification.
+///
+/// A migrated database must still equal the pinned legacy snapshot exactly,
+/// with zero page revisions and zero occurrences. The published destination is
+/// checked with the same function as the candidate.
+fn verify_migration_database(path: &Path, expected: &Snapshot, field: &'static str) -> Result<()> {
+    let facts = inspect_v2_database(path, field)?;
+    if facts.mentions != 0 {
+        return Err(Error::Storage {
+            message: format!("{field} has {} occurrences", facts.mentions),
+        });
+    }
+    if facts.revised_pages != 0 {
+        return Err(Error::Storage {
+            message: format!("{field} has {} revised pages", facts.revised_pages),
+        });
+    }
+    if facts.counts != counts_of(expected) {
+        return Err(Error::Storage {
+            message: format!("{field} record counts differ from the legacy snapshot"),
+        });
+    }
+    if &facts.snapshot != expected {
+        return Err(Error::Storage {
+            message: format!("{field} records differ from the legacy snapshot"),
+        });
+    }
     Ok(())
+}
+
+/// Reads every revision as a `PageRevision` and counts nonzero ones.
+///
+/// The SQL schema already constrains the column, but a database can be edited
+/// with checks disabled. General verification accepts any valid nonnegative
+/// revision; migration verification additionally requires that the count be
+/// zero.
+fn validate_page_revisions(conn: &Connection) -> Result<u64> {
+    let mut statement = conn
+        .prepare("SELECT revision FROM pages ORDER BY id")
+        .map_err(|err| map_sql("prepare revisions", err))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, i64>(0))
+        .map_err(|err| map_sql("query revisions", err))?;
+    let mut revised = 0u64;
+    for row in rows {
+        let raw = row.map_err(|err| map_sql("revision row", err))?;
+        let revision = PageRevision::new(raw)?;
+        if revision != PageRevision::ZERO {
+            revised += 1;
+        }
+    }
+    Ok(revised)
+}
+
+fn require_observed(path: &Path, field: &'static str, expected: &SourceObservation) -> Result<()> {
+    match field {
+        "candidate" => require_candidate_observation(path, expected),
+        "destination" => require_destination_observation(path, expected),
+        _ => require_file_observation(path, field, expected, database_changed),
+    }
 }
 
 fn require_candidate_metadata(conn: &Connection) -> Result<()> {
     let rows: i64 = conn
         .query_row("SELECT COUNT(*) FROM metadata", [], |row| row.get(0))
-        .map_err(|err| map_sql("candidate metadata", err))?;
+        .map_err(|err| map_sql("metadata", err))?;
     if rows != 1 {
         return Err(Error::Storage {
-            message: format!("candidate metadata row count is {rows}"),
+            message: format!("metadata row count is {rows}"),
         });
     }
     let singleton: i64 = conn
         .query_row("SELECT singleton FROM metadata", [], |row| row.get(0))
-        .map_err(|err| map_sql("candidate metadata", err))?;
+        .map_err(|err| map_sql("metadata", err))?;
     if singleton != 1 {
         return Err(Error::Storage {
-            message: "candidate metadata singleton is not 1".to_string(),
+            message: "metadata singleton is not 1".to_string(),
         });
     }
     Ok(())
@@ -1083,6 +1838,10 @@ fn require_source_observation(path: &Path, expected: &SourceObservation) -> Resu
 
 fn require_candidate_observation(path: &Path, expected: &SourceObservation) -> Result<()> {
     require_file_observation(path, "candidate", expected, candidate_changed)
+}
+
+fn require_destination_observation(path: &Path, expected: &SourceObservation) -> Result<()> {
+    require_file_observation(path, "destination", expected, destination_changed)
 }
 
 fn read_observation(path: &Path) -> Result<([u8; HEADER_LEN], u64)> {
@@ -1242,6 +2001,18 @@ fn source_changed() -> Error {
 fn candidate_changed() -> Error {
     Error::Storage {
         message: "candidate changed during verification".to_string(),
+    }
+}
+
+fn destination_changed() -> Error {
+    Error::Storage {
+        message: "destination changed during verification".to_string(),
+    }
+}
+
+fn database_changed() -> Error {
+    Error::Storage {
+        message: "database changed during verification".to_string(),
     }
 }
 

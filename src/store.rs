@@ -680,13 +680,33 @@ impl Store {
     }
 
     pub fn import_new(path: &Path, snapshot: Snapshot) -> Result<(Self, ImportOutcome)> {
+        Self::import_new_with_mode(path, snapshot, false)
+    }
+
+    /// Creates a private version 2 candidate and closes it before returning.
+    ///
+    /// On Unix the file is created with mode `0600`, so its contents are never
+    /// group- or world-readable while the migration is filling it. On Windows
+    /// `create_new` inherits the destination directory's ACL; the alpha does
+    /// not attempt to tighten it with platform-specific APIs.
+    pub(crate) fn import_new_private(path: &Path, snapshot: Snapshot) -> Result<ImportOutcome> {
+        let (store, outcome) = Self::import_new_with_mode(path, snapshot, true)?;
+        drop(store);
+        Ok(outcome)
+    }
+
+    fn import_new_with_mode(
+        path: &Path,
+        snapshot: Snapshot,
+        private: bool,
+    ) -> Result<(Self, ImportOutcome)> {
         ensure_unique_snapshot(&snapshot)?;
         let snapshot = normalize_snapshot(snapshot);
         // The geometry of an occurrence is local to the document, so it is
         // checked before the destination is reserved: a malformed document
         // must not leave a residual file behind.
         validate_snapshot_mentions(&snapshot)?;
-        reserve_new_file(path)?;
+        reserve_file(path, private)?;
         let mut conn = match open_read_write(path) {
             Ok(conn) => conn,
             Err(err) => return Err(residual(path, err)),
@@ -783,11 +803,20 @@ fn write_schema(transaction: &Transaction, universe_id: &UniverseId) -> Result<(
 }
 
 fn reserve_new_file(path: &Path) -> Result<()> {
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-    {
+    reserve_file(path, false)
+}
+
+fn reserve_file(path: &Path, private: bool) -> Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+    match options.open(path) {
         Ok(file) => {
             drop(file);
             Ok(())
@@ -2320,5 +2349,18 @@ mod tests {
             "{open_err}"
         );
         assert!(reserved.is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_reservation_is_owner_only_before_data_is_written() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("candidate.sqlite");
+        super::reserve_file(&path, true).expect("private reserve");
+        let metadata = std::fs::metadata(&path).expect("metadata");
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        assert_eq!(metadata.len(), 0);
     }
 }
