@@ -18,27 +18,18 @@ that cap plus one byte, and a failed export keeps its residual file instead
 of deleting the path. Those fixes are on `feat/4-json-exchange` and still
 need re-review. Schema version 1 is unchanged.
 
-## PA-I2-A merged, PA-I2-B checkpoint pending review
+## PA-I2-B merged; PA-I2-C C1 checkpoint pending review
 
-PA-I2-A is the reviewed baseline. It added the pure mention contract in
-`src/mentions.rs` with `MentionId`, `Mention`, `AnnotatedBody`, `MentionEdit`,
-`validate_mentions`, and `apply_mention_edit`. That module is pure and stays
-unchanged.
+PA-I2-B is merged into `main` as `714260d` (PR #15). The storage schema and
+the JSON format are version 2; a version 1 database still fails closed with a
+migration outcome until PA-I2-C publishes the conversion.
 
-Issue #14 is the authorized PA-I2-B increment. The branch
-`feat/14-page-mention-persistence` holds the complete candidate: checkpoint B2
-adds the JSON format 2 exchange, so an export carries the occurrences and a
-version 1 JSON document still imports as a universe without occurrences. The
-storage schema is version 2 and the JSON format is version 2, and they are
-separate concepts. Do not merge it, do not add a migration, and do not start
-PA-I2-C. A version 1 database still fails closed with a migration outcome,
-and that migration belongs to PA-I2-C. Do not copy this unreviewed behavior
-into `.csdd/specs.md` or `.csdd/decisions.md` before the gate passes.
-
-The Astra review found three fail-closed defects on `cbbe0b8`. All three are
-fixed on the branch and waiting for the delta gate: a page id whose occurrence
-rows survived its page is refused by `create_page`, both JSON imports and the
-snapshot import; an import reconciles a page only after its stored revision
-passes `PageRevision`; and a positional JSON array is refused wherever the
-format defines a record. Schema and format stay at version 2, `src/mentions.rs`
-is still byte identical to `main`, and no migration was added.
+Issue #16 authorizes PA-I2-C. C1 is complete on
+`feat/16-safe-v1-v2-migration`: a crate-private `src/migration.rs` recognizes
+both historical version 1 schemas, holds one consistent read transaction
+across extraction, candidate construction, and verification, builds a private
+candidate through `Store::import_new`, and verifies it through a read-only
+connection. Every migrated page is checked for revision 0 and zero
+occurrences. Publication, recovery, hard links, and the migration CLI remain
+C2 and are not implemented. Do not merge C1, do not start C2, and do not
+delete a source or candidate on failure; residuals stay in place for review.

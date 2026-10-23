@@ -1,6 +1,11 @@
 mod error;
 mod exchange;
 mod mentions;
+// C1 keeps migration crate-private until C2 settles the public surface. Its
+// verified-candidate path is exercised by unit tests and has no library caller
+// yet, so allow the staging dead code in non-test builds until C2 publishes it.
+#[cfg_attr(not(test), allow(dead_code))]
+mod migration;
 mod model;
 mod store;
 

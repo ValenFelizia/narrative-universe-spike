@@ -15,14 +15,14 @@ use crate::model::{
     UniverseId, Value, ValueClass,
 };
 
-const SCHEMA: &str = include_str!("schema.sql");
+pub(crate) const SCHEMA: &str = include_str!("schema.sql");
 const HEADER_LEN: usize = 100;
 const MAGIC: &[u8] = b"SQLite format 3\0";
 const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
 const SQLITE_CONSTRAINT_PRIMARYKEY: i32 = 1555;
 const LEGACY_SCHEMA_VERSION: i32 = 1;
 
-const ASSERTION_COLUMNS: &str = "id, subject_id, definition_id, value_kind, text_value, bool_value, target_entity_id, canon, source_status_raw, provenance_external_ref, provenance_locator, provenance_fragment, provenance_source_revision, scope_note, archived";
+pub(crate) const ASSERTION_COLUMNS: &str = "id, subject_id, definition_id, value_kind, text_value, bool_value, target_entity_id, canon, source_status_raw, provenance_external_ref, provenance_locator, provenance_fragment, provenance_source_revision, scope_note, archived";
 
 // `IS` treats NULL as equal to NULL, so empty text columns do not split two booleans.
 const INCOMPATIBLE_PAIRS: &str = "
@@ -650,18 +650,11 @@ impl Store {
             .conn
             .transaction()
             .map_err(|err| map_sql("begin", err))?;
-        let snapshot = Snapshot {
-            universe_id: self.universe_id.clone(),
-            pages: list_page_snapshots(&transaction)?,
-            types: list_types(&transaction)?,
-            entities: list_entities(&transaction)?,
-            definitions: list_definitions(&transaction)?,
-            assertions: list_assertions(
-                &transaction,
-                &format!("SELECT {ASSERTION_COLUMNS} FROM assertions ORDER BY id"),
-                params![],
-            )?,
-        };
+        let mut snapshot = read_snapshot(&transaction)?;
+        // Keep the handle's identity authoritative for an export/import pair.
+        // A concurrent writer that changes the metadata row must not make an
+        // otherwise valid export fail its own import with WrongUniverse.
+        snapshot.universe_id = self.universe_id.clone();
         transaction.commit().map_err(|err| map_sql("commit", err))?;
         Ok(snapshot)
     }
@@ -731,6 +724,26 @@ impl Store {
         transaction.commit().map_err(|err| map_sql("commit", err))?;
         Ok(value)
     }
+}
+
+/// Reads one canonical logical snapshot from a connection.
+///
+/// The caller owns the connection and its transaction. A read-only caller can
+/// use the same typed readers, so a migration verifier cannot accidentally see
+/// records that the ordinary snapshot path would reject.
+pub(crate) fn read_snapshot(conn: &Connection) -> Result<Snapshot> {
+    Ok(Snapshot {
+        universe_id: read_universe(conn)?,
+        pages: list_page_snapshots(conn)?,
+        types: list_types(conn)?,
+        entities: list_entities(conn)?,
+        definitions: list_definitions(conn)?,
+        assertions: list_assertions(
+            conn,
+            &format!("SELECT {ASSERTION_COLUMNS} FROM assertions ORDER BY id"),
+            params![],
+        )?,
+    })
 }
 
 fn init_new(conn: &mut Connection, universe_id: &UniverseId) -> Result<()> {
@@ -1003,7 +1016,7 @@ fn residual(path: &Path, err: Error) -> Error {
     }
 }
 
-fn ensure_unique_snapshot(snapshot: &Snapshot) -> Result<()> {
+pub(crate) fn ensure_unique_snapshot(snapshot: &Snapshot) -> Result<()> {
     unique_ids(
         snapshot.pages.iter().map(|page| page.page.id.as_str()),
         "page",
@@ -1651,22 +1664,22 @@ fn value_columns(value: &Value) -> (&'static str, Option<&str>, Option<i64>, Opt
     }
 }
 
-struct AssertionParts {
-    id: String,
-    subject_id: String,
-    definition_id: String,
-    value_kind: String,
-    text_value: Option<String>,
-    bool_value: Option<i64>,
-    target_entity_id: Option<String>,
-    canon: String,
-    source_status_raw: Option<String>,
-    provenance_external_ref: Option<String>,
-    provenance_locator: Option<String>,
-    provenance_fragment: Option<String>,
-    provenance_source_revision: Option<String>,
-    scope_note: Option<String>,
-    archived: i64,
+pub(crate) struct AssertionParts {
+    pub(crate) id: String,
+    pub(crate) subject_id: String,
+    pub(crate) definition_id: String,
+    pub(crate) value_kind: String,
+    pub(crate) text_value: Option<String>,
+    pub(crate) bool_value: Option<i64>,
+    pub(crate) target_entity_id: Option<String>,
+    pub(crate) canon: String,
+    pub(crate) source_status_raw: Option<String>,
+    pub(crate) provenance_external_ref: Option<String>,
+    pub(crate) provenance_locator: Option<String>,
+    pub(crate) provenance_fragment: Option<String>,
+    pub(crate) provenance_source_revision: Option<String>,
+    pub(crate) scope_note: Option<String>,
+    pub(crate) archived: i64,
 }
 
 fn read_assertion_parts(row: &rusqlite::Row<'_>) -> rusqlite::Result<AssertionParts> {
@@ -1689,7 +1702,7 @@ fn read_assertion_parts(row: &rusqlite::Row<'_>) -> rusqlite::Result<AssertionPa
     })
 }
 
-fn assertion_from_parts(parts: AssertionParts) -> Result<Assertion> {
+pub(crate) fn assertion_from_parts(parts: AssertionParts) -> Result<Assertion> {
     let id = parse_stored_id("assertion", &parts.id, AssertionId::parse)?;
     let subject_id = parse_stored_id("subject", &parts.subject_id, EntityId::parse)?;
     let definition_id = parse_stored_id("definition", &parts.definition_id, DefinitionId::parse)?;
@@ -1739,9 +1752,9 @@ fn assertion_from_parts(parts: AssertionParts) -> Result<Assertion> {
                 });
             }
         }
-        other => {
+        _ => {
             return Err(Error::Storage {
-                message: format!("invalid value kind {other} on {id}"),
+                message: format!("invalid value kind on {id}"),
             });
         }
     };
@@ -1765,11 +1778,11 @@ fn assertion_from_parts(parts: AssertionParts) -> Result<Assertion> {
 
 fn parse_stored_id<T>(field: &str, raw: &str, parse: impl FnOnce(&str) -> Result<T>) -> Result<T> {
     parse(raw).map_err(|_| Error::Storage {
-        message: format!("invalid stored {field} id {raw}"),
+        message: format!("invalid stored {field} id"),
     })
 }
 
-fn read_flag(value: i64, field: &str) -> Result<bool> {
+pub(crate) fn read_flag(value: i64, field: &str) -> Result<bool> {
     match value {
         0 => Ok(false),
         1 => Ok(true),
@@ -2209,6 +2222,14 @@ mod tests {
     use crate::{Error, UniverseId, ValidationReason};
 
     #[test]
+    fn stored_id_errors_do_not_echo_the_value() {
+        let error =
+            super::parse_stored_id("target", "SECRET_MARKER", crate::model::EntityId::parse)
+                .expect_err("invalid stored id");
+        assert!(!error.to_string().contains("SECRET_MARKER"), "{error}");
+    }
+
+    #[test]
     fn open_connection_enables_foreign_keys_and_delete_journal() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("pragma.sqlite");
@@ -2239,6 +2260,29 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read version");
         assert_eq!(version, 0);
+    }
+
+    #[test]
+    fn export_keeps_the_handle_universe_when_metadata_changes_elsewhere() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("export.sqlite");
+        let original = UniverseId::parse("11111111-1111-4111-8111-111111111111").expect("universe");
+        let other = UniverseId::parse("22222222-2222-4222-8222-222222222222").expect("universe");
+        let mut store = Store::create(&path, original.clone()).expect("create");
+        let conn = rusqlite::Connection::open(&path).expect("external connection");
+        conn.execute(
+            "UPDATE metadata SET universe_id = ?1",
+            rusqlite::params![other.as_str()],
+        )
+        .expect("metadata update");
+        drop(conn);
+
+        let snapshot = store.export_snapshot().expect("export");
+        assert_eq!(snapshot.universe_id, original);
+        let outcome = store
+            .import_snapshot(snapshot)
+            .expect("import with the cached identity");
+        assert_eq!(outcome.inserted, 0);
     }
 
     #[test]
