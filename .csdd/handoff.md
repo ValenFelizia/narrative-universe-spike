@@ -18,27 +18,41 @@ that cap plus one byte, and a failed export keeps its residual file instead
 of deleting the path. Those fixes are on `feat/4-json-exchange` and still
 need re-review. Schema version 1 is unchanged.
 
-## PA-I2-A merged, PA-I2-B checkpoint pending review
+## PA-I2-B merged; PA-I2-C C2 pending review
 
-PA-I2-A is the reviewed baseline. It added the pure mention contract in
-`src/mentions.rs` with `MentionId`, `Mention`, `AnnotatedBody`, `MentionEdit`,
-`validate_mentions`, and `apply_mention_edit`. That module is pure and stays
-unchanged.
+PA-I2-B is merged into `main` as `714260d` (PR #15). The storage schema and
+the JSON format are version 2.
 
-Issue #14 is the authorized PA-I2-B increment. The branch
-`feat/14-page-mention-persistence` holds the complete candidate: checkpoint B2
-adds the JSON format 2 exchange, so an export carries the occurrences and a
-version 1 JSON document still imports as a universe without occurrences. The
-storage schema is version 2 and the JSON format is version 2, and they are
-separate concepts. Do not merge it, do not add a migration, and do not start
-PA-I2-C. A version 1 database still fails closed with a migration outcome,
-and that migration belongs to PA-I2-C. Do not copy this unreviewed behavior
-into `.csdd/specs.md` or `.csdd/decisions.md` before the gate passes.
+Issue #16 authorizes PA-I2-C. C1 and C2 are implemented on
+`feat/16-safe-v1-v2-migration`. `migrate_v1_to_v2` holds one pinned source
+read transaction and its captured v1 snapshot through candidate build,
+candidate verification, publication, and post-publication destination
+verification. The candidate is a dot-prefixed private file in the destination
+directory (`0600` on Unix, inherited ACL on Windows; the leading dot is not a
+hidden attribute on Windows), is flushed and closed before verification, and
+is published with exactly one atomic no-overwrite hard link; there is no
+rename or copy fallback. The source is never written. The published
+destination is fully re-verified while the source is still pinned. After the
+source is released, the alias is fully verified once more, then the
+destination's type, sidecars, header, and length are observed as the last check
+before the unlink; only then is the alias removed. General `verify_v2` /
+`spike verify` is read-only and accepts edited v2 databases with nonzero
+revisions and valid occurrences; the migration verifier additionally requires
+exact snapshot equality, zero revisions, zero occurrences, and exact table
+counts.
 
-The Astra review found three fail-closed defects on `cbbe0b8`. All three are
-fixed on the branch and waiting for the delta gate: a page id whose occurrence
-rows survived its page is refused by `create_page`, both JSON imports and the
-snapshot import; an import reconciles a page only after its stored revision
-passes `PageRevision`; and a positional JSON array is refused wherever the
-format defines a record. Schema and format stay at version 2, `src/mentions.rs`
-is still byte identical to `main`, and no migration was added.
+Failures report a stage, a cause, and every residual path. Before publication,
+cleanup removes the candidate only when it still verifies against the pinned
+snapshot; a changed or replaced path is kept and reported. After publication,
+cleanup never removes the destination or the alias, because either may be the
+only complete copy. A process crash can leave a dot-prefixed candidate or a
+complete published destination; no run resumes automatically, adopts, relinks,
+or deletes an unknown file, and there is no `--force`. Windows power-loss
+durability of the directory entry is not claimed. The debug-only
+`NARRATIVE_UNIVERSE_CRASH_AT` hook covers `candidate-built`,
+`candidate-verified`, `published`, `destination-verified`,
+`destination-rechecked`, `alias-verified`, and `cleaned-up`.
+
+Do not merge PA-I2-C and do not start another increment. Report residual paths
+for review; do not delete a source, a changed candidate, or a published
+destination by hand until the review says otherwise.

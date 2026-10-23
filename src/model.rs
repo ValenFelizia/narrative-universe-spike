@@ -229,7 +229,7 @@ impl Canon {
             "ABIERTO" => Ok(Self::Abierto),
             "MISTERIO_INTENCIONAL" => Ok(Self::MisterioIntencional),
             _ => Err(Error::Storage {
-                message: format!("invalid canon {raw}"),
+                message: "invalid canon".to_string(),
             }),
         }
     }
@@ -257,7 +257,7 @@ impl ValueClass {
             "boolean" => Ok(Self::Boolean),
             "reference" => Ok(Self::Reference),
             _ => Err(Error::Storage {
-                message: format!("invalid value class {raw}"),
+                message: "invalid value class".to_string(),
             }),
         }
     }
@@ -282,7 +282,7 @@ impl Cardinality {
             "singular" => Ok(Self::Singular),
             "multiple" => Ok(Self::Multiple),
             _ => Err(Error::Storage {
-                message: format!("invalid cardinality {raw}"),
+                message: "invalid cardinality".to_string(),
             }),
         }
     }

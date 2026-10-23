@@ -1,6 +1,7 @@
 mod error;
 mod exchange;
 mod mentions;
+mod migration;
 mod model;
 mod store;
 
@@ -9,6 +10,10 @@ pub use exchange::{
     export_json, import_json, import_new_json, read_limited, write_exclusive, MAX_DOCUMENT_BYTES,
 };
 pub use mentions::{apply_mention_edit, validate_mentions, AnnotatedBody, Mention, MentionEdit};
+pub use migration::{
+    migrate_v1_to_v2, verify_v2, MigrationError, MigrationReport, MigrationStage,
+    VerificationError, VerificationReport,
+};
 pub use model::{
     Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId, Entity, EntityId,
     EntityType, MentionId, Owner, Page, PageId, PageRevision, Provenance, TypeId, UniverseId,
