@@ -47,11 +47,14 @@ adversarial regressions. General verification runs `validate_logical_snapshot`
 on the typed v2 reading, so valid SQL with an inapplicable assertion or a
 definition/value-class mismatch is rejected without mutation. Candidate
 cleanup no longer treats content equality as proof of ownership: the file
-identity reserved at candidate creation (Unix device/inode; Windows volume
-serial number and file index) is compared immediately before an unlink, and a
-mismatch or an unprovable identity is kept and reported. Identity comparison
-and unlink are separate operations, so a same-user replacement between them
-remains a documented race limit rather than a universal guarantee.
+identity reserved at candidate creation is compared immediately before an
+unlink, and a mismatch or an unprovable identity is kept and reported. Identity
+is Unix device/inode, or on Windows the volume serial number plus the full
+128-bit `FILE_ID_INFO` file ID, because that API's 64-bit file index is not
+unique on ReFS; a volume that cannot report the 128-bit identity fails closed.
+Identity comparison and unlink are separate operations, so a same-user
+replacement between them remains a documented race limit rather than a
+universal guarantee.
 
 Failures report a stage, a cause, and every residual path. Before publication,
 cleanup removes the candidate only when it still verifies against the pinned

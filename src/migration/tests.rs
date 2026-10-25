@@ -2630,3 +2630,64 @@ fn never_deletes_a_byte_identical_candidate_on_prepublication_failure() {
     );
     assert_no_sidecars(&destination);
 }
+
+/// Creates a file symlink, returning `false` where the platform refuses to make
+/// one (Windows needs developer mode or the symlink privilege).
+fn make_file_symlink(target: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(target, link).is_ok()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (target, link);
+        false
+    }
+}
+
+/// Ownership rests on identity following the file rather than the pathname.
+///
+/// On Windows this exercises the full `FILE_ID_INFO` identity, whose 128-bit
+/// file ID stays unique on ReFS where the 64-bit index does not. The test runs
+/// on whatever volume holds the temporary directory; it is not a ReFS test.
+#[test]
+fn file_identity_follows_the_file_not_the_path() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = dir.path().join("candidate.sqlite");
+    fs::write(&path, b"identity probe").expect("write");
+
+    let identity = super::file_identity(&path).expect("identity of an existing file");
+    assert_eq!(
+        super::file_identity(&path).expect("identity again"),
+        identity
+    );
+
+    let alias = dir.path().join("alias.sqlite");
+    fs::hard_link(&path, &alias).expect("hard link");
+    assert_eq!(
+        super::file_identity(&alias).expect("alias identity"),
+        identity,
+        "a hard link to the same file must share its identity"
+    );
+
+    let copy = dir.path().join("copy.sqlite");
+    fs::copy(&path, &copy).expect("copy");
+    assert_ne!(
+        super::file_identity(&copy).expect("copy identity"),
+        identity,
+        "a distinct file must not share the identity"
+    );
+
+    let link = dir.path().join("link.sqlite");
+    if make_file_symlink(&path, &link) {
+        assert_eq!(
+            super::file_identity(&link),
+            None,
+            "a symlink must never be treated as the file it points at"
+        );
+    }
+}

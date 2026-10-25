@@ -169,11 +169,13 @@ struct SourceObservation {
 
 /// The operating system's identity for one file, independent of its path.
 ///
-/// On Unix this is the device and inode; on Windows the volume serial number
-/// and file index. A file that is replaced at the same pathname, even by a
-/// byte-identical copy, gets a different identity. `None` means the path could
-/// not be inspected or the platform cannot expose an identity, so ownership is
-/// not proven.
+/// On Unix this is the device and inode. On Windows it is the volume serial
+/// number plus the full 128-bit file ID, because the 64-bit file index that
+/// `GetFileInformationByHandle` returns is not unique on ReFS. A file that is
+/// replaced at the same pathname, even by a byte-identical copy, gets a
+/// different identity. `None` means the path could not be inspected or the
+/// platform cannot expose an identity, so ownership is not proven and nothing
+/// is deleted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FileIdentity {
     #[cfg(unix)]
@@ -181,9 +183,9 @@ struct FileIdentity {
     #[cfg(unix)]
     inode: u64,
     #[cfg(windows)]
-    volume: u32,
+    volume: u64,
     #[cfg(windows)]
-    index: u64,
+    file_id: [u8; 16],
 }
 
 #[cfg(unix)]
@@ -205,33 +207,29 @@ fn file_identity(path: &Path) -> Option<FileIdentity> {
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
 
-    // `MetadataExt::{volume_serial_number, file_index}` is still unstable, so
-    // ask kernel32 for the same identity through the file handle. The project
-    // does not take a Windows API dependency for this one call.
+    // `MetadataExt` has no stable file identity, and the 64-bit index from
+    // `GetFileInformationByHandle` is explicitly not unique on ReFS, so ask
+    // kernel32 for `FILE_ID_INFO` instead: a 64-bit volume serial number and
+    // the 128-bit file ID that NTFS and ReFS assign to the file itself. If the
+    // volume cannot provide it, identity is unknown and the caller fails
+    // closed. The project does not take a Windows API dependency for this.
     #[repr(C)]
     #[derive(Default)]
-    struct ByHandleFileInformation {
-        file_attributes: u32,
-        creation_time_low: u32,
-        creation_time_high: u32,
-        last_access_time_low: u32,
-        last_access_time_high: u32,
-        last_write_time_low: u32,
-        last_write_time_high: u32,
-        volume_serial_number: u32,
-        file_size_high: u32,
-        file_size_low: u32,
-        number_of_links: u32,
-        file_index_high: u32,
-        file_index_low: u32,
+    struct FileIdInfo {
+        volume_serial_number: u64,
+        file_id: [u8; 16],
     }
+
+    const FILE_ID_INFO_CLASS: i32 = 18;
 
     #[allow(non_snake_case)]
     #[link(name = "kernel32")]
     extern "system" {
-        fn GetFileInformationByHandle(
+        fn GetFileInformationByHandleEx(
             file: *mut std::ffi::c_void,
-            information: *mut ByHandleFileInformation,
+            class: i32,
+            information: *mut std::ffi::c_void,
+            size: u32,
         ) -> i32;
     }
 
@@ -252,17 +250,24 @@ fn file_identity(path: &Path) -> Option<FileIdentity> {
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
         .ok()?;
-    let mut information = ByHandleFileInformation::default();
-    // SAFETY: the handle stays open for the call, and `information` is a
-    // properly sized, writable output structure.
-    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) };
+    let mut information = FileIdInfo::default();
+    let size = u32::try_from(std::mem::size_of::<FileIdInfo>()).ok()?;
+    // SAFETY: the handle stays open for the call, `information` is a properly
+    // sized, writable output structure, and `size` is its exact byte length.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FILE_ID_INFO_CLASS,
+            std::ptr::from_mut(&mut information).cast(),
+            size,
+        )
+    };
     if ok == 0 {
         return None;
     }
     Some(FileIdentity {
         volume: information.volume_serial_number,
-        index: (u64::from(information.file_index_high) << 32)
-            | u64::from(information.file_index_low),
+        file_id: information.file_id,
     })
 }
 
