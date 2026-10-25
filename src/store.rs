@@ -15,14 +15,14 @@ use crate::model::{
     UniverseId, Value, ValueClass,
 };
 
-const SCHEMA: &str = include_str!("schema.sql");
+pub(crate) const SCHEMA: &str = include_str!("schema.sql");
 const HEADER_LEN: usize = 100;
 const MAGIC: &[u8] = b"SQLite format 3\0";
 const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
 const SQLITE_CONSTRAINT_PRIMARYKEY: i32 = 1555;
 const LEGACY_SCHEMA_VERSION: i32 = 1;
 
-const ASSERTION_COLUMNS: &str = "id, subject_id, definition_id, value_kind, text_value, bool_value, target_entity_id, canon, source_status_raw, provenance_external_ref, provenance_locator, provenance_fragment, provenance_source_revision, scope_note, archived";
+pub(crate) const ASSERTION_COLUMNS: &str = "id, subject_id, definition_id, value_kind, text_value, bool_value, target_entity_id, canon, source_status_raw, provenance_external_ref, provenance_locator, provenance_fragment, provenance_source_revision, scope_note, archived";
 
 // `IS` treats NULL as equal to NULL, so empty text columns do not split two booleans.
 const INCOMPATIBLE_PAIRS: &str = "
@@ -650,18 +650,11 @@ impl Store {
             .conn
             .transaction()
             .map_err(|err| map_sql("begin", err))?;
-        let snapshot = Snapshot {
-            universe_id: self.universe_id.clone(),
-            pages: list_page_snapshots(&transaction)?,
-            types: list_types(&transaction)?,
-            entities: list_entities(&transaction)?,
-            definitions: list_definitions(&transaction)?,
-            assertions: list_assertions(
-                &transaction,
-                &format!("SELECT {ASSERTION_COLUMNS} FROM assertions ORDER BY id"),
-                params![],
-            )?,
-        };
+        let mut snapshot = read_snapshot(&transaction)?;
+        // Keep the handle's identity authoritative for an export/import pair.
+        // A concurrent writer that changes the metadata row must not make an
+        // otherwise valid export fail its own import with WrongUniverse.
+        snapshot.universe_id = self.universe_id.clone();
         transaction.commit().map_err(|err| map_sql("commit", err))?;
         Ok(snapshot)
     }
@@ -687,13 +680,33 @@ impl Store {
     }
 
     pub fn import_new(path: &Path, snapshot: Snapshot) -> Result<(Self, ImportOutcome)> {
+        Self::import_new_with_mode(path, snapshot, false)
+    }
+
+    /// Creates a private version 2 candidate and closes it before returning.
+    ///
+    /// On Unix the file is created with mode `0600`, so its contents are never
+    /// group- or world-readable while the migration is filling it. On Windows
+    /// `create_new` inherits the destination directory's ACL; the alpha does
+    /// not attempt to tighten it with platform-specific APIs.
+    pub(crate) fn import_new_private(path: &Path, snapshot: Snapshot) -> Result<ImportOutcome> {
+        let (store, outcome) = Self::import_new_with_mode(path, snapshot, true)?;
+        drop(store);
+        Ok(outcome)
+    }
+
+    fn import_new_with_mode(
+        path: &Path,
+        snapshot: Snapshot,
+        private: bool,
+    ) -> Result<(Self, ImportOutcome)> {
         ensure_unique_snapshot(&snapshot)?;
         let snapshot = normalize_snapshot(snapshot);
         // The geometry of an occurrence is local to the document, so it is
         // checked before the destination is reserved: a malformed document
         // must not leave a residual file behind.
         validate_snapshot_mentions(&snapshot)?;
-        reserve_new_file(path)?;
+        reserve_file(path, private)?;
         let mut conn = match open_read_write(path) {
             Ok(conn) => conn,
             Err(err) => return Err(residual(path, err)),
@@ -733,6 +746,26 @@ impl Store {
     }
 }
 
+/// Reads one canonical logical snapshot from a connection.
+///
+/// The caller owns the connection and its transaction. A read-only caller can
+/// use the same typed readers, so a migration verifier cannot accidentally see
+/// records that the ordinary snapshot path would reject.
+pub(crate) fn read_snapshot(conn: &Connection) -> Result<Snapshot> {
+    Ok(Snapshot {
+        universe_id: read_universe(conn)?,
+        pages: list_page_snapshots(conn)?,
+        types: list_types(conn)?,
+        entities: list_entities(conn)?,
+        definitions: list_definitions(conn)?,
+        assertions: list_assertions(
+            conn,
+            &format!("SELECT {ASSERTION_COLUMNS} FROM assertions ORDER BY id"),
+            params![],
+        )?,
+    })
+}
+
 fn init_new(conn: &mut Connection, universe_id: &UniverseId) -> Result<()> {
     // The named test thread asks initialization to fail after the file exists.
     #[cfg(test)]
@@ -770,11 +803,20 @@ fn write_schema(transaction: &Transaction, universe_id: &UniverseId) -> Result<(
 }
 
 fn reserve_new_file(path: &Path) -> Result<()> {
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-    {
+    reserve_file(path, false)
+}
+
+fn reserve_file(path: &Path, private: bool) -> Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+    match options.open(path) {
         Ok(file) => {
             drop(file);
             Ok(())
@@ -884,7 +926,8 @@ fn read_universe(conn: &Connection) -> Result<UniverseId> {
         ));
     };
     UniverseId::parse(&raw).map_err(|_| {
-        Error::validation(ValidationReason::ForeignDatabase, "universe_id", Some(&raw))
+        // Never echo the stored value: it is untrusted database content.
+        Error::validation(ValidationReason::ForeignDatabase, "universe_id", None)
     })
 }
 
@@ -1003,7 +1046,7 @@ fn residual(path: &Path, err: Error) -> Error {
     }
 }
 
-fn ensure_unique_snapshot(snapshot: &Snapshot) -> Result<()> {
+pub(crate) fn ensure_unique_snapshot(snapshot: &Snapshot) -> Result<()> {
     unique_ids(
         snapshot.pages.iter().map(|page| page.page.id.as_str()),
         "page",
@@ -1545,8 +1588,11 @@ fn list_definitions(conn: &Connection) -> Result<Vec<Definition>> {
         .map_err(|err| map_sql("query", err))?;
     let mut definitions = Vec::new();
     for row in rows {
-        let (id, owner_type, owner_entity, value_class, cardinality, archived) =
+        let (raw_id, owner_type, owner_entity, value_class, cardinality, archived) =
             row.map_err(|err| map_sql("row", err))?;
+        // Validate the id first: it is stored database content, so an invalid
+        // value must never be formatted into a diagnostic.
+        let id = parse_stored_id("definition", &raw_id, DefinitionId::parse)?;
         let owner = match (owner_type, owner_entity) {
             (Some(raw), None) => Owner::Type(parse_stored_id("owner type", &raw, TypeId::parse)?),
             (None, Some(raw)) => {
@@ -1554,12 +1600,12 @@ fn list_definitions(conn: &Connection) -> Result<Vec<Definition>> {
             }
             _ => {
                 return Err(Error::Storage {
-                    message: format!("invalid definition owner {id}"),
+                    message: format!("invalid definition owner {}", id.as_str()),
                 });
             }
         };
         definitions.push(Definition {
-            id: parse_stored_id("definition", &id, DefinitionId::parse)?,
+            id,
             owner,
             value_class: ValueClass::parse(&value_class)?,
             cardinality: Cardinality::parse(&cardinality)?,
@@ -1651,22 +1697,22 @@ fn value_columns(value: &Value) -> (&'static str, Option<&str>, Option<i64>, Opt
     }
 }
 
-struct AssertionParts {
-    id: String,
-    subject_id: String,
-    definition_id: String,
-    value_kind: String,
-    text_value: Option<String>,
-    bool_value: Option<i64>,
-    target_entity_id: Option<String>,
-    canon: String,
-    source_status_raw: Option<String>,
-    provenance_external_ref: Option<String>,
-    provenance_locator: Option<String>,
-    provenance_fragment: Option<String>,
-    provenance_source_revision: Option<String>,
-    scope_note: Option<String>,
-    archived: i64,
+pub(crate) struct AssertionParts {
+    pub(crate) id: String,
+    pub(crate) subject_id: String,
+    pub(crate) definition_id: String,
+    pub(crate) value_kind: String,
+    pub(crate) text_value: Option<String>,
+    pub(crate) bool_value: Option<i64>,
+    pub(crate) target_entity_id: Option<String>,
+    pub(crate) canon: String,
+    pub(crate) source_status_raw: Option<String>,
+    pub(crate) provenance_external_ref: Option<String>,
+    pub(crate) provenance_locator: Option<String>,
+    pub(crate) provenance_fragment: Option<String>,
+    pub(crate) provenance_source_revision: Option<String>,
+    pub(crate) scope_note: Option<String>,
+    pub(crate) archived: i64,
 }
 
 fn read_assertion_parts(row: &rusqlite::Row<'_>) -> rusqlite::Result<AssertionParts> {
@@ -1689,7 +1735,7 @@ fn read_assertion_parts(row: &rusqlite::Row<'_>) -> rusqlite::Result<AssertionPa
     })
 }
 
-fn assertion_from_parts(parts: AssertionParts) -> Result<Assertion> {
+pub(crate) fn assertion_from_parts(parts: AssertionParts) -> Result<Assertion> {
     let id = parse_stored_id("assertion", &parts.id, AssertionId::parse)?;
     let subject_id = parse_stored_id("subject", &parts.subject_id, EntityId::parse)?;
     let definition_id = parse_stored_id("definition", &parts.definition_id, DefinitionId::parse)?;
@@ -1739,9 +1785,9 @@ fn assertion_from_parts(parts: AssertionParts) -> Result<Assertion> {
                 });
             }
         }
-        other => {
+        _ => {
             return Err(Error::Storage {
-                message: format!("invalid value kind {other} on {id}"),
+                message: format!("invalid value kind on {id}"),
             });
         }
     };
@@ -1765,11 +1811,11 @@ fn assertion_from_parts(parts: AssertionParts) -> Result<Assertion> {
 
 fn parse_stored_id<T>(field: &str, raw: &str, parse: impl FnOnce(&str) -> Result<T>) -> Result<T> {
     parse(raw).map_err(|_| Error::Storage {
-        message: format!("invalid stored {field} id {raw}"),
+        message: format!("invalid stored {field} id"),
     })
 }
 
-fn read_flag(value: i64, field: &str) -> Result<bool> {
+pub(crate) fn read_flag(value: i64, field: &str) -> Result<bool> {
     match value {
         0 => Ok(false),
         1 => Ok(true),
@@ -1903,17 +1949,14 @@ fn read_page_annotated(conn: &Connection, page_id: &PageId, body: &str) -> Resul
     for row in rows {
         let (raw_id, raw_entity, start, end) = row.map_err(|err| map_sql("row", err))?;
         let id = MentionId::parse(&raw_id).map_err(|_| Error::Storage {
-            message: format!("invalid stored mention id {raw_id}"),
+            message: "invalid stored mention id".to_string(),
         })?;
         let entity_id = EntityId::parse(&raw_entity).map_err(|_| Error::Storage {
-            message: format!("invalid stored mention entity id {raw_entity}"),
+            message: "invalid stored mention entity id".to_string(),
         })?;
         if lookup_entity(conn, &entity_id)?.is_none() {
             return Err(Error::Storage {
-                message: format!(
-                    "stored mention {} points at the missing entity {raw_entity}",
-                    id.as_str()
-                ),
+                message: format!("stored mention {} points at a missing entity", id.as_str()),
             });
         }
         let start = u32::try_from(start).map_err(|_| Error::Storage {
@@ -1966,7 +2009,7 @@ fn lookup_mention_owner(conn: &Connection, id: &MentionId) -> Result<Option<Page
         return Ok(None);
     };
     Ok(Some(PageId::parse(&raw).map_err(|_| Error::Storage {
-        message: format!("invalid stored mention page id {raw}"),
+        message: "invalid stored mention page id".to_string(),
     })?))
 }
 
@@ -1998,10 +2041,10 @@ fn mentions_for_entity_in(conn: &Connection, entity: &EntityId) -> Result<Vec<Me
     for row in rows {
         let (raw_page, raw_id, start, end) = row.map_err(|err| map_sql("row", err))?;
         let page_id = PageId::parse(&raw_page).map_err(|_| Error::Storage {
-            message: format!("invalid stored mention page id {raw_page}"),
+            message: "invalid stored mention page id".to_string(),
         })?;
         let id = MentionId::parse(&raw_id).map_err(|_| Error::Storage {
-            message: format!("invalid stored mention id {raw_id}"),
+            message: "invalid stored mention id".to_string(),
         })?;
         let start = u32::try_from(start).map_err(|_| Error::Storage {
             message: format!("invalid stored mention offset {start}"),
@@ -2113,6 +2156,7 @@ fn lookup_definition(conn: &Connection, id: &DefinitionId) -> Result<Option<Defi
     .map_err(|err| map_sql("definition", err))?
     .map(
         |(raw_id, owner_type, owner_entity, value_class, cardinality, archived)| {
+            let id = parse_stored_id("definition", &raw_id, DefinitionId::parse)?;
             let owner = match (owner_type, owner_entity) {
                 (Some(raw), None) => {
                     Owner::Type(parse_stored_id("owner type", &raw, TypeId::parse)?)
@@ -2122,12 +2166,12 @@ fn lookup_definition(conn: &Connection, id: &DefinitionId) -> Result<Option<Defi
                 }
                 _ => {
                     return Err(Error::Storage {
-                        message: format!("invalid definition owner {raw_id}"),
+                        message: format!("invalid definition owner {}", id.as_str()),
                     });
                 }
             };
             Ok(Definition {
-                id: parse_stored_id("definition", &raw_id, DefinitionId::parse)?,
+                id,
                 owner,
                 value_class: ValueClass::parse(&value_class)?,
                 cardinality: Cardinality::parse(&cardinality)?,
@@ -2209,6 +2253,43 @@ mod tests {
     use crate::{Error, UniverseId, ValidationReason};
 
     #[test]
+    fn stored_id_errors_do_not_echo_the_value() {
+        let error =
+            super::parse_stored_id("target", "SECRET_MARKER", crate::model::EntityId::parse)
+                .expect_err("invalid stored id");
+        assert!(!error.to_string().contains("SECRET_MARKER"), "{error}");
+    }
+
+    #[test]
+    fn an_invalid_stored_universe_id_is_rejected_without_being_echoed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("tampered-universe.sqlite");
+        let universe = UniverseId::parse("11111111-1111-4111-8111-111111111111").expect("universe");
+        let store = Store::create(&path, universe).expect("create");
+        store
+            .conn
+            .execute(
+                "UPDATE metadata SET universe_id = ?1",
+                ["SECRET_LORE_123456789012345678901234"],
+            )
+            .expect("tamper");
+
+        let error = super::read_universe(&store.conn).expect_err("invalid stored id");
+        assert!(!error.to_string().contains("SECRET_LORE"), "{error}");
+        assert!(
+            matches!(
+                error,
+                Error::Validation {
+                    reason: ValidationReason::ForeignDatabase,
+                    field: "universe_id",
+                    ..
+                }
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn open_connection_enables_foreign_keys_and_delete_journal() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("pragma.sqlite");
@@ -2239,6 +2320,29 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read version");
         assert_eq!(version, 0);
+    }
+
+    #[test]
+    fn export_keeps_the_handle_universe_when_metadata_changes_elsewhere() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("export.sqlite");
+        let original = UniverseId::parse("11111111-1111-4111-8111-111111111111").expect("universe");
+        let other = UniverseId::parse("22222222-2222-4222-8222-222222222222").expect("universe");
+        let mut store = Store::create(&path, original.clone()).expect("create");
+        let conn = rusqlite::Connection::open(&path).expect("external connection");
+        conn.execute(
+            "UPDATE metadata SET universe_id = ?1",
+            rusqlite::params![other.as_str()],
+        )
+        .expect("metadata update");
+        drop(conn);
+
+        let snapshot = store.export_snapshot().expect("export");
+        assert_eq!(snapshot.universe_id, original);
+        let outcome = store
+            .import_snapshot(snapshot)
+            .expect("import with the cached identity");
+        assert_eq!(outcome.inserted, 0);
     }
 
     #[test]
@@ -2276,5 +2380,18 @@ mod tests {
             "{open_err}"
         );
         assert!(reserved.is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_reservation_is_owner_only_before_data_is_written() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("candidate.sqlite");
+        super::reserve_file(&path, true).expect("private reserve");
+        let metadata = std::fs::metadata(&path).expect("metadata");
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        assert_eq!(metadata.len(), 0);
     }
 }

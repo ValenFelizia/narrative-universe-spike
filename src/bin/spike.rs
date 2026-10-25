@@ -2,9 +2,10 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use narrative_universe::{
-    export_json, import_json, import_new_json, read_limited, write_exclusive, Assertion,
-    AssertionId, Canon, Cardinality, Definition, DefinitionId, Entity, EntityId, EntityType, Error,
-    Owner, Page, PageId, Provenance, Store, TypeId, UniverseId, Value, ValueClass,
+    export_json, import_json, import_new_json, migrate_v1_to_v2, read_limited, verify_v2,
+    write_exclusive, Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId, Entity,
+    EntityId, EntityType, Error, MigrationError, Owner, Page, PageId, Provenance, Store, TypeId,
+    UniverseId, Value, ValueClass, VerificationError,
 };
 
 const UNIVERSE: &str = "11111111-1111-4111-8111-111111111111";
@@ -18,39 +19,138 @@ const ASSERTION: &str = "88888888-8888-4888-8888-888888888888";
 const PAGE_BODY: &str = "Texto con acento áéíóú ñ y emoji 📚";
 
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1);
-    let command = args.next();
-    let first = args.next();
-    let second = args.next();
-    let extra = args.next();
-    let result = match (command.as_deref(), first, second, extra) {
-        (Some("seed"), Some(path), None, None) => seed(Path::new(&path)),
-        (Some("inspect"), Some(path), None, None) => inspect(Path::new(&path)),
-        (Some("export"), Some(database), Some(json), None) => {
-            export(Path::new(&database), Path::new(&json))
-        }
-        (Some("import"), Some(database), Some(json), None) => {
-            import(Path::new(&database), Path::new(&json))
-        }
-        (Some("import-new"), Some(database), Some(json), None) => {
-            import_new(Path::new(&database), Path::new(&json))
-        }
-        _ => {
-            eprintln!("usage: spike seed <database>");
-            eprintln!("usage: spike inspect <database>");
-            eprintln!("usage: spike export <database> <json>");
-            eprintln!("usage: spike import <database> <json>");
-            eprintln!("usage: spike import-new <database> <json>");
-            return ExitCode::from(2);
-        }
-    };
-    match result {
+    match run() {
         Ok(()) => ExitCode::SUCCESS,
+        Err(CliError::Usage) => {
+            usage();
+            ExitCode::from(2)
+        }
         Err(err) => {
             eprintln!("{err}");
             ExitCode::from(1)
         }
     }
+}
+
+enum CliError {
+    Usage,
+    Core(Error),
+    Migration(MigrationError),
+    Verification(VerificationError),
+}
+
+impl std::fmt::Debug for CliError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, formatter)
+    }
+}
+
+impl From<Error> for CliError {
+    fn from(err: Error) -> Self {
+        Self::Core(err)
+    }
+}
+
+impl From<MigrationError> for CliError {
+    fn from(err: MigrationError) -> Self {
+        Self::Migration(err)
+    }
+}
+
+impl From<VerificationError> for CliError {
+    fn from(err: VerificationError) -> Self {
+        Self::Verification(err)
+    }
+}
+
+impl std::fmt::Display for CliError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Usage => formatter.write_str("invalid command line"),
+            Self::Core(err) => err.fmt(formatter),
+            Self::Migration(err) => err.fmt(formatter),
+            Self::Verification(err) => err.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for CliError {}
+
+fn run() -> Result<(), CliError> {
+    let mut args = std::env::args().skip(1);
+    let command = args.next();
+    let first = args.next();
+    let second = args.next();
+    let extra = args.next();
+    match (command.as_deref(), first, second, extra) {
+        (Some("seed"), Some(path), None, None) => seed(Path::new(&path))?,
+        (Some("inspect"), Some(path), None, None) => inspect(Path::new(&path))?,
+        (Some("export"), Some(database), Some(json), None) => {
+            export(Path::new(&database), Path::new(&json))?
+        }
+        (Some("import"), Some(database), Some(json), None) => {
+            import(Path::new(&database), Path::new(&json))?
+        }
+        (Some("import-new"), Some(database), Some(json), None) => {
+            import_new(Path::new(&database), Path::new(&json))?
+        }
+        (Some("migrate"), Some(source), Some(destination), None) => {
+            migrate(Path::new(&source), Path::new(&destination))?
+        }
+        (Some("verify"), Some(database), None, None) => verify(Path::new(&database))?,
+        _ => return Err(CliError::Usage),
+    }
+    Ok(())
+}
+
+fn usage() {
+    eprintln!("usage: spike seed <database>");
+    eprintln!("usage: spike inspect <database>");
+    eprintln!("usage: spike export <database> <json>");
+    eprintln!("usage: spike import <database> <json>");
+    eprintln!("usage: spike import-new <database> <json>");
+    eprintln!("usage: spike migrate <source-v1> <destination-v2>");
+    eprintln!("usage: spike verify <database>");
+}
+
+fn migrate(source: &Path, destination: &Path) -> Result<(), MigrationError> {
+    let report = migrate_v1_to_v2(source, destination)?;
+    print!("{}", migration_report(&report));
+    Ok(())
+}
+
+fn migration_report(report: &narrative_universe::MigrationReport) -> String {
+    let mut out = String::new();
+    push(&mut out, "universe_id", report.universe_id.as_str());
+    push_counts(&mut out, report.counts);
+    push(
+        &mut out,
+        "destination",
+        &report.destination.display().to_string(),
+    );
+    for residual in &report.residuals {
+        push(&mut out, "residual", &residual.display().to_string());
+    }
+    out
+}
+
+fn verify(database: &Path) -> Result<(), VerificationError> {
+    let report = verify_v2(database)?;
+    let mut out = String::new();
+    push(&mut out, "verified", "true");
+    push(&mut out, "universe_id", report.universe_id.as_str());
+    push_counts(&mut out, report.counts);
+    push(&mut out, "mentions", &report.mentions.to_string());
+    print!("{out}");
+    Ok(())
+}
+
+fn push_counts(out: &mut String, counts: narrative_universe::Counts) {
+    push(out, "pages", &counts.pages.to_string());
+    push(out, "types", &counts.types.to_string());
+    push(out, "entities", &counts.entities.to_string());
+    push(out, "definitions", &counts.definitions.to_string());
+    push(out, "assertions", &counts.assertions.to_string());
 }
 
 fn seed(path: &Path) -> Result<(), Error> {
