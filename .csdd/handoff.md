@@ -18,7 +18,7 @@ that cap plus one byte, and a failed export keeps its residual file instead
 of deleting the path. Those fixes are on `feat/4-json-exchange` and still
 need re-review. Schema version 1 is unchanged.
 
-## PA-I2-B merged; PA-I2-C C2 pending review
+## PA-I2-B merged; PA-I2-C C2 pending delta review
 
 PA-I2-B is merged into `main` as `714260d` (PR #15). The storage schema and
 the JSON format are version 2.
@@ -37,21 +37,34 @@ source is released, the alias is fully verified once more, then the
 destination's type, sidecars, header, and length are observed as the last check
 before the unlink; only then is the alias removed. General `verify_v2` /
 `spike verify` is read-only and accepts edited v2 databases with nonzero
-revisions and valid occurrences; the migration verifier additionally requires
-exact snapshot equality, zero revisions, zero occurrences, and exact table
-counts.
+revisions and valid occurrences while enforcing the store's cross-record
+domain rules (assertion applicability, value-class agreement, known reference
+targets); the migration verifier additionally requires exact snapshot
+equality, zero revisions, zero occurrences, and exact table counts.
+
+Ari's delta review requested two corrections, both now implemented with
+adversarial regressions. General verification runs `validate_logical_snapshot`
+on the typed v2 reading, so valid SQL with an inapplicable assertion or a
+definition/value-class mismatch is rejected without mutation. Candidate
+cleanup no longer treats content equality as proof of ownership: the file
+identity reserved at candidate creation (Unix device/inode; Windows volume
+serial number and file index) is compared immediately before an unlink, and a
+mismatch or an unprovable identity is kept and reported. Identity comparison
+and unlink are separate operations, so a same-user replacement between them
+remains a documented race limit rather than a universal guarantee.
 
 Failures report a stage, a cause, and every residual path. Before publication,
 cleanup removes the candidate only when it still verifies against the pinned
-snapshot; a changed or replaced path is kept and reported. After publication,
-cleanup never removes the destination or the alias, because either may be the
-only complete copy. A process crash can leave a dot-prefixed candidate or a
-complete published destination; no run resumes automatically, adopts, relinks,
-or deletes an unknown file, and there is no `--force`. Windows power-loss
-durability of the directory entry is not claimed. The debug-only
-`NARRATIVE_UNIVERSE_CRASH_AT` hook covers `candidate-built`,
-`candidate-verified`, `published`, `destination-verified`,
-`destination-rechecked`, `alias-verified`, and `cleaned-up`.
+snapshot and still carries this run's identity; a changed, replaced, or
+unprovable path is kept and reported. After publication, cleanup never removes
+the destination or the alias, because either may be the only complete copy. A
+process crash can leave a dot-prefixed candidate or a complete published
+destination; no run resumes automatically, adopts, relinks, or deletes an
+unknown file, and there is no `--force`. Windows power-loss durability of the
+directory entry is not claimed. The debug-only `NARRATIVE_UNIVERSE_CRASH_AT`
+hook covers `candidate-built`, `candidate-verified`, `published`,
+`destination-verified`, `destination-rechecked`, `alias-verified`, and
+`cleaned-up`.
 
 Do not merge PA-I2-C and do not start another increment. Report residual paths
 for review; do not delete a source, a changed candidate, or a published

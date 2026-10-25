@@ -167,6 +167,110 @@ struct SourceObservation {
     len: u64,
 }
 
+/// The operating system's identity for one file, independent of its path.
+///
+/// On Unix this is the device and inode; on Windows the volume serial number
+/// and file index. A file that is replaced at the same pathname, even by a
+/// byte-identical copy, gets a different identity. `None` means the path could
+/// not be inspected or the platform cannot expose an identity, so ownership is
+/// not proven.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(windows)]
+    volume: u32,
+    #[cfg(windows)]
+    index: u64,
+}
+
+#[cfg(unix)]
+fn file_identity(path: &Path) -> Option<FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    // A symlink has its own inode, which must never match this run's file.
+    if metadata.file_type().is_symlink() {
+        return None;
+    }
+    Some(FileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+#[cfg(windows)]
+fn file_identity(path: &Path) -> Option<FileIdentity> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+
+    // `MetadataExt::{volume_serial_number, file_index}` is still unstable, so
+    // ask kernel32 for the same identity through the file handle. The project
+    // does not take a Windows API dependency for this one call.
+    #[repr(C)]
+    #[derive(Default)]
+    struct ByHandleFileInformation {
+        file_attributes: u32,
+        creation_time_low: u32,
+        creation_time_high: u32,
+        last_access_time_low: u32,
+        last_access_time_high: u32,
+        last_write_time_low: u32,
+        last_write_time_high: u32,
+        volume_serial_number: u32,
+        file_size_high: u32,
+        file_size_low: u32,
+        number_of_links: u32,
+        file_index_high: u32,
+        file_index_low: u32,
+    }
+
+    #[allow(non_snake_case)]
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandle(
+            file: *mut std::ffi::c_void,
+            information: *mut ByHandleFileInformation,
+        ) -> i32;
+    }
+
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+    // Never follow a replacement symlink. Opening the reparse point itself
+    // closes the check-then-open race: a swap after the metadata probe still
+    // yields the link's own identity, which cannot match this run's file.
+    if std::fs::symlink_metadata(path)
+        .ok()?
+        .file_type()
+        .is_symlink()
+    {
+        return None;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .ok()?;
+    let mut information = ByHandleFileInformation::default();
+    // SAFETY: the handle stays open for the call, and `information` is a
+    // properly sized, writable output structure.
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) };
+    if ok == 0 {
+        return None;
+    }
+    Some(FileIdentity {
+        volume: information.volume_serial_number,
+        index: (u64::from(information.file_index_high) << 32)
+            | u64::from(information.file_index_low),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_identity(_path: &Path) -> Option<FileIdentity> {
+    None
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Publication {
     CandidateOnly,
@@ -194,6 +298,7 @@ struct CheckpointView<'a> {
 #[derive(Default)]
 struct RunState {
     candidate: Option<PathBuf>,
+    candidate_identity: Option<FileIdentity>,
     snapshot: Option<Snapshot>,
     published: bool,
 }
@@ -232,20 +337,24 @@ impl RunState {
 /// source is still pinned. After the source is released, the candidate alias is
 /// fully verified once more, then the destination's type, sidecars, header, and
 /// length are observed as the last check before the unlink. Only then is the
-/// temporary alias removed, and only when it matched the migrated database
-/// immediately before that observation.
+/// temporary alias removed, and only when it both matched the migrated database
+/// immediately before that observation and its file identity still matches the
+/// private file this run reserved.
 ///
 /// Source rechecks compare the regular-file type, the absence of sidecars, the
 /// SQLite header, and the file length. A same-size out-of-band edit that
 /// preserves those fields is part of the documented path-race limit, not a
-/// stronger byte-for-byte guarantee.
+/// stronger byte-for-byte guarantee. File identity is likewise observed
+/// immediately before an unlink; the observation and the unlink are separate
+/// operations, so a same-user replacement between them is not detected.
 ///
 /// On error the destination is absent, or a file is present at the destination
 /// path this run published to (it may have been changed or replaced by an
 /// out-of-band writer); every surviving destination or candidate path is
 /// reported in `residuals`. Cleanup never deletes the destination after
 /// publication, and removes a pre-publication candidate only when it still
-/// verifies against the pinned snapshot.
+/// verifies against the pinned snapshot and still carries this run's file
+/// identity. A path whose ownership cannot be proven is kept and reported.
 ///
 /// Process crashes are tested cut points; Windows directory-entry durability
 /// after power loss is not claimed.
@@ -286,9 +395,11 @@ fn crash_observer(point: Checkpoint, _view: CheckpointView<'_>) -> Result<()> {
 /// The check is read-only. It accepts edited databases with nonzero page
 /// revisions and nonempty, geometrically valid, correctly referenced
 /// mentions. It rejects an unsupported version, a foreign schema, a hot
-/// sidecar, broken integrity, broken foreign keys, malformed identifiers, and
-/// malformed mention geometry. It never calls `Store::open`, so verification
-/// cannot silently create or upgrade a database.
+/// sidecar, broken integrity, broken foreign keys, malformed identifiers,
+/// malformed mention geometry, and cross-record domain violations such as an
+/// assertion whose subject does not fit its definition's owner or a value that
+/// does not fit its definition's value class. It never calls `Store::open`, so
+/// verification cannot silently create or upgrade a database.
 pub fn verify_v2(path: &Path) -> std::result::Result<VerificationReport, VerificationError> {
     let facts = inspect_v2_database(path, "database").map_err(|cause| VerificationError {
         path: path.to_path_buf(),
@@ -410,6 +521,7 @@ fn run_migration_inner(
             )
         })?;
         drop(store);
+        state.candidate_identity = file_identity(&candidate);
     }
 
     let candidate_observation = flush_candidate(&candidate).map_err(|cause| {
@@ -695,9 +807,12 @@ fn run_migration_inner(
         })?;
         // The last destination observation passed. Remove the alias only when
         // it still reproduced the migrated database immediately before that
-        // observation. A changed, replaced, or unremovable alias is kept and
-        // reported; a stale sidecar is reported and never scanned for.
-        if alias_verified && std::fs::remove_file(&candidate).is_ok() {
+        // observation and its file identity still matches the candidate this
+        // run reserved. A changed, replaced (even byte-identical), or
+        // unremovable alias is kept and reported; a stale sidecar is reported
+        // and never scanned for.
+        let alias_owned = candidate_owned(state, &candidate);
+        if alias_verified && alias_owned && std::fs::remove_file(&candidate).is_ok() {
             state.candidate = None;
         }
         residuals = residual_files(&candidate);
@@ -743,22 +858,41 @@ fn migration_failure(
     }
 }
 
+/// Reports whether the candidate path still names the file this run created.
+///
+/// The identity observation and the unlink are separate operations: a same-user
+/// replacement between them is not detected. This narrows the deletion race; it
+/// is not a universal atomic guarantee.
+fn candidate_owned(state: &RunState, candidate: &Path) -> bool {
+    match (state.candidate_identity, file_identity(candidate)) {
+        (Some(expected), Some(actual)) => expected == actual,
+        _ => false,
+    }
+}
+
 fn cleanup_failed_run(state: &mut RunState, error: &mut MigrationError) {
     // Before publication, this run owns the candidate only while the path still
-    // holds the database built from the pinned snapshot. Re-verifying before
-    // deleting means a path that was replaced is reported, never removed.
+    // holds both the file identity reserved by this run and the database built
+    // from the pinned snapshot. Content equality alone is not ownership: an
+    // unrelated byte-identical replacement must be kept and reported.
     //
     // After a successful link the candidate is a second name for the published
     // destination. It is never removed here: the destination may have been
     // removed or replaced, and the alias may be the only complete copy left.
     if !state.published {
-        let owned = match (&state.candidate, &state.snapshot) {
+        let content_matches = match (&state.candidate, &state.snapshot) {
             (Some(candidate), Some(snapshot)) => {
                 verify_migration_database(candidate, snapshot, "candidate").is_ok()
             }
             _ => false,
         };
-        if owned {
+        // Observe identity after the content check, as the last gate before the
+        // unlink. If either check fails, the path is reported, never removed.
+        let identity_matches = state
+            .candidate
+            .as_deref()
+            .is_some_and(|candidate| candidate_owned(state, candidate));
+        if content_matches && identity_matches {
             if let Some(candidate) = &state.candidate {
                 let _ = std::fs::remove_file(candidate);
             }
@@ -796,10 +930,15 @@ fn build_private_candidate(
             )
         })?;
         // Record the path before reserving it, so a failure after `create_new`
-        // still knows which file this run owns and may remove.
+        // still knows which file this run owns and may remove. Ownership is
+        // proven later by the file identity captured immediately after the
+        // successful reservation, never by content alone.
         state.candidate = Some(candidate.clone());
         match Store::import_new_private(&candidate, snapshot.clone()) {
-            Ok(_) => return Ok(candidate),
+            Ok(_) => {
+                state.candidate_identity = file_identity(&candidate);
+                return Ok(candidate);
+            }
             Err(Error::Validation {
                 reason: ValidationReason::PathExists,
                 ..
@@ -1591,6 +1730,10 @@ fn inspect_v2_database(path: &Path, field: &'static str) -> Result<DatabaseFacts
     require_foreign_keys(&conn)?;
 
     let snapshot = store::read_snapshot(&conn)?;
+    // The typed records can be read from a database that still passes SQLite's
+    // integrity and foreign-key checks while breaking cross-record domain
+    // rules. Apply the same logical invariants the store enforces on write.
+    validate_logical_snapshot(&snapshot)?;
     let counts = counts_from_connection(&conn)?;
     let mentions = count_table(&conn, "mentions")?;
     let revised_pages = validate_page_revisions(&conn)?;

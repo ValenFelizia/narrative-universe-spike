@@ -330,6 +330,24 @@ fn layout() -> (TempDir, PathBuf, PathBuf) {
     (dir, source, candidate)
 }
 
+fn write_v2(path: &Path, snapshot: &Snapshot) {
+    let (store, _) = Store::import_new(path, snapshot.clone()).expect("v2 import");
+    drop(store);
+}
+
+/// Replaces `path` with a different file holding exactly the same bytes.
+///
+/// The copy is created before the original is removed, so a POSIX filesystem
+/// cannot hand its inode to the copy; Windows file indexes differ as well.
+fn replace_with_identical_copy(path: &Path) -> Vec<u8> {
+    let bytes = fs::read(path).expect("original bytes");
+    let copy = path.with_extension("identical-copy");
+    fs::write(&copy, &bytes).expect("copy bytes");
+    fs::remove_file(path).expect("remove original");
+    fs::rename(&copy, path).expect("install copy");
+    bytes
+}
+
 fn dir_names(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(dir)
         .expect("read dir")
@@ -2420,4 +2438,195 @@ fn general_verification_rejects_invalid_mentions_and_corruption() {
         "{}",
         error.cause
     );
+}
+
+fn assert_sqlite_structural_validity(path: &Path) {
+    let conn = Connection::open(path).expect("open for structural checks");
+    let integrity: String = conn
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .expect("integrity check");
+    assert_eq!(integrity, "ok", "SQLite integrity check failed");
+    let mut statement = conn
+        .prepare("PRAGMA foreign_key_check")
+        .expect("prepare foreign key check");
+    let mut rows = statement.query([]).expect("foreign key check");
+    assert!(
+        rows.next().expect("foreign key row").is_none(),
+        "foreign key violation"
+    );
+}
+
+/// Proves the type retarget leaves valid SQL and only breaks the domain rule.
+fn assert_inapplicable_assertion_is_rejected_by_verification() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("edited.sqlite");
+    write_v2(&path, &base_snapshot());
+
+    let conn = Connection::open(&path).expect("open for edits");
+    conn.execute("UPDATE pages SET revision = 7 WHERE id = ?1", [PAGE_ONE])
+        .expect("nonzero revision");
+    drop(conn);
+
+    assert_sqlite_structural_validity(&path);
+    verify_v2(&path).expect("a nonzero revision must stay acceptable");
+
+    let conn = Connection::open(&path).expect("open for edits");
+    conn.execute(
+        "UPDATE entities SET type_id = ?1 WHERE id = ?2",
+        params![TYPE_TWO, ENTITY_ONE],
+    )
+    .expect("retarget the entity type");
+    drop(conn);
+
+    assert_sqlite_structural_validity(&path);
+    let before = fs::read(&path).expect("database bytes");
+    let error = verify_v2(&path).expect_err("an inapplicable assertion must be rejected");
+    assert!(
+        matches!(
+            error.cause,
+            Error::Validation {
+                reason: ValidationReason::NotApplicable,
+                ..
+            }
+        ),
+        "{}",
+        error.cause
+    );
+    assert_eq!(fs::read(&path).expect("database bytes"), before);
+    assert_no_sidecars(&path);
+}
+
+/// Proves the value-class edit leaves valid SQL and only breaks the domain rule.
+fn assert_value_class_mismatch_is_rejected_by_verification() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("edited.sqlite");
+    write_v2(&path, &base_snapshot());
+
+    let conn = Connection::open(&path).expect("open for edits");
+    conn.execute("UPDATE pages SET revision = 3 WHERE id = ?1", [PAGE_TWO])
+        .expect("nonzero revision");
+    drop(conn);
+
+    assert_sqlite_structural_validity(&path);
+    verify_v2(&path).expect("a nonzero revision must stay acceptable");
+
+    let conn = Connection::open(&path).expect("open for edits");
+    conn.execute(
+        "UPDATE definitions SET value_class = 'boolean' WHERE id = ?1",
+        [DEFINITION_TEXT],
+    )
+    .expect("change the definition value class");
+    drop(conn);
+
+    assert_sqlite_structural_validity(&path);
+    let before = fs::read(&path).expect("database bytes");
+    let error = verify_v2(&path).expect_err("a value-class mismatch must be rejected");
+    assert!(
+        matches!(
+            error.cause,
+            Error::Validation {
+                reason: ValidationReason::ValueMismatch,
+                ..
+            }
+        ),
+        "{}",
+        error.cause
+    );
+    assert_eq!(fs::read(&path).expect("database bytes"), before);
+    assert_no_sidecars(&path);
+}
+
+#[test]
+fn general_verification_rejects_inapplicable_assertions() {
+    assert_inapplicable_assertion_is_rejected_by_verification();
+}
+
+#[test]
+fn general_verification_rejects_definition_value_class_mismatches() {
+    assert_value_class_mismatch_is_rejected_by_verification();
+}
+
+#[test]
+fn never_deletes_a_byte_identical_candidate_alias_on_success() {
+    let (_dir, source, destination) = layout();
+    write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+    let alias_path = std::cell::RefCell::new(None::<PathBuf>);
+    let replacement_bytes = std::cell::RefCell::new(None::<Vec<u8>>);
+
+    let report = run_migration(
+        &source,
+        &destination,
+        Publication::HardLink,
+        &|point, view| {
+            if point == Checkpoint::DestinationVerified {
+                let parent = view.destination.parent().expect("destination parent");
+                let aliases = candidate_entries(parent);
+                assert_eq!(aliases.len(), 1, "{aliases:?}");
+                let alias = parent.join(&aliases[0]);
+                let bytes = replace_with_identical_copy(&alias);
+                *alias_path.borrow_mut() = Some(alias);
+                *replacement_bytes.borrow_mut() = Some(bytes);
+            }
+            Ok(())
+        },
+    )
+    .expect("the published destination is still valid");
+
+    let alias = alias_path.into_inner().expect("alias path");
+    let expected = replacement_bytes.into_inner().expect("replacement bytes");
+    assert_eq!(
+        fs::read(&alias).expect("replacement bytes"),
+        expected,
+        "a byte-identical replacement was deleted or rewritten"
+    );
+    assert!(
+        residual_named(&report.residuals, &alias),
+        "{:?}",
+        report.residuals
+    );
+    verify_v2(&destination).expect("published destination");
+}
+
+#[test]
+fn never_deletes_a_byte_identical_candidate_on_prepublication_failure() {
+    let (_dir, source, destination) = layout();
+    write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+    let alias_path = std::cell::RefCell::new(None::<PathBuf>);
+    let replacement_bytes = std::cell::RefCell::new(None::<Vec<u8>>);
+
+    let error = run_migration(
+        &source,
+        &destination,
+        Publication::HardLink,
+        &|point, view| {
+            if point == Checkpoint::CandidateVerified {
+                let bytes = replace_with_identical_copy(view.candidate);
+                *alias_path.borrow_mut() = Some(view.candidate.to_path_buf());
+                *replacement_bytes.borrow_mut() = Some(bytes);
+                // Make the next pre-publication gate fail after the replacement.
+                fs::write(view.destination, b"occupied").expect("destination sentinel");
+            }
+            Ok(())
+        },
+    )
+    .expect_err("an existing destination must fail the migration");
+
+    assert_eq!(error.stage, MigrationStage::PublishDestination);
+    let alias = alias_path.into_inner().expect("alias path");
+    let expected = replacement_bytes.into_inner().expect("replacement bytes");
+    assert_eq!(
+        fs::read(&alias).expect("replacement bytes"),
+        expected,
+        "a byte-identical replacement was deleted on a failed run"
+    );
+    assert!(
+        residual_named(&error.residuals, &alias),
+        "{:?}",
+        error.residuals
+    );
+    assert_eq!(
+        fs::read(&destination).expect("destination sentinel"),
+        b"occupied"
+    );
+    assert_no_sidecars(&destination);
 }
