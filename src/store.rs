@@ -926,7 +926,8 @@ fn read_universe(conn: &Connection) -> Result<UniverseId> {
         ));
     };
     UniverseId::parse(&raw).map_err(|_| {
-        Error::validation(ValidationReason::ForeignDatabase, "universe_id", Some(&raw))
+        // Never echo the stored value: it is untrusted database content.
+        Error::validation(ValidationReason::ForeignDatabase, "universe_id", None)
     })
 }
 
@@ -1587,8 +1588,11 @@ fn list_definitions(conn: &Connection) -> Result<Vec<Definition>> {
         .map_err(|err| map_sql("query", err))?;
     let mut definitions = Vec::new();
     for row in rows {
-        let (id, owner_type, owner_entity, value_class, cardinality, archived) =
+        let (raw_id, owner_type, owner_entity, value_class, cardinality, archived) =
             row.map_err(|err| map_sql("row", err))?;
+        // Validate the id first: it is stored database content, so an invalid
+        // value must never be formatted into a diagnostic.
+        let id = parse_stored_id("definition", &raw_id, DefinitionId::parse)?;
         let owner = match (owner_type, owner_entity) {
             (Some(raw), None) => Owner::Type(parse_stored_id("owner type", &raw, TypeId::parse)?),
             (None, Some(raw)) => {
@@ -1596,12 +1600,12 @@ fn list_definitions(conn: &Connection) -> Result<Vec<Definition>> {
             }
             _ => {
                 return Err(Error::Storage {
-                    message: format!("invalid definition owner {id}"),
+                    message: format!("invalid definition owner {}", id.as_str()),
                 });
             }
         };
         definitions.push(Definition {
-            id: parse_stored_id("definition", &id, DefinitionId::parse)?,
+            id,
             owner,
             value_class: ValueClass::parse(&value_class)?,
             cardinality: Cardinality::parse(&cardinality)?,
@@ -1945,17 +1949,14 @@ fn read_page_annotated(conn: &Connection, page_id: &PageId, body: &str) -> Resul
     for row in rows {
         let (raw_id, raw_entity, start, end) = row.map_err(|err| map_sql("row", err))?;
         let id = MentionId::parse(&raw_id).map_err(|_| Error::Storage {
-            message: format!("invalid stored mention id {raw_id}"),
+            message: "invalid stored mention id".to_string(),
         })?;
         let entity_id = EntityId::parse(&raw_entity).map_err(|_| Error::Storage {
-            message: format!("invalid stored mention entity id {raw_entity}"),
+            message: "invalid stored mention entity id".to_string(),
         })?;
         if lookup_entity(conn, &entity_id)?.is_none() {
             return Err(Error::Storage {
-                message: format!(
-                    "stored mention {} points at the missing entity {raw_entity}",
-                    id.as_str()
-                ),
+                message: format!("stored mention {} points at a missing entity", id.as_str()),
             });
         }
         let start = u32::try_from(start).map_err(|_| Error::Storage {
@@ -2008,7 +2009,7 @@ fn lookup_mention_owner(conn: &Connection, id: &MentionId) -> Result<Option<Page
         return Ok(None);
     };
     Ok(Some(PageId::parse(&raw).map_err(|_| Error::Storage {
-        message: format!("invalid stored mention page id {raw}"),
+        message: "invalid stored mention page id".to_string(),
     })?))
 }
 
@@ -2040,10 +2041,10 @@ fn mentions_for_entity_in(conn: &Connection, entity: &EntityId) -> Result<Vec<Me
     for row in rows {
         let (raw_page, raw_id, start, end) = row.map_err(|err| map_sql("row", err))?;
         let page_id = PageId::parse(&raw_page).map_err(|_| Error::Storage {
-            message: format!("invalid stored mention page id {raw_page}"),
+            message: "invalid stored mention page id".to_string(),
         })?;
         let id = MentionId::parse(&raw_id).map_err(|_| Error::Storage {
-            message: format!("invalid stored mention id {raw_id}"),
+            message: "invalid stored mention id".to_string(),
         })?;
         let start = u32::try_from(start).map_err(|_| Error::Storage {
             message: format!("invalid stored mention offset {start}"),
@@ -2155,6 +2156,7 @@ fn lookup_definition(conn: &Connection, id: &DefinitionId) -> Result<Option<Defi
     .map_err(|err| map_sql("definition", err))?
     .map(
         |(raw_id, owner_type, owner_entity, value_class, cardinality, archived)| {
+            let id = parse_stored_id("definition", &raw_id, DefinitionId::parse)?;
             let owner = match (owner_type, owner_entity) {
                 (Some(raw), None) => {
                     Owner::Type(parse_stored_id("owner type", &raw, TypeId::parse)?)
@@ -2164,12 +2166,12 @@ fn lookup_definition(conn: &Connection, id: &DefinitionId) -> Result<Option<Defi
                 }
                 _ => {
                     return Err(Error::Storage {
-                        message: format!("invalid definition owner {raw_id}"),
+                        message: format!("invalid definition owner {}", id.as_str()),
                     });
                 }
             };
             Ok(Definition {
-                id: parse_stored_id("definition", &raw_id, DefinitionId::parse)?,
+                id,
                 owner,
                 value_class: ValueClass::parse(&value_class)?,
                 cardinality: Cardinality::parse(&cardinality)?,
@@ -2256,6 +2258,35 @@ mod tests {
             super::parse_stored_id("target", "SECRET_MARKER", crate::model::EntityId::parse)
                 .expect_err("invalid stored id");
         assert!(!error.to_string().contains("SECRET_MARKER"), "{error}");
+    }
+
+    #[test]
+    fn an_invalid_stored_universe_id_is_rejected_without_being_echoed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("tampered-universe.sqlite");
+        let universe = UniverseId::parse("11111111-1111-4111-8111-111111111111").expect("universe");
+        let store = Store::create(&path, universe).expect("create");
+        store
+            .conn
+            .execute(
+                "UPDATE metadata SET universe_id = ?1",
+                ["SECRET_LORE_123456789012345678901234"],
+            )
+            .expect("tamper");
+
+        let error = super::read_universe(&store.conn).expect_err("invalid stored id");
+        assert!(!error.to_string().contains("SECRET_LORE"), "{error}");
+        assert!(
+            matches!(
+                error,
+                Error::Validation {
+                    reason: ValidationReason::ForeignDatabase,
+                    field: "universe_id",
+                    ..
+                }
+            ),
+            "{error}"
+        );
     }
 
     #[test]

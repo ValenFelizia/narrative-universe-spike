@@ -183,6 +183,73 @@ fn cli_verifies_an_edited_v2_database_with_a_mention() {
     assert!(stdout.contains("pages=1"), "{stdout}");
 }
 
+/// A stored UniverseId is untrusted input. The CLI must reject it without
+/// printing the stored value and without rewriting the database.
+#[test]
+fn cli_does_not_echo_an_invalid_stored_universe_id() {
+    const MARKER: &str = "SECRET_LORE_123456789012345678901234";
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("tampered.sqlite");
+    success(&run(&[OsStr::new("seed"), path.as_os_str()]));
+    let conn = Connection::open(&path).expect("open seeded database");
+    conn.execute("UPDATE metadata SET universe_id = ?1", [MARKER])
+        .expect("tamper");
+    drop(conn);
+    let before = fs::read(&path).expect("tampered bytes");
+
+    let output = run(&[OsStr::new("verify"), path.as_os_str()]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "verification failure must exit 1"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("utf-8 stderr");
+    assert!(!stderr.contains("SECRET_LORE"), "{stderr}");
+    assert!(stderr.contains("universe_id"), "{stderr}");
+    assert_eq!(
+        fs::read(&path).expect("bytes after verify"),
+        before,
+        "verification must not rewrite the database"
+    );
+}
+
+/// Definition ids read from storage are untrusted too: the CLI must reject an
+/// invalid one without printing it.
+#[test]
+fn cli_does_not_echo_an_invalid_stored_definition_id() {
+    const MARKER: &str = "SECRET_LORE_123456789012345678901234";
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("tampered.sqlite");
+    success(&run(&[OsStr::new("seed"), path.as_os_str()]));
+    let conn = Connection::open(&path).expect("open seeded database");
+    conn.execute_batch("PRAGMA ignore_check_constraints = ON")
+        .expect("ignore check constraints");
+    conn.execute(
+        "INSERT INTO definitions
+             (id, owner_type_id, owner_entity_id, value_class, cardinality, archived)
+         VALUES (?1, NULL, NULL, 'text', 'singular', 0)",
+        [MARKER],
+    )
+    .expect("tamper");
+    drop(conn);
+    let before = fs::read(&path).expect("tampered bytes");
+
+    let output = run(&[OsStr::new("verify"), path.as_os_str()]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "verification failure must exit 1"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("utf-8 stderr");
+    assert!(!stderr.contains("SECRET_LORE"), "{stderr}");
+    assert!(stderr.contains("invalid stored definition id"), "{stderr}");
+    assert_eq!(
+        fs::read(&path).expect("bytes after verify"),
+        before,
+        "verification must not rewrite the database"
+    );
+}
+
 #[test]
 fn crash_before_publication_leaves_the_destination_absent_and_never_adopts_it() {
     for point in ["candidate-built", "candidate-verified"] {

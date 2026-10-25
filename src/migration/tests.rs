@@ -1159,6 +1159,83 @@ fn refuses_candidate_aliases_that_resolve_to_the_source_or_a_sidecar() {
     }
 }
 
+/// Default NTFS compares names with a Unicode case table, so `É.sqlite-journal`
+/// names the sidecar of `é.sqlite` even though ASCII folding says otherwise.
+/// The refusal must happen before a candidate exists, not after publication.
+#[cfg(windows)]
+#[test]
+fn refuses_unicode_case_sidecar_aliases_before_reserving_a_candidate() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let source_dir = dir.path().join("universo");
+    fs::create_dir(&source_dir).expect("source dir");
+    let source = source_dir.join("é.sqlite");
+    write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+    let before = fs::read(&source).expect("source bytes");
+    let entries = dir_names(&source_dir);
+
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let destination = source_dir.join(format!("É.sqlite{suffix}"));
+        let error = migrate_v1_to_v2(&source, &destination).expect_err("must refuse");
+        assert_eq!(
+            error.stage,
+            MigrationStage::PreflightDestination,
+            "{suffix}"
+        );
+        assert!(
+            matches!(
+                error.cause.as_ref(),
+                Error::Validation {
+                    reason: ValidationReason::PathExists,
+                    field: "destination",
+                    ..
+                }
+            ),
+            "{suffix}: {}",
+            error.cause
+        );
+        assert!(!destination.exists(), "{suffix} destination was created");
+        assert!(
+            !sidecar_path(&source, suffix).exists(),
+            "{suffix} source sidecar was created"
+        );
+        assert_no_candidate_entries(&source_dir);
+        assert_source_unchanged(&source, &before, &entries);
+    }
+}
+
+/// The Unicode guard must not reject every accented destination: only names
+/// that can denote the source or its sidecars are refused.
+#[cfg(windows)]
+#[test]
+fn accepts_unicode_destinations_that_do_not_name_a_source_sidecar() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let source_dir = dir.path().join("universo");
+    fs::create_dir(&source_dir).expect("source dir");
+    let source = source_dir.join("é.sqlite");
+    write_v1(&source, LEGACY_V1_LATE, &base_snapshot());
+    let before = fs::read(&source).expect("source bytes");
+    let entries = dir_names(&source_dir);
+
+    let destination = dir.path().join("ñandú-v2.sqlite");
+    migrate_v1_to_v2(&source, &destination).expect("a distinct Unicode name is usable");
+    verify_v2(&destination).expect("published destination");
+    assert_no_sidecars(&source);
+    assert_source_unchanged(&source, &before, &entries);
+
+    let other_dir = dir.path().join("otro");
+    fs::create_dir(&other_dir).expect("other dir");
+    let other_source = source_dir.join("otra-fuente.sqlite");
+    write_v1(&other_source, LEGACY_V1_LATE, &base_snapshot());
+    let before = fs::read(&other_source).expect("source bytes");
+    let entries = dir_names(&source_dir);
+    let differently_parented = other_dir.join("É.sqlite-journal");
+    migrate_v1_to_v2(&other_source, &differently_parented)
+        .expect("a sidecar-shaped name in another directory is a distinct file");
+    verify_v2(&differently_parented).expect("published destination");
+    assert!(!sidecar_path(&other_source, "-journal").exists());
+    assert_source_unchanged(&other_source, &before, &entries);
+}
+
 #[test]
 fn refuses_an_unusable_source_or_candidate_path() {
     let (_dir, source, candidate) = layout();
@@ -2544,6 +2621,81 @@ fn general_verification_rejects_inapplicable_assertions() {
 #[test]
 fn general_verification_rejects_definition_value_class_mismatches() {
     assert_value_class_mismatch_is_rejected_by_verification();
+}
+
+/// A stored UniverseId is untrusted input. Rejecting it must not copy the raw
+/// value into the public error, even when it is exactly 36 characters long and
+/// therefore passes the length check.
+#[test]
+fn general_verification_does_not_echo_an_invalid_stored_universe_id() {
+    const MARKER: &str = "SECRET_LORE_123456789012345678901234";
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("tampered.sqlite");
+    write_v2(&path, &base_snapshot());
+    modify(
+        &path,
+        &format!("UPDATE metadata SET universe_id = '{MARKER}'"),
+    );
+    let before = fs::read(&path).expect("tampered bytes");
+
+    let error = verify_v2(&path).expect_err("an invalid stored UniverseId must be rejected");
+    let rendered = format!("{error} // {error:?}");
+    assert!(!rendered.contains("SECRET_LORE"), "{rendered}");
+    assert!(
+        matches!(
+            &error.cause,
+            Error::Validation {
+                reason: ValidationReason::ForeignDatabase,
+                field: "universe_id",
+                ..
+            }
+        ),
+        "{rendered}"
+    );
+    assert_eq!(
+        fs::read(&path).expect("bytes after verification"),
+        before,
+        "verification must stay read-only"
+    );
+}
+
+/// Verification also reads stored definition ids. An invalid one must be
+/// rejected without the raw value appearing in the diagnostic.
+#[test]
+fn general_verification_does_not_echo_an_invalid_stored_definition_id() {
+    const MARKER: &str = "SECRET_LORE_123456789012345678901234";
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("tampered.sqlite");
+    write_v2(&path, &base_snapshot());
+    {
+        let conn = Connection::open(&path).expect("open for tampering");
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON")
+            .expect("ignore check constraints");
+        conn.execute(
+            "INSERT INTO definitions
+                 (id, owner_type_id, owner_entity_id, value_class, cardinality, archived)
+             VALUES (?1, NULL, NULL, 'text', 'singular', 0)",
+            [MARKER],
+        )
+        .expect("tamper");
+    }
+    let before = fs::read(&path).expect("tampered bytes");
+
+    let error = verify_v2(&path).expect_err("an invalid stored definition id must be rejected");
+    let rendered = format!("{error} // {error:?}");
+    assert!(!rendered.contains("SECRET_LORE"), "{rendered}");
+    assert!(
+        matches!(
+            &error.cause,
+            Error::Storage { message } if message == "invalid stored definition id"
+        ),
+        "{rendered}"
+    );
+    assert_eq!(
+        fs::read(&path).expect("bytes after verification"),
+        before,
+        "verification must stay read-only"
+    );
 }
 
 #[test]

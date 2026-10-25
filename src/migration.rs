@@ -1204,8 +1204,59 @@ fn is_windows_reserved_name(name: &str) -> bool {
         && bytes[3] != b'0'
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(windows)]
 fn same_path(left: &Path, right: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+
+    // NTFS compares file names with a non-linguistic, case-insensitive ordinal
+    // comparison, not ASCII folding: `é.sqlite-journal` and `É.sqlite-journal`
+    // name the same entry. `CompareStringOrdinal` is Microsoft's recommended
+    // API for that comparison and does not depend on the process locale. When
+    // it cannot answer, the paths are treated as equal so a possible collision
+    // is refused instead of published.
+    #[allow(non_snake_case)]
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CompareStringOrdinal(
+            string1: *const u16,
+            length1: i32,
+            string2: *const u16,
+            length2: i32,
+            ignore_case: i32,
+        ) -> i32;
+    }
+
+    const CSTR_EQUAL: i32 = 2;
+
+    // Defense in depth for volumes with a customized upcase table: refuse any
+    // pair that Rust's Unicode uppercase mapping makes identical. This can only
+    // add refusals; it never accepts a path the ordinal comparison rejected.
+    if left.as_os_str().to_string_lossy().to_uppercase()
+        == right.as_os_str().to_string_lossy().to_uppercase()
+    {
+        return true;
+    }
+
+    let left: Vec<u16> = left.as_os_str().encode_wide().collect();
+    let right: Vec<u16> = right.as_os_str().encode_wide().collect();
+    if left.contains(&0) || right.contains(&0) {
+        return true;
+    }
+    let (Ok(left_len), Ok(right_len)) = (i32::try_from(left.len()), i32::try_from(right.len()))
+    else {
+        return true;
+    };
+    // SAFETY: both buffers hold exactly the stated number of UTF-16 units and
+    // stay alive for the call.
+    let order =
+        unsafe { CompareStringOrdinal(left.as_ptr(), left_len, right.as_ptr(), right_len, 1) };
+    order == 0 || order == CSTR_EQUAL
+}
+
+#[cfg(target_os = "macos")]
+fn same_path(left: &Path, right: &Path) -> bool {
+    // Only ASCII case is folded here. HFS+/APFS Unicode normalization and case
+    // equivalence are not modelled, so no equivalence beyond ASCII is claimed.
     let left = left.as_os_str().to_string_lossy();
     let right = right.as_os_str().to_string_lossy();
     left.eq_ignore_ascii_case(right.as_ref())

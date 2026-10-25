@@ -56,6 +56,21 @@ Identity comparison and unlink are separate operations, so a same-user
 replacement between them remains a documented race limit rather than a
 universal guarantee.
 
+A second Astra audit at `ccb6b72` found two more blockers, both reproduced on
+Windows/NTFS and in the real CLI before the fix. Destination preflight compared
+paths with ASCII folding, so `É.sqlite-journal` (and `-wal`, `-shm`) named the
+sidecar of `é.sqlite` on default NTFS and published into the source directory;
+Windows now compares with `CompareStringOrdinal` plus a Unicode uppercase
+guard, and a comparison the platform cannot answer refuses the destination
+before any candidate exists. General verification also echoed an invalid stored
+`UniverseId` (and mention ids) from the database into the public error and
+`verify` stderr; stored values are no longer interpolated into diagnostics
+while rejection and read-only behavior are unchanged. The review pass found one
+sibling path in stored definition ids (`list_definitions` / `lookup_definition`
+formatted a not-yet-validated id); that is closed too, with API and CLI
+regressions. macOS keeps its previous ASCII-only comparison and claims no
+HFS+/APFS normalization equivalence.
+
 Failures report a stage, a cause, and every residual path. Before publication,
 cleanup removes the candidate only when it still verifies against the pinned
 snapshot and still carries this run's identity; a changed, replaced, or
