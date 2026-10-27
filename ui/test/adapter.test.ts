@@ -6,10 +6,13 @@ import { ChangeSet, Text } from "@codemirror/state";
 
 import {
   AdapterError,
+  assertDocumentLength,
   assertEditableText,
   assertU32Coordinate,
   composeTransactions,
   decideEditing,
+  MAX_UTF16,
+  nextDocumentLength,
   toSequentialEdits,
   toSequentialEditsFromTransactions,
   type PageEdit,
@@ -245,6 +248,30 @@ test("length mismatch and unsafe coordinates are refused", () => {
     () => assertU32Coordinate(Number.MAX_SAFE_INTEGER + 2, "offset"),
     "coordinate_overflow",
   );
+});
+
+test("document and intermediate lengths are guarded numerically", () => {
+  assert.equal(nextDocumentLength(5, 2, 3), 6);
+  assert.equal(nextDocumentLength(MAX_UTF16, 0, 0), MAX_UTF16);
+  assert.equal(nextDocumentLength(MAX_UTF16, 1, 1), MAX_UTF16);
+  assert.equal(nextDocumentLength(0, 0, MAX_UTF16), MAX_UTF16);
+  assertDocumentLength(MAX_UTF16, "result length");
+
+  expectCode(() => assertDocumentLength(MAX_UTF16 + 1, "result length"), "coordinate_overflow");
+  expectCode(() => nextDocumentLength(MAX_UTF16, 0, 1), "coordinate_overflow");
+  expectCode(() => nextDocumentLength(MAX_UTF16 - 1, 0, 2), "coordinate_overflow");
+  expectCode(() => nextDocumentLength(3, 4, 0), "inconsistent_changeset");
+  expectCode(() => nextDocumentLength(3, -1, 0), "inconsistent_changeset");
+  expectCode(() => nextDocumentLength(3, 0, 1.5), "inconsistent_changeset");
+});
+
+test("a ChangeSet whose result exceeds u32 is refused before allocation", () => {
+  const huge = ChangeSet.of(
+    { from: MAX_UTF16, to: MAX_UTF16, insert: "x" },
+    MAX_UTF16,
+  );
+  assert.equal(huge.newLength, MAX_UTF16 + 1);
+  expectCode(() => toSequentialEdits(huge, "abc"), "coordinate_overflow");
 });
 
 test("an empty document accepts an insertion", () => {

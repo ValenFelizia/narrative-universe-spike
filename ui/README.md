@@ -42,6 +42,9 @@ sides in sync by editing the fixture once.
 - `inserted_text = inserted.toString()`
 - Edits are applied in the order CodeMirror yields them, each in the
   coordinates produced by the previous edit.
+- Every document length is checked against the Rust `u32` UTF-16 limit,
+  including the ChangeSet's result and each intermediate body, by numeric
+  accounting before the changed body is allocated.
 - Only LF text is editable. CR, CRLF, NUL, and unpaired surrogates are refused
   before a transaction reaches Rust.
 - Pages that already hold mentions are read-only in PA-I3.

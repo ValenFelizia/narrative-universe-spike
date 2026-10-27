@@ -72,6 +72,38 @@ export function assertU32Coordinate(value: number, label: string): void {
   }
 }
 
+/// A stored body holds `u32` UTF-16 units. Check a length without needing a
+/// string of that size in memory.
+export function assertDocumentLength(length: number, label: string): void {
+  assertU32Coordinate(length, label);
+}
+
+/// Accounts for one edit numerically before the changed body is allocated.
+/// Both the result and every intermediate document stay inside the Rust `u32`
+/// range, even when each individual edit endpoint was valid.
+export function nextDocumentLength(
+  currentLength: number,
+  removedLength: number,
+  insertedLength: number,
+): number {
+  assertU32Coordinate(currentLength, "current length");
+  if (
+    !Number.isSafeInteger(removedLength) ||
+    removedLength < 0 ||
+    removedLength > currentLength ||
+    !Number.isSafeInteger(insertedLength) ||
+    insertedLength < 0
+  ) {
+    throw new AdapterError(
+      "inconsistent_changeset",
+      `cannot apply ${removedLength} removed and ${insertedLength} inserted units to ${currentLength}`,
+    );
+  }
+  const next = currentLength - removedLength + insertedLength;
+  assertDocumentLength(next, "result length");
+  return next;
+}
+
 function isScalarBoundary(text: string, position: number): boolean {
   if (position <= 0 || position >= text.length) {
     return true;
@@ -92,6 +124,7 @@ export function toSequentialEdits(
   changes: ChangeSet,
   baseText: string,
 ): PageEdit[] {
+  assertDocumentLength(changes.newLength, "result length");
   assertEditableText(baseText);
   assertU32Coordinate(baseText.length, "base length");
   if (changes.length !== baseText.length) {
@@ -103,6 +136,7 @@ export function toSequentialEdits(
 
   const edits: PageEdit[] = [];
   let current = baseText;
+  let currentLength = baseText.length;
 
   changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
     const insertedText = inserted.toString();
@@ -117,6 +151,12 @@ export function toSequentialEdits(
     const end = fromB + removed;
     assertU32Coordinate(fromB, "edit start");
     assertU32Coordinate(end, "edit end");
+    if (fromB > currentLength || end > currentLength) {
+      throw new AdapterError(
+        "inconsistent_changeset",
+        `edit ${fromB}..${end} exceeds the ${currentLength}-unit body`,
+      );
+    }
     if (!isScalarBoundary(current, fromB)) {
       throw new AdapterError(
         "split_scalar",
@@ -129,13 +169,18 @@ export function toSequentialEdits(
         `edit ends inside a surrogate pair at ${end}`,
       );
     }
+    const nextLength = nextDocumentLength(
+      currentLength,
+      removed,
+      insertedText.length,
+    );
     edits.push({
       start_utf16: fromB,
       end_utf16: end,
       inserted_text: insertedText,
     });
-    current =
-      current.slice(0, fromB) + insertedText + current.slice(end);
+    current = current.slice(0, fromB) + insertedText + current.slice(end);
+    currentLength = nextLength;
   });
 
   const oracle = changes.apply(Text.of(baseText.split("\n"))).toString();
