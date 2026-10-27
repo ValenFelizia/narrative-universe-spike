@@ -1,0 +1,236 @@
+{
+  "cases": [
+    {
+      "id": "R1_pure_insert",
+      "base": "abc",
+      "mentions": [],
+      "transactions": [[[1, 1, "X"]]],
+      "expected_body": "aXbc",
+      "expected_mentions": [],
+      "expected_edits": [[1, 1, "X"]],
+      "expected_changed": true,
+      "expected_revision": 1
+    },
+    {
+      "id": "R2_pure_delete",
+      "base": "abc",
+      "mentions": [],
+      "transactions": [[[0, 1, ""]]],
+      "expected_body": "bc",
+      "expected_mentions": [],
+      "expected_edits": [[0, 1, ""]],
+      "expected_changed": true,
+      "expected_revision": 1
+    },
+    {
+      "id": "R3_unequal_replacement",
+      "base": "abcdef",
+      "mentions": [],
+      "transactions": [[[1, 4, "XY"]]],
+      "expected_body": "aXYef",
+      "expected_mentions": [],
+      "expected_edits": [[1, 4, "XY"]],
+      "expected_changed": true,
+      "expected_revision": 1
+    },
+    {
+      "id": "R4_insert_then_delete_shifted",
+      "base": "Elara left",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 0,
+          "end_utf16": 5
+        }
+      ],
+      "transactions": [[[0, 0, "Dear "], [5, 10, ""]]],
+      "expected_body": "Dear Elara",
+      "expected_mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 5,
+          "end_utf16": 10
+        }
+      ],
+      "expected_edits": [[0, 0, "Dear "], [10, 15, ""]],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R5_two_insertions",
+      "base": "abcd",
+      "mentions": [],
+      "transactions": [[[1, 1, "X"], [3, 3, "Y"]]],
+      "expected_body": "aXbcYd",
+      "expected_mentions": [],
+      "expected_edits": [[1, 1, "X"], [4, 4, "Y"]],
+      "expected_changed": true,
+      "expected_revision": 1
+    },
+    {
+      "id": "R6_astral_shift",
+      "base": "A📚B",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 1,
+          "end_utf16": 3
+        }
+      ],
+      "transactions": [[[0, 0, "😀"]]],
+      "expected_body": "😀A📚B",
+      "expected_mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 3,
+          "end_utf16": 5
+        }
+      ],
+      "expected_edits": [[0, 0, "😀"]],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R7_insert_inside_mention",
+      "base": "Elara",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 0,
+          "end_utf16": 5
+        }
+      ],
+      "transactions": [[[2, 2, "x"]]],
+      "expected_body": "Elxara",
+      "expected_mentions": [],
+      "expected_edits": [[2, 2, "x"]],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R8_history_insert_then_delete",
+      "base": "Elara",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 0,
+          "end_utf16": 5
+        }
+      ],
+      "transactions": [[[2, 2, "x"]], [[2, 3, ""]]],
+      "expected_body": "Elara",
+      "expected_mentions": [],
+      "expected_edits": [[2, 2, "x"], [2, 3, ""]],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R9_same_text_replacement",
+      "base": "Elara",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 0,
+          "end_utf16": 5
+        }
+      ],
+      "transactions": [[[0, 5, "Elara"]]],
+      "expected_body": "Elara",
+      "expected_mentions": [],
+      "expected_edits": [[0, 5, "Elara"]],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "adjacent_changes_merge",
+      "base": "abcd",
+      "mentions": [],
+      "transactions": [[[0, 1, "A"], [1, 2, "B"]]],
+      "expected_body": "ABcd",
+      "expected_mentions": [],
+      "expected_edits": [[0, 2, "AB"]],
+      "expected_changed": true,
+      "expected_revision": 1
+    },
+    {
+      "id": "cluster_endpoint_loss",
+      "base": "aX",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 0,
+          "end_utf16": 1
+        }
+      ],
+      "transactions": [[[1, 1, "\u0301"]]],
+      "expected_body": "a\u0301X",
+      "expected_mentions": [],
+      "expected_edits": [[1, 1, "\u0301"]],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "three_ranges_with_shifts",
+      "base": "0123456789",
+      "mentions": [],
+      "transactions": [[[1, 1, "A"], [4, 6, ""], [8, 8, "BC"]]],
+      "expected_body": "0A12367BC89",
+      "expected_mentions": [],
+      "expected_edits": [[1, 1, "A"], [5, 7, ""], [7, 7, "BC"]],
+      "expected_changed": true,
+      "expected_revision": 1
+    },
+    {
+      "id": "noop_save",
+      "base": "abc",
+      "mentions": [],
+      "transactions": [],
+      "expected_body": "abc",
+      "expected_mentions": [],
+      "expected_edits": [],
+      "expected_changed": false,
+      "expected_revision": 0
+    },
+    {
+      "id": "delete_at_end",
+      "base": "abc",
+      "mentions": [],
+      "transactions": [[[2, 3, ""]]],
+      "expected_body": "ab",
+      "expected_mentions": [],
+      "expected_edits": [[2, 3, ""]],
+      "expected_changed": true,
+      "expected_revision": 1
+    },
+    {
+      "id": "lf_only_multiline_insert",
+      "base": "a\nb",
+      "mentions": [],
+      "transactions": [[[0, 0, "X"]]],
+      "expected_body": "Xa\nb",
+      "expected_mentions": [],
+      "expected_edits": [[0, 0, "X"]],
+      "expected_changed": true,
+      "expected_revision": 1
+    },
+    {
+      "id": "replace_across_newline",
+      "base": "a\nb",
+      "mentions": [],
+      "transactions": [[[0, 3, "c"]]],
+      "expected_body": "c",
+      "expected_mentions": [],
+      "expected_edits": [[0, 3, "c"]],
+      "expected_changed": true,
+      "expected_revision": 1
+    }
+  ]
+}
