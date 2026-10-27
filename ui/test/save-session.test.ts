@@ -481,6 +481,32 @@ test("net mode refuses an invalid draft before composition can hide it", () => {
   assert.equal(state.ledger.length, 0);
 });
 
+test("a rejected transaction is validated before its draft is applied", () => {
+  const state = opened("abc", 0, false);
+  const rejected = ChangeSet.of({ from: 1, to: 1, insert: "\u0000" }, 3);
+  let applied = 0;
+  // `docAfter` is the only draft builder in `recordEdit`, and the adapter
+  // rejects the NUL insertion before reaching its own oracle. Any `apply` call
+  // here would therefore prove the draft was built before validation.
+  const tracked = new Proxy(rejected, {
+    get(target, property) {
+      if (property === "apply") {
+        return (...args: Parameters<ChangeSet["apply"]>) => {
+          applied += 1;
+          return target.apply(...args);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as ChangeSet;
+
+  assert.throws(() => recordEdit(state, tracked), /NUL/);
+  assert.equal(applied, 0);
+  assert.equal(state.draftDoc, "abc");
+  assert.equal(state.ledger.length, 0);
+});
+
 test("an unreconciled busy outcome preserves the draft", () => {
   let state = opened("D1", 4);
   state = recordEdit(state, insert("D1", 2, "a"));

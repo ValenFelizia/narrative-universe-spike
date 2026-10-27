@@ -124,12 +124,14 @@ export function recordEdit(
   if (changes.empty) {
     return state;
   }
-  const draftDoc = docAfter(state.draftDoc, changes);
   // Net mode composes before it translates, so a transaction that would be
   // rejected on its own could otherwise be cancelled by a later one and never
   // seen by the adapter. Translate the transaction against the live draft now,
-  // which also rejects split scalar boundaries and invalid inserted text.
+  // which also rejects split scalar boundaries and invalid inserted text. Do
+  // this before applying the changes so a rejected transaction never allocates
+  // a draft.
   toSequentialEdits(changes, state.draftDoc);
+  const draftDoc = docAfter(state.draftDoc, changes);
   const status: SessionStatus = state.inFlight
     ? "saving"
     : state.status === "busy" ||
