@@ -68,3 +68,9 @@ body { margin: 0; min-width: 800px; min-height: 600px; }
   .app-shell { grid-template-columns: 230px minmax(0, 1fr); }
   .reading-area { padding: 72px 32px; }
 }
+
+html, body { height: 100%; }
+.app-shell { height: 100vh; min-height: 0; overflow: hidden; }
+.sidebar { min-height: 0; overflow: hidden; }
+.sidebar nav { min-height: 0; overflow-y: auto; }
+.reading-area { min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }

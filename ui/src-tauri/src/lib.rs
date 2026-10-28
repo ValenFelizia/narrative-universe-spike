@@ -64,7 +64,7 @@ fn map_read_error(error: Error, page_read: bool) -> BridgeError {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_universe(database_path: String, state: State<'_, DesktopState>) -> Result<(), BridgeError> {
     if database_path.trim().is_empty() {
         return Err(BridgeError::EmptyPath);
@@ -85,7 +85,7 @@ fn open_universe(database_path: String, state: State<'_, DesktopState>) -> Resul
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn page_index(state: State<'_, DesktopState>) -> Result<Vec<PageIndexEntry>, BridgeError> {
     let active = state
         .store
@@ -104,7 +104,7 @@ fn page_index(state: State<'_, DesktopState>) -> Result<Vec<PageIndexEntry>, Bri
         .collect())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn read_page(page_id: String, state: State<'_, DesktopState>) -> Result<PageContent, BridgeError> {
     let id = PageId::parse(&page_id).map_err(|_| BridgeError::PageMissing)?;
     let active = state
