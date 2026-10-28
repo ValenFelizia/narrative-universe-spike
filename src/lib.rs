@@ -20,7 +20,7 @@ pub use model::{
     Value, ValueClass,
 };
 pub use store::{
-    Counts, ImportOutcome, MentionOccurrence, PageDocument, PageEdit, PageSnapshot,
+    Counts, ImportOutcome, MentionOccurrence, PageDocument, PageEdit, PageSnapshot, PageSummary,
     PossibleIncompatibility, Snapshot, Store,
 };
 

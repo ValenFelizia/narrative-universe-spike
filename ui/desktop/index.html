@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Narrative Universe</title>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Universe pages">
+        <header class="identity">
+          <p class="eyebrow">Narrative Universe</p>
+          <p id="universe-name" class="universe-name">No universe open</p>
+        </header>
+        <form id="open-form" class="open-form">
+          <label for="database-path">Synthetic database path</label>
+          <input id="database-path" name="databasePath" type="text" autocomplete="off" spellcheck="false" placeholder="Enter an existing file path" />
+          <button type="submit">Open universe</button>
+        </form>
+        <div class="section-heading">
+          <h1>Pages</h1>
+          <span id="page-count" aria-live="polite"></span>
+        </div>
+        <nav aria-label="Pages">
+          <ul id="page-list" class="page-list"></ul>
+        </nav>
+        <p id="status" class="status" role="status">Enter the path of a synthetic universe.</p>
+      </aside>
+      <main class="reading-area">
+        <article class="document" aria-live="polite">
+          <h2 id="page-title">Open a synthetic universe</h2>
+          <div id="page-body" class="page-body">Choose an existing SQLite file by entering its full path on the left. The desktop app does not create or modify database files.</div>
+        </article>
+      </main>
+    </div>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>

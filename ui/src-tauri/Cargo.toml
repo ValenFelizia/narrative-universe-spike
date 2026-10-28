@@ -1,0 +1,14 @@
+[package]
+name = "narrative-universe-desktop"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96"
+publish = false
+
+[dependencies]
+narrative-universe = { path = "../.." }
+serde = { version = "=1.0.229", features = ["derive"] }
+tauri = { version = "=2.12.5", features = [] }
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", features = [] }
