@@ -21,6 +21,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   const pane = document.querySelector<HTMLElement>(".reading-area")!;
   const body = document.querySelector<HTMLElement>("#page-body")!;
   const saveButton = document.querySelector<HTMLButtonElement>("#save")!;
+  const verifyButton = document.querySelector<HTMLButtonElement>("#verify")!;
   const saveStatus = document.querySelector<HTMLElement>("#save-status")!;
   const dialog = document.querySelector<HTMLDialogElement>("#guard")!;
   const keep = document.querySelector<HTMLButtonElement>("#continue")!;
@@ -36,15 +37,33 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   let transitioning = false;
   let saving: Promise<boolean> | null = null;
   let uncertain = false;
+  let verifying = false;
 
   function paint(): void {
-    if (!session) { saveButton.disabled = true; return; }
+    if (!session) { saveButton.disabled = true; verifyButton.hidden = true; return; }
     const labels = {clean: "Saved", dirty: "Unsaved", saving: "Saving…", stale: "Changed elsewhere. Copy your draft before leaving.", busy: "Database busy. Your draft is preserved.", error: "Save could not be confirmed. Your draft is preserved."};
-    saveStatus.textContent = session.baseRevision >= MAX_SUPPORTED_REVISION ? "Revision limit reached. Copy any unsaved draft; this page is read-only." : labels[session.status];
-    saveButton.disabled = session.baseRevision >= MAX_SUPPORTED_REVISION || !isDirty(session) || session.inFlight !== null || ["stale", "error", "busy"].includes(session.status);
+    saveStatus.textContent = session.baseRevision >= MAX_SUPPORTED_REVISION ? "Revision limit reached. Copy any unsaved draft; this page is read-only." : uncertain ? "Save could not be confirmed. Continue editing to select and copy your draft." : labels[session.status];
+    saveButton.disabled = transitioning || deciding || loading || verifying || session.baseRevision >= MAX_SUPPORTED_REVISION || !isDirty(session) || session.inFlight !== null || ["stale", "error", "busy"].includes(session.status);
+    verifyButton.hidden = session.status !== "busy" || !uncertain;
+    verifyButton.disabled = transitioning || deciding || loading || verifying;
   }
 
-  async function save(): Promise<boolean> {
+  async function verifyBusy(): Promise<void> {
+    if (!session || session.status !== "busy" || !uncertain || verifying || loading || deciding || transitioning) return;
+    const identity = session.sessionId, pageId = session.pageId, token = universeToken;
+    verifying = true; paint();
+    try {
+      const page = await invokeCommand<PageContent>("read_page", {pageId, universeToken: token});
+      if (session && session.sessionId === identity && page.revision !== null && page.mentionCount === 0) {
+        session = reconcileBusy(session, {sessionId: identity, pageId: page.id, doc: page.body, revision: page.revision});
+        uncertain = session.status !== "dirty";
+      }
+    } catch { /* Preserve the draft and allow another verification. */ }
+    finally { verifying = false; paint(); }
+  }
+
+  async function save(fromGuard = false): Promise<boolean> {
+    if (verifying || (!fromGuard && (deciding || transitioning || loading))) return false;
     if (saving) return saving;
     if (!session || ["stale", "error", "busy"].includes(session.status)) return false;
     if (!isDirty(session)) return true;
@@ -92,7 +111,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   }
 
   async function mayLeave(): Promise<boolean> {
-    if (deciding || loading || saving) return false;
+    if (deciding || loading || saving || verifying) return false;
     if (!session || (!isDirty(session) && !session.inFlight && session.status === "clean")) return true;
     deciding = true;
     saveProceed.disabled = !!session.inFlight || ["stale", "busy", "error"].includes(session.status);
@@ -104,7 +123,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       dialog.showModal(); keep.focus();
     });
     let result = choice === "discard";
-    if (choice === "save") result = await save();
+    if (choice === "save") result = await save(true);
     deciding = false;
     return result;
   }
@@ -115,7 +134,8 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
     if (guarded) {
       if (transitioning) return;
       transitioning = true;
-      if (!(await mayLeave())) { transitioning = false; return; }
+      paint();
+      if (!(await mayLeave())) { transitioning = false; paint(); return; }
     }
     const requestVersion = ++version;
     loading = true;
@@ -143,14 +163,15 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       }
       status.textContent = "";
     } catch { if (requestVersion === version) status.textContent = "The page could not be read. Your current draft is preserved."; }
-    finally { if (requestVersion === version) loading = false; if (guarded) transitioning = false; }
+    finally { if (requestVersion === version) loading = false; if (guarded) transitioning = false; paint(); }
   }
 
   form.addEventListener("submit", async event => {
     event.preventDefault();
     if (transitioning) return;
     transitioning = true;
-    if (!(await mayLeave())) { transitioning = false; return; }
+    paint();
+    if (!(await mayLeave())) { transitioning = false; paint(); return; }
     const path = input.value;
     loading = true; ++version;
     try {
@@ -167,16 +188,18 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       if (pages.length) { loading = false; await selectPage(pages[0]!.id, false); }
       else { title.textContent = "No page selected"; body.textContent = "This universe has no pages."; }
     } catch { status.textContent = "The universe could not be opened."; }
-    finally { loading = false; transitioning = false; }
+    finally { loading = false; transitioning = false; paint(); }
   });
   saveButton.addEventListener("click", () => void save());
+  verifyButton.addEventListener("click", () => void verifyBusy());
   document.addEventListener("keydown", event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); } });
   return {requestClose: (token: string) => { void (async () => {
     if (transitioning) { await invokeCommand("cancel_close", {token}); return; }
     transitioning = true;
+    paint();
     try {
       if (await mayLeave()) await invokeCommand("close_window", {token});
       else await invokeCommand("cancel_close", {token});
-    } finally { transitioning = false; }
+    } finally { transitioning = false; paint(); }
   })(); }};
 }

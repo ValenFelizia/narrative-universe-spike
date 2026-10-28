@@ -18,6 +18,52 @@ function setup(invoke) {
 }
 const page = {id:'a',title:'Page',body:'original',revision:0,mentionCount:0};
 
+test('discard blocks button and keyboard saves while page or universe transition is pending', async()=>{
+  for (const target of ['page','universe']) {
+    const pending=deferred();let saves=0, reads=0, opens=0;
+    const ui=setup(async(cmd)=>{
+      if(cmd==='open_universe' && ++opens===2) return pending.promise;
+      if(cmd==='page_index') return [{id:'a',title:'Page'},{id:'b',title:'Other'}];
+      if(cmd==='read_page') { if(++reads===2 && target==='page') return pending.promise; return page; }
+      if(cmd==='save_page') saves++;
+    });
+    ui.open('old');await tick();ui.view().dispatch({changes:{from:8,insert:' draft'}});
+    if(target==='page') ui.doc.querySelectorAll('.page-link')[1].click(); else ui.open('new');
+    await tick();ui.doc.querySelector('#discard').click();await tick();
+    assert.equal(ui.doc.querySelector('#save').disabled,true);
+    ui.doc.querySelector('#save').click();ui.doc.dispatchEvent(new ui.doc.defaultView.KeyboardEvent('keydown',{key:'s',ctrlKey:true,bubbles:true}));await tick();
+    assert.equal(saves,0);assert.equal(ui.view().state.doc.toString(),'original draft');
+    pending.resolve(target==='page'?{...page,id:'b'}:undefined);await tick();ui.close();
+  }
+});
+
+test('busy verification can be retried without writing; changed base stays uncertain', async()=>{
+  for (const changed of [false,true]) {
+    let reads=0,saves=0;
+    const ui=setup(async(cmd,args)=>{
+      if(cmd==='page_index') return [{id:'a',title:'Page'}];
+      if(cmd==='read_page') { reads++; if(reads===2) throw {}; return changed && reads>2 ? {...page,revision:1} : page; }
+      if(cmd==='save_page') { saves++; if(saves===1) throw {kind:'busy',pageId:args.request.pageId,sessionId:args.request.sessionId,requestId:args.request.requestId}; return {pageId:'a',sessionId:args.request.sessionId,requestId:args.request.requestId,body:'original draft',revision:1}; }
+    });
+    ui.open('a');await tick();const view=ui.view();view.dispatch({changes:{from:8,insert:' draft'}});ui.doc.querySelector('#save').click();await tick();
+    assert.equal(ui.doc.querySelector('#verify').hidden,false);ui.doc.querySelector('#verify').click();await tick();assert.equal(saves,1);assert.equal(view.state.doc.toString(),'original draft');
+    if(changed) { assert.match(ui.doc.querySelector('#save-status').textContent,/copy your draft/i); assert.equal(ui.doc.querySelector('#save').disabled,true); }
+    else { ui.doc.querySelector('#save').click();await tick();assert.equal(saves,2);assert.match(ui.doc.querySelector('#save-status').textContent,/saved/i); }
+    ui.close();
+  }
+});
+
+test('save then proceed still saves the draft before navigating', async()=>{
+  let saves=0;const ui=setup(async(cmd,args)=>{
+    if(cmd==='page_index')return [{id:'a',title:'Page'},{id:'b',title:'Other'}];
+    if(cmd==='read_page')return args.pageId==='a'?page:{...page,id:'b',title:'Other'};
+    if(cmd==='save_page'){saves++;return {pageId:'a',sessionId:args.request.sessionId,requestId:args.request.requestId,body:'original draft',revision:1};}
+  });
+  ui.open('a');await tick();ui.view().dispatch({changes:{from:8,insert:' draft'}});
+  ui.doc.querySelectorAll('.page-link')[1].click();await tick();ui.doc.querySelector('#save-proceed').click();await tick();
+  assert.equal(saves,1);assert.equal(ui.doc.querySelector('#page-title').textContent,'Other');ui.close();
+});
+
 test('empty and failed universe report a readable state', async()=>{
   let fail=false; const ui=setup(async cmd=>{if(cmd==='page_index'){if(fail)throw {};return []}});
   ui.open('a'); await tick(); assert.match(ui.doc.querySelector('#page-body').textContent,/no pages/i);
