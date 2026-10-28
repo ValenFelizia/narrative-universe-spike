@@ -74,3 +74,13 @@ html, body { height: 100%; }
 .sidebar { min-height: 0; overflow: hidden; }
 .sidebar nav { min-height: 0; overflow-y: auto; }
 .reading-area { min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
+
+.cm-editor { color: #ece7de; font: 18px/1.65 "Source Serif 4", Georgia, serif; }
+.cm-editor .cm-content { font-family: inherit; caret-color: #ece7de; padding: 0; }
+.cm-editor .cm-line { padding: 0; }
+.cm-editor.cm-focused { outline: 1px solid #7aa89a; }
+.save-controls { display: flex; gap: 12px; align-items: center; margin-top: 24px; font: 12px "Segoe UI", sans-serif; color: #aba9a5; }
+.save-controls button, dialog button { background: #1f2226; color: #ece7de; border: 1px solid #393b40; padding: 8px; }
+dialog { background: #1f2226; color: #ece7de; border: 1px solid #393b40; }
+dialog::backdrop { background: rgba(0,0,0,.6); }
+.cm-editor .cm-scroller { font-family: "Source Serif 4", Georgia, serif; }
