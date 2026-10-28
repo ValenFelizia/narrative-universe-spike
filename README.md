@@ -23,7 +23,7 @@ The spike covers:
 - A read-only query for possible incompatibilities: two active `ACORDADO` assertions with different known values on the same subject and the same active singular definition.
 - Versioned JSON export, import into the same universe, and import into a new file. A conflicting record rolls back the whole batch. Import can restore an assertion whose definition is already archived. Creating a new assertion on an archived definition still fails.
 
-**Not implemented:** editing UI, Tauri, MCP, full history, a fictional timeline engine. I3 is not accepted until G3 review, and the mention contract is not accepted until its own review. A green test suite does not authorize merge.
+**PA-I3/A2-A:** a minimal read-only Tauri desktop shell and typed Rust page-read bridge are implemented on the issue #21 branch and await review. The shell is not an editing UI. **Not implemented:** MCP, full history, or a fictional timeline engine. I3 is not accepted until G3 review, and the mention contract is not accepted until its own review. A green test suite does not authorize merge.
 
 ## Getting started
 
@@ -58,6 +58,8 @@ cargo run --locked --bin spike -- verify ./migrated-universe.sqlite
 `migrate` prints the universe id, counts, destination, and any residual path on success; on failure it prints the stage, both paths, the cause, and every residual path. `verify` is a read-only general check: it accepts an edited v2 database with nonzero page revisions and valid occurrences, and it enforces the same cross-record domain rules as the store, including assertion applicability, definition value-class agreement, and reference targets. It does not upgrade or create anything.
 
 The fixture is synthetic, not War Archivist canon. See [fixture notes](tests/fixtures/README.md). The Spanish text inside the fixture and the canon values are intentional test data, **not documentation left untranslated**.
+
+For the read-only desktop proof's Windows prerequisites and run commands, see [ui/DESKTOP.md](ui/DESKTOP.md).
 
 ## Code map
 
@@ -103,6 +105,6 @@ This is an experimental format intended for disposable test universes. Do **not*
 
 Development proceeds in small, reviewable increments with explicit acceptance gates. Read [CONTRIBUTING.md](CONTRIBUTING.md) for development commands, documentation conventions, pull-request expectations, and agent safeguards.
 
-The implementation language and future desktop shell are still being validated; this spike does not commit the product to Tauri.
+The desktop shell is an implementation experiment authorized for PA-I3/A2-A only; it does not commit later product work to Tauri.
 
 **License:** not selected. Public repository visibility does not by itself grant a license to reuse or redistribute this code.

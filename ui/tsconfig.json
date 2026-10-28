@@ -1,17 +1,27 @@
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ES2022"],
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "strict": true,
-    "noEmit": true,
-    "allowImportingTsExtensions": true,
-    "exactOptionalPropertyTypes": true,
-    "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true,
-    "verbatimModuleSyntax": true,
-    "types": ["node"]
-  },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+    "compilerOptions":  {
+                            "target":  "ES2022",
+                            "lib":  [
+                                        "ES2022"
+                                    ],
+                            "module":  "NodeNext",
+                            "moduleResolution":  "NodeNext",
+                            "strict":  true,
+                            "noEmit":  true,
+                            "allowImportingTsExtensions":  true,
+                            "exactOptionalPropertyTypes":  true,
+                            "noUncheckedIndexedAccess":  true,
+                            "noImplicitOverride":  true,
+                            "verbatimModuleSyntax":  true,
+                            "types":  [
+                                          "node"
+                                      ]
+                        },
+    "include":  [
+                    "src/**/*.ts",
+                    "test/**/*.ts"
+                ],
+    "exclude":  [
+                    "test/desktop.test.ts"
+                ]
 }

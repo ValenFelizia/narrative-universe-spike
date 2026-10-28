@@ -85,6 +85,13 @@ pub struct PageDocument {
     pub revision: PageRevision,
 }
 
+/// A page's identity and title for navigation, without loading its body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageSummary {
+    pub id: PageId,
+    pub title: String,
+}
+
 /// One transient editing command for a page.
 ///
 /// The operations are applied in order, each one in the coordinates of the
@@ -217,6 +224,26 @@ impl Store {
 
     pub fn page(&self, id: &PageId) -> Result<Page> {
         required_page(&self.conn, id)
+    }
+
+    /// Lists page identities and titles in stable title-then-id order.
+    /// Bodies are deliberately not selected for navigation.
+    pub fn page_index(&self) -> Result<Vec<PageSummary>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT id, title FROM pages ORDER BY title COLLATE BINARY, id COLLATE BINARY")
+            .map_err(|err| map_sql("prepare page index", err))?;
+        let mut rows = statement
+            .query([])
+            .map_err(|err| map_sql("read page index", err))?;
+        let mut pages = Vec::new();
+        while let Some(row) = rows.next().map_err(|err| map_sql("read page index", err))? {
+            let raw_id: String = row.get(0).map_err(|err| map_sql("read page id", err))?;
+            let title: String = row.get(1).map_err(|err| map_sql("read page title", err))?;
+            let id = parse_stored_id("page", &raw_id, PageId::parse)?;
+            pages.push(PageSummary { id, title });
+        }
+        Ok(pages)
     }
 
     /// Reads a page as one aggregate: title, body with its mentions, and the
