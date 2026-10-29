@@ -1,0 +1,463 @@
+[
+  {
+    "name": "a-800-visible",
+    "w": 800,
+    "h": 600,
+    "docX": 262,
+    "docWidth": 491,
+    "proseX": 262,
+    "proseWidth": 491,
+    "scrollTop": 0,
+    "lines": 15,
+    "firstLineChars": 55,
+    "bodyFont": "SS",
+    "uiFont": "Ins",
+    "fonts": [
+      [
+        "18px SS",
+        true
+      ],
+      [
+        "18px Lit",
+        true
+      ],
+      [
+        "14px Ins",
+        true
+      ],
+      [
+        "14px Ss3",
+        true
+      ]
+    ],
+    "scrollWidth": 800
+  },
+  {
+    "name": "a-800-hidden",
+    "w": 800,
+    "h": 600,
+    "docX": 262,
+    "docWidth": 491,
+    "proseX": 262,
+    "proseWidth": 491,
+    "scrollTop": 0,
+    "lines": 15,
+    "firstLineChars": 55,
+    "bodyFont": "SS",
+    "uiFont": "Ins",
+    "fonts": [
+      [
+        "18px SS",
+        true
+      ],
+      [
+        "18px Lit",
+        true
+      ],
+      [
+        "14px Ins",
+        true
+      ],
+      [
+        "14px Ss3",
+        true
+      ]
+    ],
+    "scrollWidth": 800
+  },
+  {
+    "name": "b-800-hidden",
+    "w": 800,
+    "h": 600,
+    "docX": 52.5,
+    "docWidth": 680,
+    "proseX": 52.5,
+    "proseWidth": 680,
+    "scrollTop": 0,
+    "lines": 12,
+    "firstLineChars": 80,
+    "bodyFont": "SS",
+    "uiFont": "Ins",
+    "fonts": [
+      [
+        "18px SS",
+        true
+      ],
+      [
+        "18px Lit",
+        true
+      ],
+      [
+        "14px Ins",
+        true
+      ],
+      [
+        "14px Ss3",
+        true
+      ]
+    ],
+    "scrollWidth": 800
+  },
+  {
+    "name": "a-1280-visible",
+    "w": 1280,
+    "h": 800,
+    "docX": 407.5,
+    "docWidth": 680,
+    "proseX": 407.5,
+    "proseWidth": 680,
+    "scrollTop": 0,
+    "lines": 12,
+    "firstLineChars": 80,
+    "bodyFont": "SS",
+    "uiFont": "Ins",
+    "fonts": [
+      [
+        "18px SS",
+        true
+      ],
+      [
+        "18px Lit",
+        true
+      ],
+      [
+        "14px Ins",
+        true
+      ],
+      [
+        "14px Ss3",
+        true
+      ]
+    ],
+    "scrollWidth": 1280
+  },
+  {
+    "name": "a-1280-hidden",
+    "w": 1280,
+    "h": 800,
+    "docX": 407.5,
+    "docWidth": 680,
+    "proseX": 407.5,
+    "proseWidth": 680,
+    "scrollTop": 0,
+    "lines": 12,
+    "firstLineChars": 80,
+    "bodyFont": "SS",
+    "uiFont": "Ins",
+    "fonts": [
+      [
+        "18px SS",
+        true
+      ],
+      [
+        "18px Lit",
+        true
+      ],
+      [
+        "14px Ins",
+        true
+      ],
+      [
+        "14px Ss3",
+        true
+      ]
+    ],
+    "scrollWidth": 1280
+  },
+  {
+    "name": "b-1280-hidden",
+    "w": 1280,
+    "h": 800,
+    "docX": 292.5,
+    "docWidth": 680,
+    "proseX": 292.5,
+    "proseWidth": 680,
+    "scrollTop": 0,
+    "lines": 12,
+    "firstLineChars": 80,
+    "bodyFont": "SS",
+    "uiFont": "Ins",
+    "fonts": [
+      [
+        "18px SS",
+        true
+      ],
+      [
+        "18px Lit",
+        true
+      ],
+      [
+        "14px Ins",
+        true
+      ],
+      [
+        "14px Ss3",
+        true
+      ]
+    ],
+    "scrollWidth": 1280
+  },
+  {
+    "name": "c-800-visible",
+    "w": 800,
+    "h": 600,
+    "docX": 288,
+    "docWidth": 465,
+    "proseX": 288,
+    "proseWidth": 465,
+    "scrollTop": 0,
+    "lines": 16,
+    "firstLineChars": 55,
+    "bodyFont": "Lit",
+    "uiFont": "Ss3",
+    "fonts": [
+      [
+        "18px SS",
+        true
+      ],
+      [
+        "18px Lit",
+        true
+      ],
+      [
+        "14px Ins",
+        true
+      ],
+      [
+        "14px Ss3",
+        true
+      ]
+    ],
+    "scrollWidth": 800
+  },
+  {
+    "name": "c-1280-visible",
+    "w": 1280,
+    "h": 800,
+    "docX": 420.5,
+    "docWidth": 680,
+    "proseX": 420.5,
+    "proseWidth": 680,
+    "scrollTop": 0,
+    "lines": 12,
+    "firstLineChars": 80,
+    "bodyFont": "Lit",
+    "uiFont": "Ss3",
+    "fonts": [
+      [
+        "18px SS",
+        true
+      ],
+      [
+        "18px Lit",
+        true
+      ],
+      [
+        "14px Ins",
+        true
+      ],
+      [
+        "14px Ss3",
+        true
+      ]
+    ],
+    "scrollWidth": 1280
+  },
+  {
+    "name": "empty-800",
+    "w": 800,
+    "h": 600,
+    "docX": 262,
+    "docWidth": 491,
+    "proseX": 262,
+    "proseWidth": 491,
+    "scrollTop": 0,
+    "lines": 0,
+    "bodyFont": "SS",
+    "uiFont": "Ins",
+    "fonts": [
+      [
+        "18px SS",
+        true
+      ],
+      [
+        "18px Lit",
+        true
+      ],
+      [
+        "14px Ins",
+        true
+      ],
+      [
+        "14px Ss3",
+        true
+      ]
+    ],
+    "scrollWidth": 800
+  },
+  {
+    "name": "long-1024",
+    "w": 1024,
+    "h": 768,
+    "docX": 279.5,
+    "docWidth": 680,
+    "proseX": 279.5,
+    "proseWidth": 680,
+    "scrollTop": 1200,
+    "lines": 240,
+    "firstLineChars": 80,
+    "bodyFont": "SS",
+    "uiFont": "Ins",
+    "fonts": [
+      [
+        "18px SS",
+        true
+      ],
+      [
+        "18px Lit",
+        true
+      ],
+      [
+        "14px Ins",
+        true
+      ],
+      [
+        "14px Ss3",
+        true
+      ]
+    ],
+    "scrollWidth": 1024
+  },
+  {
+    "name": "guard-800",
+    "w": 800,
+    "h": 600,
+    "docX": 262,
+    "docWidth": 491,
+    "proseX": 262,
+    "proseWidth": 491,
+    "scrollTop": 0,
+    "lines": 15,
+    "firstLineChars": 55,
+    "bodyFont": "SS",
+    "uiFont": "Ins",
+    "fonts": [
+      [
+        "18px SS",
+        true
+      ],
+      [
+        "18px Lit",
+        true
+      ],
+      [
+        "14px Ins",
+        true
+      ],
+      [
+        "14px Ss3",
+        true
+      ]
+    ],
+    "scrollWidth": 800
+  },
+  {
+    "name": "font-literata",
+    "w": 1280,
+    "h": 800,
+    "docX": 407.5,
+    "docWidth": 680,
+    "proseX": 407.5,
+    "proseWidth": 680,
+    "scrollTop": 0,
+    "lines": 12,
+    "firstLineChars": 80,
+    "bodyFont": "Lit",
+    "uiFont": "Ins",
+    "fonts": [
+      [
+        "18px SS",
+        true
+      ],
+      [
+        "18px Lit",
+        true
+      ],
+      [
+        "14px Ins",
+        true
+      ],
+      [
+        "14px Ss3",
+        true
+      ]
+    ],
+    "scrollWidth": 1280
+  },
+  {
+    "name": "font-source-sans",
+    "w": 1280,
+    "h": 800,
+    "docX": 407.5,
+    "docWidth": 680,
+    "proseX": 407.5,
+    "proseWidth": 680,
+    "scrollTop": 0,
+    "lines": 12,
+    "firstLineChars": 80,
+    "bodyFont": "SS",
+    "uiFont": "Ss3",
+    "fonts": [
+      [
+        "18px SS",
+        true
+      ],
+      [
+        "18px Lit",
+        true
+      ],
+      [
+        "14px Ins",
+        true
+      ],
+      [
+        "14px Ss3",
+        true
+      ]
+    ],
+    "scrollWidth": 1280
+  },
+  {
+    "name": "a-1440",
+    "w": 1440,
+    "h": 900,
+    "docX": 487.5,
+    "docWidth": 680,
+    "proseX": 487.5,
+    "proseWidth": 680,
+    "scrollTop": 0,
+    "lines": 12,
+    "firstLineChars": 80,
+    "bodyFont": "SS",
+    "uiFont": "Ins",
+    "fonts": [
+      [
+        "18px SS",
+        true
+      ],
+      [
+        "18px Lit",
+        true
+      ],
+      [
+        "14px Ins",
+        true
+      ],
+      [
+        "14px Ss3",
+        true
+      ]
+    ],
+    "scrollWidth": 1440
+  }
+]
