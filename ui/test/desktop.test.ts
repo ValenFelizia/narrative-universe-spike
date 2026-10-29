@@ -205,6 +205,22 @@ test('lost creation response preserves draft and verification never retries crea
   assert.match(ui.doc.querySelector('#status').textContent,/exists/); assert.equal(ui.view().state.doc.toString(),'original draft'); ui.close();
 });
 
+test('read-only page remains selected after creation verification refreshes the list', async()=>{
+  const ui=setup(async cmd=>{
+    if(cmd==='page_index') return [{id:'a',title:'Page'}];
+    if(cmd==='read_page') return {...page,mentionCount:1};
+    if(cmd==='create_page') throw {};
+  });
+  ui.open('a'); await tick();
+  assert.equal(ui.view(),null);
+  assert.equal(ui.doc.querySelector('.page-link').getAttribute('aria-current'),'true');
+  ui.doc.querySelector('#new-page').click(); await tick();
+  ui.doc.querySelector('#verify-create').click(); await tick();
+  assert.equal(ui.doc.querySelector('.page-link').getAttribute('aria-current'),'true');
+  assert.equal(ui.doc.querySelector('#page-body').textContent,'original');
+  ui.close();
+});
+
 test('a stored multiline title is displayed exactly and makes the whole page read-only', async()=>{
   let saves=0; const multiline='First\n<second>\n';
   const ui=setup(async cmd=>{if(cmd==='page_index')return [{id:'a',title:multiline}];if(cmd==='read_page')return {...page,title:multiline};if(cmd==='save_page')saves++;});

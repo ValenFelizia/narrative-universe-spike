@@ -32,6 +32,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   const discard = document.querySelector<HTMLButtonElement>("#discard")!;
   let universeToken = "";
   let session: SaveState | null = null;
+  let selectedPageId: string | null = null;
   let editor: EditorView | null = null;
   const editability = new Compartment();
   let version = 0;
@@ -152,9 +153,10 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       const page = await invokeCommand<PageContent>("read_page", {pageId: id, universeToken});
       if (requestVersion !== version) return;
       clearPage();
+      selectedPageId = page.id;
       title.textContent = page.title; titleInput.value = page.title; titleInput.hidden = false; title.hidden = true;
       pane.scrollTop = 0;
-      for (const button of list.querySelectorAll<HTMLButtonElement>("button")) button.setAttribute("aria-current", String(button.dataset.pageId === id));
+      for (const button of list.querySelectorAll<HTMLButtonElement>("button")) button.setAttribute("aria-current", String(button.dataset.pageId === selectedPageId));
       const decision = decideEditing(page.body, page.mentionCount);
       const titleDecision = decideEditing(page.title, 0);
       if (!decision.editable || !titleDecision.editable || page.title.includes("\n") || page.revision === null || page.revision >= MAX_SUPPORTED_REVISION) {
@@ -187,7 +189,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
     for (const page of pages) {
       const li = document.createElement("li"), button = document.createElement("button");
       button.type = "button"; button.className = "page-link"; button.textContent = page.title; button.dataset.pageId = page.id;
-      button.setAttribute("aria-current", String(session?.pageId === page.id));
+      button.setAttribute("aria-current", String(selectedPageId === page.id));
       button.addEventListener("click", () => void selectPage(page.id)); li.append(button); list.append(li);
     }
   }
@@ -235,6 +237,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
     try {
       const opened = await invokeCommand<OpenedUniverse>("open_universe", {databasePath: path});
       universeToken = opened.token; pendingCreate = null; pages = opened.pages;
+      selectedPageId = null;
       clearPage(); renderPages();
       name.textContent = path.split(/[\\/]/).at(-1) || path;
       if (pages.length) { loading = false; await selectPage(pages[0]!.id, false); }
