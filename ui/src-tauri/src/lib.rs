@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use narrative_universe::{
-    Error, MentionEdit, PageEdit, PageId, PageRevision, PageSummary, Store, ValidationReason,
+    Error, MentionEdit, Page, PageEdit, PageId, PageRevision, PageSummary, Store, ValidationReason,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
@@ -39,6 +39,7 @@ enum BridgeError {
     Stale,
     Busy,
     InvalidInput,
+    DuplicateId,
     ReadOnly,
     Storage,
     Io,
@@ -78,6 +79,7 @@ struct SaveRequest {
     session_id: String,
     request_id: u64,
     expected_revision: i64,
+    title: Option<String>,
     edits: Vec<TextEdit>,
 }
 
@@ -87,6 +89,7 @@ struct SaveResponse {
     page_id: String,
     session_id: String,
     request_id: u64,
+    title: String,
     body: String,
     revision: i64,
 }
@@ -109,6 +112,10 @@ fn save_error(error: Error) -> BridgeError {
             reason: ValidationReason::NotFound | ValidationReason::UnknownPage,
             ..
         } => BridgeError::PageMissing,
+        Error::Validation {
+            reason: ValidationReason::DuplicateId,
+            ..
+        } => BridgeError::DuplicateId,
         Error::Validation { .. } | Error::InvalidDocument { .. } => BridgeError::InvalidInput,
         Error::Io { .. } => BridgeError::Io,
         _ => BridgeError::Storage,
@@ -278,8 +285,18 @@ fn save_to_store(store: &mut Store, request: SaveRequest) -> Result<SaveResponse
     if current.revision != revision {
         return Err(BridgeError::Stale);
     }
-    if !current.body.mentions.is_empty() || current.body.body.contains(['\r', '\0']) {
+    if !current.body.mentions.is_empty()
+        || current.body.body.contains(['\r', '\0'])
+        || current.title.contains(['\r', '\0'])
+    {
         return Err(BridgeError::ReadOnly);
+    }
+    if request
+        .title
+        .as_ref()
+        .is_some_and(|title| title.contains(['\r', '\0']))
+    {
+        return Err(BridgeError::InvalidInput);
     }
     if request
         .edits
@@ -288,7 +305,7 @@ fn save_to_store(store: &mut Store, request: SaveRequest) -> Result<SaveResponse
     {
         return Err(BridgeError::InvalidInput);
     }
-    let edits: Vec<PageEdit> = request
+    let mut edits: Vec<PageEdit> = request
         .edits
         .into_iter()
         .map(|edit| {
@@ -299,6 +316,9 @@ fn save_to_store(store: &mut Store, request: SaveRequest) -> Result<SaveResponse
             })
         })
         .collect();
+    if let Some(title) = request.title {
+        edits.insert(0, PageEdit::SetTitle { title });
+    }
     let saved = store
         .save_page_edits(&id, revision, &edits)
         .map_err(save_error)?;
@@ -306,8 +326,48 @@ fn save_to_store(store: &mut Store, request: SaveRequest) -> Result<SaveResponse
         page_id: saved.id.as_str().to_owned(),
         session_id: request.session_id,
         request_id: request.request_id,
+        title: saved.title,
         body: saved.body.body,
         revision: saved.revision.as_i64(),
+    })
+}
+
+#[tauri::command(async)]
+fn create_page(
+    page_id: String,
+    universe_token: String,
+    state: State<'_, DesktopState>,
+) -> Result<PageContent, BridgeError> {
+    let mut active = state
+        .store
+        .lock()
+        .map_err(|_| BridgeError::StateUnavailable)?;
+    create_active(&mut active, &universe_token, &page_id)
+}
+fn create_active(
+    active: &mut Option<ActiveUniverse>,
+    token: &str,
+    page_id: &str,
+) -> Result<PageContent, BridgeError> {
+    let universe = active.as_mut().ok_or(BridgeError::UniverseNotOpen)?;
+    if universe.token != token {
+        return Err(BridgeError::UniverseChanged);
+    }
+    let id = PageId::parse(page_id).map_err(|_| BridgeError::InvalidInput)?;
+    let page = universe
+        .store
+        .create_page(Page {
+            id,
+            title: "Untitled page".into(),
+            body: String::new(),
+        })
+        .map_err(save_error)?;
+    Ok(PageContent {
+        id: page.id.as_str().to_owned(),
+        title: page.title,
+        body: page.body,
+        revision: Some(0),
+        mention_count: 0,
     })
 }
 
@@ -364,6 +424,7 @@ pub fn run() {
             page_index,
             read_page,
             save_page,
+            create_page,
             cancel_close,
             close_window
         ])
@@ -374,9 +435,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        active_store, consume_close_request, map_open_error, map_read_error, prepare_universe,
-        save_active, save_to_store, ActiveUniverse, BridgeError, DesktopState, SaveFailure,
-        SaveRequest, TextEdit,
+        active_store, consume_close_request, create_active, map_open_error, map_read_error,
+        prepare_universe, save_active, save_to_store, ActiveUniverse, BridgeError, DesktopState,
+        SaveFailure, SaveRequest, TextEdit,
     };
     use narrative_universe::{
         Entity, EntityId, Error, Mention, MentionEdit, MentionId, Page, PageEdit, PageId,
@@ -390,6 +451,7 @@ mod tests {
             session_id: "session".into(),
             request_id: 1,
             expected_revision: revision,
+            title: None,
             edits: vec![TextEdit {
                 start_utf16: 0,
                 end_utf16: 0,
@@ -514,13 +576,17 @@ mod tests {
                 body: "texto 📚".into(),
             })
             .unwrap();
-        let saved = save_to_store(&mut store, request(0, "á ")).unwrap();
+        let mut combined = request(0, "\u{e1} ");
+        combined.title = Some("T\u{ed}tulo \u{1f409}".into());
+        let saved = save_to_store(&mut store, combined).unwrap();
+        assert_eq!(saved.title, "T\u{ed}tulo \u{1f409}");
         assert_eq!(saved.body, "á texto 📚");
         assert_eq!(saved.revision, 1);
         let mut noop = request(1, "");
         noop.edits.clear();
         assert_eq!(save_to_store(&mut store, noop).unwrap().revision, 1);
         let mut invalid = request(1, "x");
+        invalid.title = Some("rollback".into());
         invalid.edits[0].start_utf16 = 10_000;
         invalid.edits[0].end_utf16 = 10_000;
         assert!(matches!(
@@ -531,6 +597,10 @@ mod tests {
             save_to_store(&mut store, request(0, "x")),
             Err(BridgeError::Stale)
         ));
+        assert_eq!(
+            store.page_document(&id).unwrap().title,
+            "T\u{ed}tulo \u{1f409}"
+        );
         let lock = rusqlite::Connection::open(&path).unwrap();
         lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
         assert!(matches!(
@@ -547,6 +617,53 @@ mod tests {
                 .body
                 .body,
             "á texto 📚"
+        );
+    }
+
+    #[test]
+    fn creation_checks_token_duplicate_and_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("create.sqlite");
+        let store = Store::create(
+            &path,
+            UniverseId::parse("11111111-1111-4111-8111-111111111111").unwrap(),
+        )
+        .unwrap();
+        let mut active = Some(ActiveUniverse {
+            token: "current".into(),
+            store,
+        });
+        let id = "22222222-2222-4222-8222-222222222222";
+        assert!(matches!(
+            create_active(&mut active, "old", id),
+            Err(BridgeError::UniverseChanged)
+        ));
+        assert!(matches!(
+            create_active(&mut active, "current", "bad"),
+            Err(BridgeError::InvalidInput)
+        ));
+        assert_eq!(
+            create_active(&mut active, "current", id).unwrap().revision,
+            Some(0)
+        );
+        assert!(matches!(
+            create_active(&mut active, "current", id),
+            Err(BridgeError::DuplicateId)
+        ));
+        let lock = rusqlite::Connection::open(&path).unwrap();
+        lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        assert!(matches!(
+            create_active(
+                &mut active,
+                "current",
+                "33333333-3333-4333-8333-333333333333"
+            ),
+            Err(BridgeError::Busy)
+        ));
+        lock.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(
+            active.as_ref().unwrap().store.page_index().unwrap().len(),
+            1
         );
     }
 
@@ -617,7 +734,15 @@ mod tests {
             save_to_store(&mut store, request(1, "x")),
             Err(BridgeError::ReadOnly)
         ));
+        let mut title_request = request(1, "");
+        title_request.title = Some("changed".into());
+        title_request.edits.clear();
+        assert!(matches!(
+            save_to_store(&mut store, title_request),
+            Err(BridgeError::ReadOnly)
+        ));
         let document = store.page_document(&id).unwrap();
+        assert_eq!(document.title, "title");
         assert_eq!(document.body.body, "linked text");
         assert_eq!(document.body.mentions.len(), 1);
         assert_eq!(document.revision.as_i64(), 1);

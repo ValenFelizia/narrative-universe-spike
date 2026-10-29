@@ -20,16 +20,17 @@
         </form>
         <div class="section-heading">
           <h1>Pages</h1>
-          <span id="page-count" aria-live="polite"></span>
+          <button id="new-page" type="button" disabled>New page</button><span id="page-count" aria-live="polite"></span>
         </div>
         <nav aria-label="Pages">
           <ul id="page-list" class="page-list"></ul>
         </nav>
-        <p id="status" class="status" role="status">Enter the path of a synthetic universe.</p>
+        <button id="verify-create" type="button" hidden>Refresh page list</button><p id="status" class="status" role="status">Enter the path of a synthetic universe.</p>
       </aside>
       <main class="reading-area">
         <article class="document" aria-live="polite">
           <h2 id="page-title">Open a synthetic universe</h2>
+          <input id="title-input" aria-label="Page title" hidden />
           <div id="page-body" class="page-body">Choose an existing synthetic SQLite file by entering its full path on the left. Changes to editable pages are saved only when you choose Save.</div>
         <div class="save-controls"><button id="save" type="button" disabled>Save</button><button id="verify" type="button" hidden>Retry verification</button><span id="save-status" role="status"></span></div></article>
       </main>

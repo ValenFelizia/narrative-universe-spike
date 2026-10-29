@@ -1,6 +1,7 @@
 import { ChangeSet, Text } from "@codemirror/state";
 
 import {
+  assertEditableText,
   composeTransactions,
   toSequentialEdits,
   toSequentialEditsFromTransactions,
@@ -45,6 +46,8 @@ export type SaveRequest = {
   pageId: string;
   expectedRevision: number;
   doc: string;
+  title: string;
+  titleChanged: boolean;
   edits: PageEdit[];
 };
 
@@ -55,6 +58,7 @@ export type SaveReply =
       sessionId: string;
       pageId: string;
       doc: string;
+      title?: string;
       revision: number;
     }
   | {
@@ -69,6 +73,7 @@ export type InFlight = {
   requestId: number;
   expectedRevision: number;
   sentDoc: string;
+  sentTitle: string;
   ledgerCount: number;
 };
 
@@ -77,6 +82,9 @@ export type SaveState = {
   pageId: string;
   mode: SessionMode;
   baseRevision: number;
+  baseTitle: string;
+  draftTitle: string;
+  titleAware: boolean;
   baseDoc: string;
   draftDoc: string;
   ledger: readonly ChangeSet[];
@@ -95,6 +103,7 @@ export function openSession(options: {
   sessionId: string;
   pageId: string;
   doc: string;
+  title?: string;
   revision: number;
   hasMentions: boolean;
 }): SaveState {
@@ -106,6 +115,9 @@ export function openSession(options: {
     pageId: options.pageId,
     mode: options.hasMentions ? "ledger" : "net",
     baseRevision: options.revision,
+    baseTitle: options.title ?? "",
+    draftTitle: options.title ?? "",
+    titleAware: options.title !== undefined,
     baseDoc: options.doc,
     draftDoc: options.doc,
     ledger: [],
@@ -148,6 +160,15 @@ export function recordEdit(
   };
 }
 
+export function recordTitleEdit(state: SaveState, title: string): SaveState {
+  assertEditableText(title);
+  if (title === state.draftTitle) return state;
+  const status: SessionStatus = state.inFlight ? "saving"
+    : state.status === "busy" || state.status === "stale" || state.status === "error"
+      ? state.status : (title !== state.baseTitle || state.ledger.length > 0 ? "dirty" : "clean");
+  return { ...state, titleAware: true, draftTitle: title, status, detail: state.inFlight ? null : state.detail };
+}
+
 export type BeginSave =
   | { ok: true; state: SaveState; request: SaveRequest }
   | {
@@ -164,7 +185,7 @@ export function beginSave(state: SaveState): BeginSave {
   if (state.status === "busy" && state.lastAttempt !== null) {
     return { ok: false, reason: "busy_pending" };
   }
-  if (state.ledger.length === 0) {
+  if (state.ledger.length === 0 && state.draftTitle === state.baseTitle) {
     return { ok: false, reason: "no_changes" };
   }
   // A changed save must be able to name its new revision. Refuse before
@@ -185,12 +206,15 @@ export function beginSave(state: SaveState): BeginSave {
     pageId: state.pageId,
     expectedRevision: state.baseRevision,
     doc: state.draftDoc,
+    title: state.draftTitle,
+    titleChanged: state.draftTitle !== state.baseTitle,
     edits,
   };
   const inFlight: InFlight = {
     requestId: request.requestId,
     expectedRevision: state.baseRevision,
     sentDoc: state.draftDoc,
+    sentTitle: state.draftTitle,
     ledgerCount: state.ledger.length,
   };
   return {
@@ -233,7 +257,8 @@ export function applyReply(state: SaveState, reply: SaveReply): ReplyOutcome {
 
   if (reply.status === "ok") {
     const attempt = state.inFlight;
-    const sameDocument = reply.doc === attempt.sentDoc;
+    const sameDocument = reply.doc === attempt.sentDoc &&
+      (state.titleAware ? reply.title === attempt.sentTitle : (reply.title ?? "") === attempt.sentTitle);
     // A changed aggregate always advances the revision by exactly one. An
     // unchanged revision is only trustworthy for a mention-free net request
     // whose text did not change: then a no-op is provably aggregate-neutral.
@@ -244,7 +269,8 @@ export function applyReply(state: SaveState, reply: SaveReply): ReplyOutcome {
       reply.revision === expectedNext ||
       (state.mode === "net" &&
         reply.revision === attempt.expectedRevision &&
-        attempt.sentDoc === state.baseDoc);
+        attempt.sentDoc === state.baseDoc &&
+        attempt.sentTitle === state.baseTitle);
     if (!sameDocument || !isSupportedRevision(reply.revision) || !acceptedRevision) {
       return {
         state: {
@@ -262,11 +288,12 @@ export function applyReply(state: SaveState, reply: SaveReply): ReplyOutcome {
       state: {
         ...state,
         baseDoc: attempt.sentDoc,
+        baseTitle: attempt.sentTitle,
         baseRevision: reply.revision,
         ledger,
         inFlight: null,
         lastAttempt: null,
-        status: ledger.length > 0 ? "dirty" : "clean",
+        status: ledger.length > 0 || state.draftTitle !== attempt.sentTitle ? "dirty" : "clean",
         detail: null,
       },
       applied: true,
@@ -301,6 +328,7 @@ export function reconcileBusy(
     sessionId: string;
     pageId: string;
     doc: string;
+    title?: string;
     revision: number;
   },
 ): SaveState {
@@ -316,7 +344,8 @@ export function reconcileBusy(
   }
   const unchanged =
     stored.revision === attempt.expectedRevision &&
-    stored.doc === state.baseDoc;
+    stored.doc === state.baseDoc &&
+    (state.titleAware ? stored.title === state.baseTitle : (stored.title ?? "") === state.baseTitle);
   if (!unchanged) {
     return {
       ...state,
@@ -335,5 +364,5 @@ export function reconcileBusy(
 
 /// True while the editor holds work the store has not accepted.
 export function isDirty(state: SaveState): boolean {
-  return state.draftDoc !== state.baseDoc || state.ledger.length > 0;
+  return state.draftTitle !== state.baseTitle || state.draftDoc !== state.baseDoc || state.ledger.length > 0;
 }

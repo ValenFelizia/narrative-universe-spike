@@ -10,6 +10,7 @@ import {
   openSession,
   reconcileBusy,
   recordEdit,
+  recordTitleEdit,
   UnsupportedRevisionError,
   type SaveReply,
   type SaveState,
@@ -557,4 +558,42 @@ test("net mode composes while ledger mode keeps the ordered history", () => {
     { start_utf16: 2, end_utf16: 2, inserted_text: "x" },
     { start_utf16: 2, end_utf16: 3, inserted_text: "" },
   ]);
+});
+
+test("atomic title and body snapshots preserve typing and require matching acknowledgement", () => {
+  let state = openSession({sessionId: "s", pageId: "p", title: "Old", doc: "body", revision: 2, hasMentions: false});
+  state = recordTitleEdit(state, "New 📚");
+  state = recordEdit(state, insert("body", 4, "!"));
+  const began = started(state);
+  assert.equal(began.request.titleChanged, true);
+  assert.equal(began.request.title, "New 📚");
+  assert.equal(began.request.edits.length, 1);
+  state = recordTitleEdit(began.state, "Later");
+  state = recordEdit(state, insert("body!", 5, "?"));
+  const reply = {status: "ok" as const, requestId: began.request.requestId, sessionId: "s", pageId: "p", title: "New 📚", doc: "body!", revision: 3};
+  assert.equal(applyReply(state, {...reply, title: "wrong"}).state.status, "error");
+  assert.equal(applyReply(state, {...reply, revision: 2}).state.status, "error");
+  state = applyReply(state, reply).state;
+  assert.equal(state.baseTitle, "New 📚");
+  assert.equal(state.draftTitle, "Later");
+  assert.equal(state.draftDoc, "body!?");
+  assert.equal(state.status, "dirty");
+});
+
+test("title-only edits, reverts and busy verification retain both drafts", () => {
+  let state = openSession({sessionId: "s", pageId: "p", title: "Old", doc: "body", revision: 2, hasMentions: false});
+  state = recordTitleEdit(state, "New");
+  assert.equal(isDirty(state), true);
+  assert.deepEqual(beginSave(recordTitleEdit(state, "Old")), {ok: false, reason: "no_changes"});
+  assert.throws(() => recordTitleEdit(state, "bad\u0000"), /NUL/);
+  const began = started(state);
+  assert.deepEqual(began.request.edits, []);
+  state = applyReply(began.state, {status: "busy", requestId: began.request.requestId, sessionId: "s", pageId: "p", detail: "busy"}).state;
+  state = recordTitleEdit(state, "Later");
+  assert.equal(reconcileBusy(state, {sessionId: "s", pageId: "p", title: "Other", doc: "body", revision: 2}).status, "error");
+  assert.equal(reconcileBusy(state, {sessionId: "s", pageId: "p", doc: "body", revision: 2}).status, "error");
+  state = reconcileBusy(state, {sessionId: "s", pageId: "p", title: "Old", doc: "body", revision: 2});
+  assert.equal(state.status, "dirty");
+  assert.equal(state.draftTitle, "Later");
+  assert.equal(started(state).request.title, "Later");
 });

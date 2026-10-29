@@ -3,12 +3,12 @@ import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { decideEditing } from "../src/adapter.ts";
-import { applyReply, beginSave, isDirty, openSession, reconcileBusy, recordEdit, MAX_SUPPORTED_REVISION, type SaveState } from "../src/save-session.ts";
+import { applyReply, beginSave, isDirty, openSession, reconcileBusy, recordEdit, recordTitleEdit, MAX_SUPPORTED_REVISION, type SaveState } from "../src/save-session.ts";
 
 type PageIndexEntry = { id: string; title: string };
 type OpenedUniverse = { token: string; pages: PageIndexEntry[] };
 type PageContent = { id: string; title: string; body: string; revision: number | null; mentionCount: number };
-type SaveResponse = { pageId: string; sessionId: string; requestId: number; body: string; revision: number };
+type SaveResponse = { pageId: string; sessionId: string; requestId: number; body: string; title: string; revision: number };
 
 export function initDesktop(invokeCommand: typeof invoke): { requestClose: (token: string) => void } {
   const form = document.querySelector<HTMLFormElement>("#open-form")!;
@@ -18,6 +18,9 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   const list = document.querySelector<HTMLUListElement>("#page-list")!;
   const status = document.querySelector<HTMLElement>("#status")!;
   const title = document.querySelector<HTMLElement>("#page-title")!;
+  const titleInput = document.querySelector<HTMLInputElement>("#title-input")!;
+  const newButton = document.querySelector<HTMLButtonElement>("#new-page")!;
+  const verifyCreate = document.querySelector<HTMLButtonElement>("#verify-create")!;
   const pane = document.querySelector<HTMLElement>(".reading-area")!;
   const body = document.querySelector<HTMLElement>("#page-body")!;
   const saveButton = document.querySelector<HTMLButtonElement>("#save")!;
@@ -38,8 +41,13 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   let saving: Promise<boolean> | null = null;
   let uncertain = false;
   let verifying = false;
+  let pendingCreate: {token: string; id: string} | null = null;
+  let pages: PageIndexEntry[] = [];
 
   function paint(): void {
+    newButton.disabled = !universeToken || !!pendingCreate || transitioning || loading || deciding || verifying || !!saving;
+    verifyCreate.hidden = !pendingCreate;
+    titleInput.readOnly = !session || loading || deciding || transitioning || session.baseRevision >= MAX_SUPPORTED_REVISION;
     if (!session) { saveButton.disabled = true; verifyButton.hidden = true; return; }
     const labels = {clean: "Saved", dirty: "Unsaved", saving: "Saving…", stale: "Changed elsewhere. Copy your draft before leaving.", busy: "Database busy. Your draft is preserved.", error: "Save could not be confirmed. Your draft is preserved."};
     saveStatus.textContent = session.baseRevision >= MAX_SUPPORTED_REVISION ? "Revision limit reached. Copy any unsaved draft; this page is read-only." : uncertain ? "Save could not be confirmed. Continue editing to select and copy your draft." : labels[session.status];
@@ -55,7 +63,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
     try {
       const page = await invokeCommand<PageContent>("read_page", {pageId, universeToken: token});
       if (session && session.sessionId === identity && page.revision !== null && page.mentionCount === 0) {
-        session = reconcileBusy(session, {sessionId: identity, pageId: page.id, doc: page.body, revision: page.revision});
+        session = reconcileBusy(session, {sessionId: identity, pageId: page.id, doc: page.body, title: page.title, revision: page.revision});
         uncertain = session.status !== "dirty";
       }
     } catch { /* Preserve the draft and allow another verification. */ }
@@ -75,11 +83,12 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
     paint();
     saving = (async () => {
       try {
-        const response = await invokeCommand<SaveResponse>("save_page", { request: { universeToken, pageId: request.pageId, sessionId: request.sessionId, requestId: request.requestId, expectedRevision: request.expectedRevision, edits: request.edits } });
+        const response = await invokeCommand<SaveResponse>("save_page", { request: { universeToken, pageId: request.pageId, sessionId: request.sessionId, requestId: request.requestId, expectedRevision: request.expectedRevision, title: request.titleChanged ? request.title : null, edits: request.edits } });
         if (!session || session.sessionId !== request.sessionId) return false;
-        const outcome = applyReply(session, {status: "ok", requestId: response.requestId, sessionId: response.sessionId, pageId: response.pageId, doc: response.body, revision: response.revision});
+        const outcome = applyReply(session, {status: "ok", requestId: response.requestId, sessionId: response.sessionId, pageId: response.pageId, doc: response.body, title: response.title, revision: response.revision});
         session = outcome.ignored ? {...outcome.state, status: "error", detail: "Save acknowledgement identity did not match."} : outcome.state;
         uncertain = !!outcome.ignored || !outcome.applied;
+        if (outcome.applied && request.titleChanged) { pages = pages.map(p => p.id === request.pageId ? {...p, title: request.title} : p); renderPages(); }
       } catch (error) {
         if (!session || session.sessionId !== request.sessionId) return false;
         const failure = typeof error === "object" && error !== null ? error as Partial<SaveResponse> & {kind?: unknown} : {};
@@ -97,7 +106,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
           try {
             const page = await invokeCommand<PageContent>("read_page", {pageId: request.pageId, universeToken});
             if (session && session.sessionId === request.sessionId && page.revision !== null && page.mentionCount === 0) {
-              session = reconcileBusy(session, {sessionId: request.sessionId, pageId: page.id, doc: page.body, revision: page.revision});
+              session = reconcileBusy(session, {sessionId: request.sessionId, pageId: page.id, doc: page.body, title: page.title, revision: page.revision});
               uncertain = session.status !== "dirty";
             }
           } catch { /* Keep the busy state and draft. */ }
@@ -107,7 +116,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       paint();
       return !!session && session.status === "clean" && !isDirty(session);
     })();
-    try { return await saving; } finally { saving = null; }
+    try { return await saving; } finally { saving = null; paint(); }
   }
 
   async function mayLeave(): Promise<boolean> {
@@ -143,15 +152,17 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       const page = await invokeCommand<PageContent>("read_page", {pageId: id, universeToken});
       if (requestVersion !== version) return;
       clearPage();
-      title.textContent = page.title;
+      title.textContent = page.title; titleInput.value = page.title; titleInput.hidden = false; title.hidden = true;
       pane.scrollTop = 0;
       for (const button of list.querySelectorAll<HTMLButtonElement>("button")) button.setAttribute("aria-current", String(button.dataset.pageId === id));
       const decision = decideEditing(page.body, page.mentionCount);
-      if (!decision.editable || page.revision === null || page.revision >= MAX_SUPPORTED_REVISION) {
+      const titleDecision = decideEditing(page.title, 0);
+      if (!decision.editable || !titleDecision.editable || page.title.includes("\n") || page.revision === null || page.revision >= MAX_SUPPORTED_REVISION) {
+        title.hidden = false; titleInput.hidden = true;
         body.textContent = page.body;
-        saveStatus.textContent = !decision.editable ? ({linked:"This page contains links and is read-only.", carriage_return:"This page contains carriage returns and is read-only.", nul:"This page contains NUL and is read-only.", unpaired_surrogate:"This page contains unsupported text and is read-only."})[decision.reason] : "This page revision is not editable.";
+        saveStatus.textContent = page.title.includes("\n") ? "This page title contains line breaks and is read-only." : !decision.editable ? ({linked:"This page contains links and is read-only.", carriage_return:"This page contains carriage returns and is read-only.", nul:"This page contains NUL and is read-only.", unpaired_surrogate:"This page contains unsupported text and is read-only."})[decision.reason] : !titleDecision.editable ? "This page title contains unsupported text and is read-only." : "This page revision is not editable.";
       } else {
-        session = openSession({sessionId: crypto.randomUUID(), pageId: page.id, doc: page.body, revision: page.revision, hasMentions: false});
+        session = openSession({sessionId: crypto.randomUUID(), pageId: page.id, doc: page.body, title: page.title, revision: page.revision, hasMentions: false});
         editor = new EditorView({parent: body, state: EditorState.create({doc: page.body, extensions: [history(), keymap.of([...defaultKeymap, ...historyKeymap]), EditorView.lineWrapping, editability.of([])]}), dispatchTransactions(transactions, view) {
           if (!session || (transactions.some(transaction => transaction.docChanged) && (loading || deciding || session.baseRevision >= MAX_SUPPORTED_REVISION))) return;
           let next = session;
@@ -166,6 +177,53 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
     finally { if (requestVersion === version) loading = false; if (guarded) transitioning = false; paint(); }
   }
 
+
+  function renderPages(): void {
+    // SQLite BINARY compares UTF-8 bytes; do not use locale-dependent sorting.
+    const bytes = new TextEncoder();
+    const compare = (a: string, b: string) => { const x = bytes.encode(a), y = bytes.encode(b); for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i]! - y[i]!; return x.length - y.length; };
+    pages.sort((a,b) => compare(a.title,b.title) || compare(a.id,b.id));
+    count.textContent = String(pages.length); list.replaceChildren();
+    for (const page of pages) {
+      const li = document.createElement("li"), button = document.createElement("button");
+      button.type = "button"; button.className = "page-link"; button.textContent = page.title; button.dataset.pageId = page.id;
+      button.setAttribute("aria-current", String(session?.pageId === page.id));
+      button.addEventListener("click", () => void selectPage(page.id)); li.append(button); list.append(li);
+    }
+  }
+  titleInput.addEventListener("input", () => {
+    if (!session || titleInput.readOnly) return;
+    try { session = recordTitleEdit(session, titleInput.value); paint(); }
+    catch { titleInput.value = session.draftTitle; saveStatus.textContent = "This title is not supported."; }
+  });
+  newButton.addEventListener("click", () => void (async () => {
+    if (!universeToken || pendingCreate || transitioning) return;
+    transitioning = true; paint();
+    if (!(await mayLeave())) { transitioning = false; paint(); return; }
+    const token = universeToken, id = crypto.randomUUID();
+    loading = true; paint();
+    try {
+      const page = await invokeCommand<PageContent>("create_page", {universeToken: token, pageId: id});
+      if (universeToken !== token || page.id !== id) throw new Error("Creation identity mismatch");
+      pages.push({id: page.id, title: page.title}); renderPages();
+      loading = false; await selectPage(id, false);
+    } catch {
+      pendingCreate = {token, id};
+      status.textContent = "Creation could not be confirmed. Verify the page list before creating another page.";
+    } finally { loading = false; transitioning = false; paint(); }
+  })());
+  verifyCreate.addEventListener("click", () => void (async () => {
+    if (!pendingCreate || transitioning) return;
+    const pending = pendingCreate; transitioning = true; paint();
+    try {
+      const index = await invokeCommand<PageIndexEntry[]>("page_index", {universeToken: pending.token});
+      if (universeToken !== pending.token || pendingCreate !== pending) return;
+      pages = index; renderPages(); pendingCreate = null;
+      status.textContent = index.some(p => p.id === pending.id) ? "The new page exists. Select it when ready." : "The new page was not found in the refreshed list.";
+    } catch { status.textContent = "Verification failed. Your draft is preserved; try verification again."; }
+    finally { transitioning = false; paint(); }
+  })());
+
   form.addEventListener("submit", async event => {
     event.preventDefault();
     if (transitioning) return;
@@ -175,18 +233,12 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
     const path = input.value;
     loading = true; ++version;
     try {
-      const {pages, token} = await invokeCommand<OpenedUniverse>("open_universe", {databasePath: path});
-      universeToken = token;
-      clearPage(); list.replaceChildren();
+      const opened = await invokeCommand<OpenedUniverse>("open_universe", {databasePath: path});
+      universeToken = opened.token; pendingCreate = null; pages = opened.pages;
+      clearPage(); renderPages();
       name.textContent = path.split(/[\\/]/).at(-1) || path;
-      count.textContent = String(pages.length);
-      for (const page of pages) {
-        const li = document.createElement("li"), button = document.createElement("button");
-        button.type = "button"; button.className = "page-link"; button.textContent = page.title; button.dataset.pageId = page.id;
-        button.addEventListener("click", () => void selectPage(page.id)); li.append(button); list.append(li);
-      }
       if (pages.length) { loading = false; await selectPage(pages[0]!.id, false); }
-      else { title.textContent = "No page selected"; body.textContent = "This universe has no pages."; }
+      else { title.hidden = false; titleInput.hidden = true; title.textContent = "No page selected"; body.textContent = "This universe has no pages."; }
     } catch { status.textContent = "The universe could not be opened."; }
     finally { loading = false; transitioning = false; paint(); }
   });
