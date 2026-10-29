@@ -76,6 +76,52 @@ fn assert_stale(err: Error, page: &str, expected: i64, found: i64) {
 }
 
 #[test]
+fn stale_title_and_body_roll_back_and_unicode_reopens_exactly() {
+    let (scratch, mut store) = created("unicode-stale.sqlite");
+    let id = page_id(KEPT);
+    store
+        .create_page(narrative_universe::Page {
+            id: id.clone(),
+            title: "before".into(),
+            body: "before".into(),
+        })
+        .unwrap();
+    let title = "Árbol 🐉 e\u{301}";
+    let body = "漢字\n🦊 e\u{301} fin";
+    store
+        .save_page_edits(
+            &id,
+            PageRevision::ZERO,
+            &[
+                PageEdit::SetTitle {
+                    title: title.into(),
+                },
+                replace(0, 6, body),
+            ],
+        )
+        .unwrap();
+    let err = store
+        .save_page_edits(
+            &id,
+            PageRevision::ZERO,
+            &[
+                PageEdit::SetTitle {
+                    title: "lost".into(),
+                },
+                replace(0, 6, "lost"),
+            ],
+        )
+        .unwrap_err();
+    assert_stale(err, KEPT, 0, 1);
+    drop(store);
+    let store = Store::open(&scratch.path).unwrap();
+    let page = store.page_document(&id).unwrap();
+    assert_eq!(page.title, title);
+    assert_eq!(page.body.body, body);
+    assert_eq!(page.revision.as_i64(), 1);
+}
+
+#[test]
 fn pa_t01_save_persists_and_reopens() {
     let (scratch, mut store) = created("pa-t01.sqlite");
     let id = page_id(KEPT);

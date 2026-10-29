@@ -13,7 +13,7 @@ function setup(invoke) {
   dom.window.HTMLElement.prototype.scrollIntoView = () => {};
   dom.window.HTMLDialogElement.prototype.showModal = function() { this.open = true; };
   dom.window.HTMLDialogElement.prototype.close = function() { this.open = false; };
-  const controller=initDesktop(async (cmd,args) => { if(cmd === "open_universe") { await invoke(cmd,args); return {token: "test-token", pages: await invoke("page_index")}; } return await invoke(cmd,args); }), doc=dom.window.document;
+  const controller=initDesktop(async (cmd,args) => { if(cmd === "open_universe") { await invoke(cmd,args); return {token: "test-token", pages: await invoke("page_index")}; } const result = await invoke(cmd,args); if (cmd === "save_page" && result && result.title === undefined) return {...result, title: args.request.title ?? "Page"}; return result; }), doc=dom.window.document;
   return {doc, controller, open(path){doc.querySelector('#database-path').value=path;doc.querySelector('#open-form').dispatchEvent(new dom.window.Event('submit',{cancelable:true}));}, view(){const node=doc.querySelector('.cm-editor'); return node ? EditorView.findFromDOM(node) : null;}, close(){dom.window.close();}};
 }
 const page = {id:'a',title:'Page',body:'original',revision:0,mentionCount:0};
@@ -172,4 +172,148 @@ test('repeated navigation and close during an unsaved decision cannot bypass it'
   let reads=0,closes=0;const ui=setup(async cmd=>{if(cmd==='page_index')return [{id:'a',title:'Page'},{id:'b',title:'Other'}];if(cmd==='read_page'){reads++;return page;}if(cmd==='close_window')closes++;});
   ui.open('a');await tick();const view=ui.view();view.dispatch({changes:{from:8,insert:' draft'}});ui.doc.querySelectorAll('.page-link')[1].click();ui.doc.querySelectorAll('.page-link')[1].click();ui.controller.requestClose('token');await tick();
   assert.ok(ui.doc.querySelector('#guard').open);assert.equal(reads,1);assert.equal(closes,0);ui.doc.querySelector('#continue').click();await tick();assert.equal(view.state.doc.toString(),'original draft');assert.equal(closes,0);ui.close();
+});
+
+
+test('title and prose save atomically while later title typing remains dirty and sidebar reorders', async()=>{
+  const pending=deferred(); let sent;
+  const ui=setup(async(cmd,args)=>{
+    if(cmd==='page_index') return [{id:'a',title:'Page'},{id:'b',title:'Zoo'}];
+    if(cmd==='read_page') return page;
+    if(cmd==='save_page') { sent=args.request; return pending.promise; }
+  });
+  ui.open('a'); await tick(); const input=ui.doc.querySelector('#title-input');
+  input.value='Zebra'; input.dispatchEvent(new ui.doc.defaultView.Event('input',{bubbles:true}));
+  const view=ui.view(); view.dispatch({changes:{from:8,insert:'!'}}); ui.doc.querySelector('#save').click(); await tick();
+  assert.equal(sent.title,'Zebra'); assert.ok(sent.edits.length);
+  input.value='Zebras'; input.dispatchEvent(new ui.doc.defaultView.Event('input',{bubbles:true}));
+  pending.resolve({pageId:'a',sessionId:sent.sessionId,requestId:sent.requestId,title:'Zebra',body:'original!',revision:1}); await tick();
+  assert.equal(input.value,'Zebras'); assert.match(ui.doc.querySelector('#save-status').textContent,/Unsaved/);
+  assert.equal(ui.doc.querySelector('.page-link[aria-current="true"]').dataset.pageId,'a'); assert.equal(ui.view(),view); ui.close();
+});
+
+test('lost creation response preserves draft and verification never retries creation', async()=>{
+  let creates=0, id; const ui=setup(async(cmd,args)=>{
+    if(cmd==='page_index') return id ? [{id:'a',title:'Page'},{id,title:'Untitled page'}] : [{id:'a',title:'Page'}];
+    if(cmd==='read_page') return page;
+    if(cmd==='create_page') { creates++; id=args.pageId; throw {}; }
+  });
+  ui.open('a'); await tick(); ui.view().dispatch({changes:{from:8,insert:' draft'}});
+  ui.doc.querySelector('#new-page').click(); await tick(); ui.doc.querySelector('#discard').click(); await tick();
+  assert.equal(ui.view().state.doc.toString(),'original draft'); assert.equal(creates,1);
+  ui.doc.querySelector('#verify-create').click(); await tick(); assert.equal(creates,1);
+  assert.match(ui.doc.querySelector('#status').textContent,/exists/); assert.equal(ui.view().state.doc.toString(),'original draft'); ui.close();
+});
+
+test('read-only page remains selected after creation verification refreshes the list', async()=>{
+  const ui=setup(async cmd=>{
+    if(cmd==='page_index') return [{id:'a',title:'Page'}];
+    if(cmd==='read_page') return {...page,mentionCount:1};
+    if(cmd==='create_page') throw {};
+  });
+  ui.open('a'); await tick();
+  assert.equal(ui.view(),null);
+  assert.equal(ui.doc.querySelector('.page-link').getAttribute('aria-current'),'true');
+  ui.doc.querySelector('#new-page').click(); await tick();
+  ui.doc.querySelector('#verify-create').click(); await tick();
+  assert.equal(ui.doc.querySelector('.page-link').getAttribute('aria-current'),'true');
+  assert.equal(ui.doc.querySelector('#page-body').textContent,'original');
+  ui.close();
+});
+
+test('a stored multiline title is displayed exactly and makes the whole page read-only', async()=>{
+  let saves=0; const multiline='First\n<second>\n';
+  const ui=setup(async cmd=>{if(cmd==='page_index')return [{id:'a',title:multiline}];if(cmd==='read_page')return {...page,title:multiline};if(cmd==='save_page')saves++;});
+  ui.open('a');await tick();
+  const heading=ui.doc.querySelector('#page-title'), input=ui.doc.querySelector('#title-input');
+  assert.equal(heading.hidden,false);assert.equal(heading.textContent,multiline);assert.equal(heading.children.length,0);
+  assert.equal(input.hidden,true);assert.equal(input.readOnly,true);assert.equal(ui.view(),null);
+  assert.equal(ui.doc.querySelector('#page-body').textContent,'original');assert.match(ui.doc.querySelector('#save-status').textContent,/title.*line breaks.*read-only/i);
+  ui.doc.querySelector('#save').click();await tick();assert.equal(saves,0);ui.close();
+});
+
+test('new page guard honors keep, discard, and save before creation', async()=>{
+  for(const choice of ['continue','discard','save-proceed']) {
+    let creates=0,saves=0;const ui=setup(async(cmd,args)=>{
+      if(cmd==='page_index')return [{id:'a',title:'Page'}];
+      if(cmd==='read_page')return args.pageId==='a'?page:{...page,id:args.pageId,title:'Untitled page',body:''};
+      if(cmd==='save_page'){saves++;return {pageId:'a',sessionId:args.request.sessionId,requestId:args.request.requestId,title:'Page',body:'original!',revision:1};}
+      if(cmd==='create_page'){creates++;return {...page,id:args.pageId,title:'Untitled page',body:''};}
+    });
+    ui.open('a');await tick();ui.view().dispatch({changes:{from:8,insert:'!'}});ui.doc.querySelector('#new-page').click();await tick();
+    assert.ok(ui.doc.querySelector('#guard').open);assert.equal(creates,0);ui.doc.querySelector('#'+choice).click();await tick();await tick();
+    assert.equal(creates,choice==='continue'?0:1);assert.equal(saves,choice==='save-proceed'?1:0);
+    if(choice==='continue')assert.equal(ui.view().state.doc.toString(),'original!');ui.close();
+  }
+});
+
+test('failed save from new page guard preserves title and body and prevents creation', async()=>{
+  let creates=0;const ui=setup(async(cmd,args)=>{if(cmd==='page_index')return [{id:'a',title:'Page'}];if(cmd==='read_page')return page;if(cmd==='create_page')creates++;if(cmd==='save_page')throw {kind:'storage',pageId:args.request.pageId,sessionId:args.request.sessionId,requestId:args.request.requestId};});
+  ui.open('a');await tick();const input=ui.doc.querySelector('#title-input');input.value='Draft';input.dispatchEvent(new ui.doc.defaultView.Event('input'));ui.view().dispatch({changes:{from:8,insert:'!'}});
+  ui.doc.querySelector('#new-page').click();await tick();ui.doc.querySelector('#save-proceed').click();await tick();
+  assert.equal(creates,0);assert.equal(input.value,'Draft');assert.equal(ui.view().state.doc.toString(),'original!');assert.match(ui.doc.querySelector('#save-status').textContent,/could not be confirmed/i);ui.close();
+});
+
+test('title and body survive busy, stale, and mismatched save outcomes', async()=>{
+  for(const outcome of ['busy','stale','mismatch']) {
+    let reads=0, closes=0;
+    const ui=setup(async(cmd,args)=>{
+      if(cmd==='page_index')return [{id:'a',title:'Page'}];
+      if(cmd==='read_page'){reads++;return outcome==='busy' && reads>1?{...page,revision:1}:page;}
+      if(cmd==='close_window')closes++;
+      if(cmd==='save_page')throw {kind:outcome==='mismatch'?'busy':outcome,pageId:outcome==='mismatch'?'wrong':args.request.pageId,sessionId:args.request.sessionId,requestId:args.request.requestId};
+    });
+    ui.open('a');await tick();const input=ui.doc.querySelector('#title-input');input.value='Draft';input.dispatchEvent(new ui.doc.defaultView.Event('input'));ui.view().dispatch({changes:{from:8,insert:'!'}});
+    ui.doc.querySelector('#save').click();await tick();await tick();ui.controller.requestClose('close');await tick();
+    assert.equal(input.value,'Draft');assert.equal(ui.view().state.doc.toString(),'original!');assert.ok(ui.doc.querySelector('#guard').open);assert.equal(closes,0);
+    assert.equal(ui.doc.querySelector('#save-proceed').disabled,true);if(outcome!=='stale')assert.equal(ui.doc.querySelector('#discard').disabled,true);ui.close();
+  }
+});
+
+test('delayed rename sorts the sidebar and keeps selection after acknowledgement', async()=>{
+  const pending=deferred(); let sent;
+  const ui=setup(async(cmd,args)=>{
+    if(cmd==='page_index')return [{id:'a',title:'Page'},{id:'b',title:'Zoo'}];
+    if(cmd==='read_page')return page;
+    if(cmd==='save_page'){sent=args.request;return pending.promise;}
+  });
+  ui.open('one');await tick();const input=ui.doc.querySelector('#title-input');
+  input.value='ZZ';input.dispatchEvent(new ui.doc.defaultView.Event('input'));ui.doc.querySelector('#save').click();await tick();
+  assert.deepEqual([...ui.doc.querySelectorAll('.page-link')].map(x=>x.textContent),['Page','Zoo']);
+  pending.resolve({pageId:'a',sessionId:sent.sessionId,requestId:sent.requestId,title:'ZZ',body:'original',revision:1});await tick();
+  assert.deepEqual([...ui.doc.querySelectorAll('.page-link')].map(x=>x.textContent),['ZZ','Zoo']);
+  assert.equal(ui.doc.querySelector('[aria-current="true"]').dataset.pageId,'a');ui.close();
+});
+
+test('pending creation blocks switching universes and created page saves via keyboard then closes', async()=>{
+  const pending=deferred();let opens=0, created, saved, closed;
+  const ui=setup(async(cmd,args)=>{
+    if(cmd==='open_universe')opens++;
+    if(cmd==='page_index')return [{id:'a',title:'Page'}];
+    if(cmd==='read_page')return args.pageId==='a'?page:{...page,id:created,title:'Untitled page',body:''};
+    if(cmd==='create_page'){created=args.pageId;return pending.promise;}
+    if(cmd==='save_page'){saved=args.request;return {pageId:created,sessionId:saved.sessionId,requestId:saved.requestId,title:'New',body:'text',revision:1};}
+    if(cmd==='close_window')closed=args.token;
+  });
+  ui.open('one');await tick();ui.doc.querySelector('#new-page').click();await tick();ui.open('two');await tick();assert.equal(opens,1);
+  pending.resolve({...page,id:created,title:'Untitled page',body:''});await tick();await tick();
+  assert.equal(ui.doc.querySelector('[aria-current="true"]').dataset.pageId,created);
+  const input=ui.doc.querySelector('#title-input');input.value='New';input.dispatchEvent(new ui.doc.defaultView.Event('input'));
+  ui.view().dispatch({changes:{from:0,insert:'text'}});ui.doc.dispatchEvent(new ui.doc.defaultView.KeyboardEvent('keydown',{key:'s',ctrlKey:true,bubbles:true}));await tick();
+  assert.equal(saved.pageId,created);assert.equal(saved.title,'New');assert.match(ui.doc.querySelector('#save-status').textContent,/Saved/);
+  ui.controller.requestClose('close-token');await tick();assert.equal(closed,'close-token');ui.close();
+});
+
+test('pending save cannot cross into another universe', async()=>{
+  const pending=deferred();let opens=0,sent;
+  const ui=setup(async(cmd,args)=>{
+    if(cmd==='open_universe')opens++;
+    if(cmd==='page_index')return [{id:'a',title:'Page'}];
+    if(cmd==='read_page')return page;
+    if(cmd==='save_page'){sent=args.request;return pending.promise;}
+  });
+  ui.open('one');await tick();ui.view().dispatch({changes:{from:8,insert:'!'}});ui.doc.querySelector('#save').click();await tick();
+  ui.open('two');await tick();assert.equal(opens,1);assert.equal(sent.universeToken,'test-token');
+  pending.resolve({pageId:'a',sessionId:sent.sessionId,requestId:sent.requestId,title:'Page',body:'original!',revision:1});await tick();
+  assert.equal(ui.view().state.doc.toString(),'original!');ui.open('two');await tick();assert.equal(opens,2);ui.close();
 });
