@@ -1,6 +1,15 @@
 {
-  "identifier": "main",
-  "description": "Allow the desktop window to receive its close request.",
-  "windows": ["main"],
-  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+    "identifier":  "main",
+    "description":  "Allow the desktop window to receive its close request.",
+    "windows":  [
+                    "main"
+                ],
+    "permissions":  [
+                        "core:event:allow-listen",
+                        "core:event:allow-unlisten",
+                        "core:window:allow-minimize",
+                        "core:window:allow-toggle-maximize",
+                        "core:window:allow-start-dragging",
+                        "core:window:allow-set-size"
+                    ]
 }

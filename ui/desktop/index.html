@@ -7,8 +7,8 @@
     <title>Narrative Universe</title>
   </head>
   <body>
-    <div class="app-shell">
-      <aside class="sidebar" aria-label="Universe pages">
+    <header class="chrome"><button id="library-toggle" aria-label="Toggle library" aria-expanded="true">Menu</button><span data-tauri-drag-region class="drag">C0 EXPERIMENT - Narrative Universe</span><select id="experiment-layout" aria-label="Experimental layout"><option>A</option><option>B</option><option>H</option></select><select id="experiment-size" aria-label="Experiment window size"><option value="default">Size</option><option value="800">800 x 600</option><option value="1280">1280 x 800</option></select><select id="experiment-font" aria-label="Experiment font"><option value="source">Source + Instrument</option><option value="literata">Literata + Instrument</option><option value="sans">Source + Source Sans</option></select><button id="minimize" aria-label="Minimize">-</button><button id="maximize" aria-label="Maximize">[]</button><button id="close" aria-label="Close">X</button></header><div class="tabs"><span id="context-tab">No document selected</span></div><div class="app-shell">
+      <aside class="sidebar" aria-label="Documents">
         <header class="identity">
           <p class="eyebrow">Narrative Universe</p>
           <p id="universe-name" class="universe-name">No universe open</p>
@@ -19,10 +19,10 @@
           <button type="submit">Open universe</button>
         </form>
         <div class="section-heading">
-          <h1>Pages</h1>
-          <button id="new-page" type="button" disabled>New page</button><span id="page-count" aria-live="polite"></span>
+          <h1>Documents</h1>
+          <button id="new-page" type="button" disabled>New document</button><span id="page-count" aria-live="polite"></span>
         </div>
-        <nav aria-label="Pages">
+        <nav aria-label="Documents">
           <ul id="page-list" class="page-list"></ul>
         </nav>
         <button id="verify-create" type="button" hidden>Refresh page list</button><p id="status" class="status" role="status">Enter the path of a synthetic universe.</p>
