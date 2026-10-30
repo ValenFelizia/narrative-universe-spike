@@ -7,8 +7,8 @@
     <title>Narrative Universe</title>
   </head>
   <body>
-    <div class="app-shell">
-      <aside class="sidebar" aria-label="Universe pages">
+    <header class="window-bar"><button id="library-toggle" type="button" aria-label="Toggle library" aria-controls="library" aria-expanded="true">☰</button><div id="window-drag" class="window-drag">Narrative Universe <span id="window-universe"></span></div><button id="window-minimize" type="button" aria-label="Minimize">&#x2212;</button><button id="window-maximize" type="button" aria-label="Maximize or restore">&#x25A1;</button><button id="window-close" type="button" aria-label="Close">&#x00D7;</button></header><div class="context-strip"><span id="context-name">No document selected</span></div><div class="app-shell">
+      <aside id="library" class="sidebar" aria-label="Document library">
         <header class="identity">
           <p class="eyebrow">Narrative Universe</p>
           <p id="universe-name" class="universe-name">No universe open</p>
@@ -19,10 +19,10 @@
           <button type="submit">Open universe</button>
         </form>
         <div class="section-heading">
-          <h1>Pages</h1>
-          <button id="new-page" type="button" disabled>New page</button><span id="page-count" aria-live="polite"></span>
+          <h1>Documents</h1>
+          <button id="new-page" type="button" disabled>New document</button><span id="page-count" aria-live="polite"></span>
         </div>
-        <nav aria-label="Pages">
+        <nav aria-label="Documents">
           <ul id="page-list" class="page-list"></ul>
         </nav>
         <button id="verify-create" type="button" hidden>Refresh page list</button><p id="status" class="status" role="status">Enter the path of a synthetic universe.</p>
@@ -30,11 +30,12 @@
       <main class="reading-area">
         <article class="document" aria-live="polite">
           <h2 id="page-title">Open a synthetic universe</h2>
-          <input id="title-input" aria-label="Page title" hidden />
+          <input id="title-input" aria-label="Document title" hidden />
           <div id="page-body" class="page-body">Choose an existing synthetic SQLite file by entering its full path on the left. Changes to editable pages are saved only when you choose Save.</div>
-        <div class="save-controls"><button id="save" type="button" disabled>Save</button><button id="verify" type="button" hidden>Retry verification</button><span id="save-status" role="status"></span></div></article>
+        </article>
       </main>
     </div>
+    <footer class="save-controls"><button id="save" type="button" disabled>Save</button><button id="verify" type="button" hidden>Retry verification</button><span id="save-status" role="status"></span></footer>
     <script type="module" src="/entry.ts"></script>
   <dialog id="guard"><p>There are unsaved changes. What would you like to do?</p><button id="continue" type="button">Continue editing</button><button id="save-proceed" type="button">Save then proceed</button><button id="discard" type="button">Discard changes</button></dialog></body>
 </html>

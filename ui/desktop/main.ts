@@ -30,6 +30,17 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   const keep = document.querySelector<HTMLButtonElement>("#continue")!;
   const saveProceed = document.querySelector<HTMLButtonElement>("#save-proceed")!;
   const discard = document.querySelector<HTMLButtonElement>("#discard")!;
+  const library = document.querySelector<HTMLElement>("#library")!;
+  const toggleLibrary = document.querySelector<HTMLButtonElement>("#library-toggle")!;
+  const contextName = document.querySelector<HTMLElement>("#context-name")!;
+  const windowUniverse = document.querySelector<HTMLElement>("#window-universe")!;
+  const narrow = () => window.innerWidth <= 900;
+  function setLibrary(open: boolean, restore: boolean): void {
+    library.hidden = !open; toggleLibrary.setAttribute("aria-expanded", String(open));
+    if (restore) { if (editor) editor.focus(); else toggleLibrary.focus(); }
+  }
+  toggleLibrary.addEventListener("click", () => { const opening = library.hidden; setLibrary(opening, !opening && narrow()); });
+  document.addEventListener("keydown", event => { if (event.key === "Escape" && narrow() && !library.hidden && !dialog.open) { event.preventDefault(); setLibrary(false, true); } });
   let universeToken = "";
   let session: SaveState | null = null;
   let selectedPageId: string | null = null;
@@ -153,7 +164,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       const page = await invokeCommand<PageContent>("read_page", {pageId: id, universeToken});
       if (requestVersion !== version) return;
       clearPage();
-      selectedPageId = page.id;
+      selectedPageId = page.id; contextName.textContent = page.title;
       title.textContent = page.title; titleInput.value = page.title; titleInput.hidden = false; title.hidden = true;
       pane.scrollTop = 0;
       for (const button of list.querySelectorAll<HTMLButtonElement>("button")) button.setAttribute("aria-current", String(button.dataset.pageId === selectedPageId));
@@ -175,6 +186,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
         paint();
       }
       status.textContent = "";
+      if (narrow()) { setLibrary(false, false); if (editor) editor.focus(); else toggleLibrary.focus(); }
     } catch { if (requestVersion === version) status.textContent = "The page could not be read. Your current draft is preserved."; }
     finally { if (requestVersion === version) loading = false; if (guarded) transitioning = false; paint(); }
   }
@@ -195,7 +207,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   }
   titleInput.addEventListener("input", () => {
     if (!session || titleInput.readOnly) return;
-    try { session = recordTitleEdit(session, titleInput.value); paint(); }
+    try { session = recordTitleEdit(session, titleInput.value); contextName.textContent = titleInput.value || "Untitled document"; paint(); }
     catch { titleInput.value = session.draftTitle; saveStatus.textContent = "This title is not supported."; }
   });
   newButton.addEventListener("click", () => void (async () => {
@@ -239,9 +251,9 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       universeToken = opened.token; pendingCreate = null; pages = opened.pages;
       selectedPageId = null;
       clearPage(); renderPages();
-      name.textContent = path.split(/[\\/]/).at(-1) || path;
+      name.textContent = path.split(/[\\/]/).at(-1) || path; windowUniverse.textContent = ` · ${name.textContent}`;
       if (pages.length) { loading = false; await selectPage(pages[0]!.id, false); }
-      else { title.hidden = false; titleInput.hidden = true; title.textContent = "No page selected"; body.textContent = "This universe has no pages."; }
+      else { title.hidden = false; titleInput.hidden = true; contextName.textContent = "No document selected"; title.textContent = "No document selected"; body.textContent = "This universe has no pages."; }
     } catch { status.textContent = "The universe could not be opened."; }
     finally { loading = false; transitioning = false; paint(); }
   });

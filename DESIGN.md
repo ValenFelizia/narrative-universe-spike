@@ -74,7 +74,7 @@ components:
 
 ## Overview
 
-**Status:** Design baseline for PA-I3/A2; provisional tokens for the first visual prototype, not a frozen brand system. Writing this file does **not** authorize a Tauri scaffold, dependencies, implementation, PR merge, or expansion of A2.
+**Status:** PA-I3/A2-C0 visual direction approved for C1 implementation. C1 remains subject to human PR review and merge approval; synthetic universes only.
 
 **Product principle:** *Narrative Universe is a place to write and explore fictional worlds. While writing, the world supports you without interrupting.*
 
@@ -112,8 +112,8 @@ Do not add a decorative gradient, colored glow, or saturated brand color to make
 
 The editor should feel like writing prose in a modern book, not editing source code.
 
-- **Prose and title:** a legible proportional serif. Compare **Source Serif 4** (initial token baseline) against **Literata**, at identical size, measure, and line height. The font decision is not final.
-- **UI and controls:** a restrained, distinctive sans-serif. Compare **Instrument Sans** (initial token baseline) against **Source Sans 3**, in small navigation labels, controls, dialogs, and save/error messages. **Do not default to Inter**; it was specifically rejected as too generic for this identity.
+- **Prose and title:** a legible proportional serif. Use **Source Serif 4** for prose and titles, as approved after the C0 comparison.
+- **UI and controls:** a restrained, distinctive sans-serif. Use **Instrument Sans** for UI and controls, as approved after the C0 comparison. **Do not default to Inter**; it was specifically rejected as too generic for this identity.
 - **Prose sizing:** start around 17–19 px and line height 1.6–1.75. Tokens select 18 px / 1.65 solely for the first comparison.
 - **Headings:** clear editorial hierarchy without oversized hero text; document title should feel integrated with the page.
 - **Monospace:** only for technical diagnostics or identifiers when unavoidable; never as the scene body font.
@@ -129,13 +129,13 @@ Check each candidate font's license and distribution requirements before bundlin
 A small, stable composition:
 
 1. **Quiet top bar:** product identity and current universe, without an oversized toolbar.
-2. **Minimal left sidebar:** context/name of the universe, a **Pages** heading, ordered page list, selected item, and a discreet **New page** action. Do not fabricate a folder hierarchy or mode menu.
+2. **Minimal left sidebar:** context/name of the universe, a **Documents** heading, ordered document list, selected item, and a discreet **New document** action. Do not fabricate a folder hierarchy or mode menu.
 3. **Central writing area:** integrated editable page title and long-form CodeMirror prose on the same continuous background. No visible paper, card, frame, or right-hand panel.
 4. **Save control and status:** easy to find but visually secondary to the page.
 
 The sidebar token starts at **256 px**, within a provisional 240–280 px target. The prose measure should remain around **65–75 characters per line**, with a predictable vertical anchor and generous margins. Those dimensions are hypotheses to test at **1024×768, 1280×800, and 1440×900**; desktop first, no implied mobile scope.
 
-**Layout invariant:** hiding secondary UI, showing save feedback, or returning from concentration must **not shift the prose column, caret, paragraph wraps, or reading position**.
+**Layout invariant:** toggling the library at a fixed window size must not shift the prose column, caret, paragraph wraps, or reading position. At narrow widths the library is a temporary overlay on a centered writing column; at wider widths it is docked and retains its reserved geometry when hidden. A window resize may reflow the document.
 
 ### Empty and long documents
 
@@ -169,7 +169,7 @@ Only specify components that serve a working A2 task. The front-matter component
 
 ### Page navigation
 
-Show the current universe, a single Pages section, its page list, a clear selection state, and the create action. Page titles are human-readable. Order deterministically; introduce Recents, search, folders, filters, or entity navigation **only after a real workflow demonstrates a need**.
+Show the current universe, a single Documents section, its document list, a clear selection state, and the create action. Document titles are human-readable. Order deterministically; introduce Recents, search, folders, filters, or entity navigation **only after a real workflow demonstrates a need**.
 
 ### Document editor
 
@@ -224,8 +224,8 @@ These are **questions to settle by implementation evidence**, not prerequisites 
 
 | Open question | Comparison | Decision criterion |
 | --- | --- | --- |
-| Prose serif | Source Serif 4 vs Literata | Sustained readability in Spanish, rhythm, accents, special characters |
-| UI sans | Instrument Sans vs Source Sans 3 | Small-label clarity, editorial character, compatibility with serif |
+| Prose serif | Source Serif 4 vs Literata | C0 approved Source Serif 4 |
+| UI sans | Instrument Sans vs Source Sans 3 | C0 approved Instrument Sans |
 | Surface | A, then B1 only if necessary | Empty, short, and long writing comfort without a sense of void |
 | Save location | Two restrained placements | Discoverable without interrupting prose; Ctrl+S works |
 | Page ordering | Simple deterministic list | Add Recents only when actual navigation warrants it |

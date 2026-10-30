@@ -317,3 +317,19 @@ test('pending save cannot cross into another universe', async()=>{
   pending.resolve({pageId:'a',sessionId:sent.sessionId,requestId:sent.requestId,title:'Page',body:'original!',revision:1});await tick();
   assert.equal(ui.view().state.doc.toString(),'original!');ui.open('two');await tick();assert.equal(opens,2);ui.close();
 });
+
+test('narrow library Escape preserves selection and draft', async()=>{
+  const ui=setup(async cmd=>cmd==='page_index'?[{id:'a',title:'Page'}]:cmd==='read_page'?page:undefined);
+  Object.defineProperty(ui.doc.defaultView,'innerWidth',{value:800,configurable:true}); ui.open('a'); await tick();
+  const view=ui.view(), library=ui.doc.querySelector('#library'), toggle=ui.doc.querySelector('#library-toggle');
+  assert.equal(library.hidden,true); view.dispatch({changes:{from:8,insert:' draft'},selection:{anchor:1,head:4}});
+  toggle.click(); assert.equal(library.hidden,false); ui.doc.dispatchEvent(new ui.doc.defaultView.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+  assert.equal(library.hidden,true); assert.equal(view.state.doc.toString(),'original draft'); assert.equal(view.state.selection.main.anchor,1); assert.equal(view.state.selection.main.head,4); assert.equal(toggle.getAttribute('aria-expanded'),'false'); ui.close();
+});
+
+test('narrow document navigation honors guard and then dismisses drawer', async()=>{
+  const ui=setup(async(cmd,args)=>cmd==='page_index'?[{id:'a',title:'Page'},{id:'b',title:'Other'}]:cmd==='read_page'?args.pageId==='b'?{...page,id:'b',title:'Other'}:page:undefined);
+  Object.defineProperty(ui.doc.defaultView,'innerWidth',{value:800,configurable:true});ui.open('a');await tick();ui.view().dispatch({changes:{from:8,insert:' draft'}});
+  const toggle=ui.doc.querySelector('#library-toggle'),library=ui.doc.querySelector('#library');toggle.click();[...ui.doc.querySelectorAll('.page-link')].find(b=>b.textContent==='Other').click();await tick();assert.equal(ui.doc.querySelector('#guard').open,true);ui.doc.querySelector('#continue').click();await tick();assert.equal(library.hidden,false);assert.equal(ui.view().state.doc.toString(),'original draft');
+  [...ui.doc.querySelectorAll('.page-link')].find(b=>b.textContent==='Other').click();await tick();ui.doc.querySelector('#discard').click();await tick();assert.equal(library.hidden,true);assert.equal(ui.doc.querySelector('#context-name').textContent,'Other');ui.close();
+});

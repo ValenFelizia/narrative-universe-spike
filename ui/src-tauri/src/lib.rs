@@ -398,6 +398,11 @@ fn close_window(
     window.destroy().map_err(|_| BridgeError::StateUnavailable)
 }
 
+#[tauri::command]
+fn request_window_close(window: tauri::WebviewWindow) -> Result<(), BridgeError> {
+    window.close().map_err(|_| BridgeError::StateUnavailable)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(DesktopState {
@@ -425,6 +430,7 @@ pub fn run() {
             read_page,
             save_page,
             create_page,
+            request_window_close,
             cancel_close,
             close_window
         ])

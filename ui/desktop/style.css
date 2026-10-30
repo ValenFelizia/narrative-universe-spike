@@ -9,7 +9,7 @@
 
 * { box-sizing: border-box; }
 
-body { margin: 0; min-width: 800px; min-height: 600px; }
+body { margin: 0; min-width: 0; min-height: 0; }
 
 .app-shell { display: grid; grid-template-columns: 256px minmax(0, 1fr); min-height: 100vh; }
 
@@ -91,3 +91,21 @@ dialog::backdrop { background: rgba(0,0,0,.6); }
 #title-input[hidden] { display: none; }
 #title-input:focus-visible { outline: 2px solid #7aa89a; outline-offset: 2px; }
 #new-page, #verify-create { background: transparent; color: #aba9a5; border: 0; font: inherit; font-size: 12px; cursor: pointer; }
+
+@font-face { font-family: "Source Serif 4"; src: url("./fonts/source-serif-4.ttf") format("truetype"); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: "Instrument Sans"; src: url("./fonts/instrument-sans.ttf") format("truetype"); font-weight: 100 900; font-style: normal; font-display: swap; }
+.window-bar { height: 40px; display:flex; align-items:center; background:#1f2226; border-bottom:1px solid #393b40; }
+.window-bar button { background:transparent; color:#ece7de; border:0; height:40px; min-width:42px; font:16px "Instrument Sans",sans-serif; cursor:pointer; }
+.window-bar button:hover { background:#2a2c33; }
+.window-drag { flex:1; min-width:0; height:40px; padding:10px 12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; user-select:none; font:14px "Instrument Sans",sans-serif; }
+#window-universe { color:#aba9a5; }
+.context-strip { height:36px; background:#1f2226; border-bottom:1px solid #393b40; padding:7px 16px; font-size:14px; }
+#context-name { display:inline-block; max-width:70%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; border-bottom:2px solid #7aa89a; padding:0 12px 7px; }
+.app-shell { height:calc(100vh - 120px); position:relative; grid-template-columns:230px minmax(0,1fr); }
+.sidebar { min-height:0; padding:20px 16px; z-index:2; }
+.sidebar[hidden] { display:none; }
+.reading-area { grid-column:2; grid-row:1; padding:32px 32px 80px; }
+.document { width:min(100%, 640px); }
+.save-controls { height:44px; margin:0; padding:4px 16px; display:flex; background:#1f2226; border-top:1px solid #393b40; font:12px/1.3 "Instrument Sans",sans-serif; }
+#save-status { overflow:auto; max-height:36px; }
+@media (max-width: 900px) { .app-shell { grid-template-columns:0 minmax(0,1fr); } .sidebar { position:absolute; left:0; top:0; bottom:0; width:230px; box-shadow: 4px 0 12px #0008; } }
