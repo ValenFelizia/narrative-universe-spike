@@ -34,10 +34,17 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   const toggleLibrary = document.querySelector<HTMLButtonElement>("#library-toggle")!;
   const contextName = document.querySelector<HTMLElement>("#context-name")!;
   const windowUniverse = document.querySelector<HTMLElement>("#window-universe")!;
+  let writingFocus: "title" | "body" | null = null;
+  titleInput.addEventListener("focus", () => { writingFocus = "title"; });
+  body.addEventListener("focusin", () => { writingFocus = "body"; });
   const narrow = () => window.innerWidth <= 900;
   function setLibrary(open: boolean, restore: boolean): void {
     library.hidden = !open; toggleLibrary.setAttribute("aria-expanded", String(open));
-    if (restore) { if (editor) editor.focus(); else toggleLibrary.focus(); }
+    if (restore) {
+      if (writingFocus === "title" && !titleInput.hidden) titleInput.focus();
+      else if (writingFocus === "body" && editor) editor.focus();
+      else toggleLibrary.focus();
+    }
   }
   toggleLibrary.addEventListener("click", () => { const opening = library.hidden; setLibrary(opening, !opening && narrow()); });
   document.addEventListener("keydown", event => { if (event.key === "Escape" && narrow() && !library.hidden && !dialog.open) { event.preventDefault(); setLibrary(false, true); } });

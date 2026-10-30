@@ -333,3 +333,10 @@ test('narrow document navigation honors guard and then dismisses drawer', async(
   const toggle=ui.doc.querySelector('#library-toggle'),library=ui.doc.querySelector('#library');toggle.click();[...ui.doc.querySelectorAll('.page-link')].find(b=>b.textContent==='Other').click();await tick();assert.equal(ui.doc.querySelector('#guard').open,true);ui.doc.querySelector('#continue').click();await tick();assert.equal(library.hidden,false);assert.equal(ui.view().state.doc.toString(),'original draft');
   [...ui.doc.querySelectorAll('.page-link')].find(b=>b.textContent==='Other').click();await tick();ui.doc.querySelector('#discard').click();await tick();assert.equal(library.hidden,true);assert.equal(ui.doc.querySelector('#context-name').textContent,'Other');ui.close();
 });
+
+test('narrow drawer restores document title focus without changing its selection', async()=>{
+  const ui=setup(async cmd=>cmd==='page_index'?[{id:'a',title:'Page'}]:cmd==='read_page'?page:undefined);
+  Object.defineProperty(ui.doc.defaultView,'innerWidth',{value:800,configurable:true});ui.open('a');await tick();
+  const title=ui.doc.querySelector('#title-input'),toggle=ui.doc.querySelector('#library-toggle');title.focus();title.setSelectionRange(1,3);toggle.click();ui.doc.dispatchEvent(new ui.doc.defaultView.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+  assert.equal(ui.doc.activeElement,title);assert.equal(title.selectionStart,1);assert.equal(title.selectionEnd,3);ui.close();
+});

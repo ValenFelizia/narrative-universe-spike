@@ -358,7 +358,7 @@ fn create_active(
         .store
         .create_page(Page {
             id,
-            title: "Untitled page".into(),
+            title: "Untitled document".into(),
             body: String::new(),
         })
         .map_err(save_error)?;
@@ -648,9 +648,12 @@ mod tests {
             create_active(&mut active, "current", "bad"),
             Err(BridgeError::InvalidInput)
         ));
+        let created = create_active(&mut active, "current", id).unwrap();
+        assert_eq!(created.revision, Some(0));
+        assert_eq!(created.title, "Untitled document");
         assert_eq!(
-            create_active(&mut active, "current", id).unwrap().revision,
-            Some(0)
+            active.as_ref().unwrap().store.page_index().unwrap()[0].title,
+            "Untitled document"
         );
         assert!(matches!(
             create_active(&mut active, "current", id),
