@@ -358,7 +358,7 @@ fn create_active(
         .store
         .create_page(Page {
             id,
-            title: "Untitled page".into(),
+            title: "Untitled document".into(),
             body: String::new(),
         })
         .map_err(save_error)?;
@@ -398,6 +398,11 @@ fn close_window(
     window.destroy().map_err(|_| BridgeError::StateUnavailable)
 }
 
+#[tauri::command]
+fn request_window_close(window: tauri::WebviewWindow) -> Result<(), BridgeError> {
+    window.close().map_err(|_| BridgeError::StateUnavailable)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(DesktopState {
@@ -425,6 +430,7 @@ pub fn run() {
             read_page,
             save_page,
             create_page,
+            request_window_close,
             cancel_close,
             close_window
         ])
@@ -642,9 +648,12 @@ mod tests {
             create_active(&mut active, "current", "bad"),
             Err(BridgeError::InvalidInput)
         ));
+        let created = create_active(&mut active, "current", id).unwrap();
+        assert_eq!(created.revision, Some(0));
+        assert_eq!(created.title, "Untitled document");
         assert_eq!(
-            create_active(&mut active, "current", id).unwrap().revision,
-            Some(0)
+            active.as_ref().unwrap().store.page_index().unwrap()[0].title,
+            "Untitled document"
         );
         assert!(matches!(
             create_active(&mut active, "current", id),

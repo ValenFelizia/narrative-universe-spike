@@ -30,6 +30,24 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   const keep = document.querySelector<HTMLButtonElement>("#continue")!;
   const saveProceed = document.querySelector<HTMLButtonElement>("#save-proceed")!;
   const discard = document.querySelector<HTMLButtonElement>("#discard")!;
+  const library = document.querySelector<HTMLElement>("#library")!;
+  const toggleLibrary = document.querySelector<HTMLButtonElement>("#library-toggle")!;
+  const contextName = document.querySelector<HTMLElement>("#context-name")!;
+  const windowUniverse = document.querySelector<HTMLElement>("#window-universe")!;
+  let writingFocus: "title" | "body" | null = null;
+  titleInput.addEventListener("focus", () => { writingFocus = "title"; });
+  body.addEventListener("focusin", () => { writingFocus = "body"; });
+  const narrow = () => window.innerWidth <= 900;
+  function setLibrary(open: boolean, restore: boolean): void {
+    library.hidden = !open; toggleLibrary.setAttribute("aria-expanded", String(open));
+    if (restore) {
+      if (writingFocus === "title" && !titleInput.hidden) titleInput.focus();
+      else if (writingFocus === "body" && editor) editor.focus();
+      else toggleLibrary.focus();
+    }
+  }
+  toggleLibrary.addEventListener("click", () => { const opening = library.hidden; setLibrary(opening, !opening && narrow()); });
+  document.addEventListener("keydown", event => { if (event.key === "Escape" && narrow() && !library.hidden && !dialog.open) { event.preventDefault(); setLibrary(false, true); } });
   let universeToken = "";
   let session: SaveState | null = null;
   let selectedPageId: string | null = null;
@@ -44,6 +62,8 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   let verifying = false;
   let pendingCreate: {token: string; id: string} | null = null;
   let pages: PageIndexEntry[] = [];
+  // An empty stored title is valid. Only its labels fall back; the title itself is never rewritten.
+  const displayTitle = (value: string): string => value || "Untitled document";
 
   function paint(): void {
     newButton.disabled = !universeToken || !!pendingCreate || transitioning || loading || deciding || verifying || !!saving;
@@ -153,7 +173,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       const page = await invokeCommand<PageContent>("read_page", {pageId: id, universeToken});
       if (requestVersion !== version) return;
       clearPage();
-      selectedPageId = page.id;
+      selectedPageId = page.id; contextName.textContent = displayTitle(page.title);
       title.textContent = page.title; titleInput.value = page.title; titleInput.hidden = false; title.hidden = true;
       pane.scrollTop = 0;
       for (const button of list.querySelectorAll<HTMLButtonElement>("button")) button.setAttribute("aria-current", String(button.dataset.pageId === selectedPageId));
@@ -175,6 +195,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
         paint();
       }
       status.textContent = "";
+      if (narrow()) { setLibrary(false, false); if (editor) editor.focus(); else toggleLibrary.focus(); }
     } catch { if (requestVersion === version) status.textContent = "The page could not be read. Your current draft is preserved."; }
     finally { if (requestVersion === version) loading = false; if (guarded) transitioning = false; paint(); }
   }
@@ -188,14 +209,14 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
     count.textContent = String(pages.length); list.replaceChildren();
     for (const page of pages) {
       const li = document.createElement("li"), button = document.createElement("button");
-      button.type = "button"; button.className = "page-link"; button.textContent = page.title; button.dataset.pageId = page.id;
+      button.type = "button"; button.className = "page-link"; button.textContent = displayTitle(page.title); button.dataset.pageId = page.id;
       button.setAttribute("aria-current", String(selectedPageId === page.id));
       button.addEventListener("click", () => void selectPage(page.id)); li.append(button); list.append(li);
     }
   }
   titleInput.addEventListener("input", () => {
     if (!session || titleInput.readOnly) return;
-    try { session = recordTitleEdit(session, titleInput.value); paint(); }
+    try { session = recordTitleEdit(session, titleInput.value); contextName.textContent = displayTitle(titleInput.value); paint(); }
     catch { titleInput.value = session.draftTitle; saveStatus.textContent = "This title is not supported."; }
   });
   newButton.addEventListener("click", () => void (async () => {
@@ -239,9 +260,9 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       universeToken = opened.token; pendingCreate = null; pages = opened.pages;
       selectedPageId = null;
       clearPage(); renderPages();
-      name.textContent = path.split(/[\\/]/).at(-1) || path;
+      name.textContent = path.split(/[\\/]/).at(-1) || path; windowUniverse.textContent = ` · ${name.textContent}`;
       if (pages.length) { loading = false; await selectPage(pages[0]!.id, false); }
-      else { title.hidden = false; titleInput.hidden = true; title.textContent = "No page selected"; body.textContent = "This universe has no pages."; }
+      else { title.hidden = false; titleInput.hidden = true; contextName.textContent = "No document selected"; title.textContent = "No document selected"; body.textContent = "This universe has no pages."; }
     } catch { status.textContent = "The universe could not be opened."; }
     finally { loading = false; transitioning = false; paint(); }
   });
