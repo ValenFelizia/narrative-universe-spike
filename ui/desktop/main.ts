@@ -62,6 +62,8 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   let verifying = false;
   let pendingCreate: {token: string; id: string} | null = null;
   let pages: PageIndexEntry[] = [];
+  // An empty stored title is valid. Only its labels fall back; the title itself is never rewritten.
+  const displayTitle = (value: string): string => value || "Untitled document";
 
   function paint(): void {
     newButton.disabled = !universeToken || !!pendingCreate || transitioning || loading || deciding || verifying || !!saving;
@@ -171,7 +173,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       const page = await invokeCommand<PageContent>("read_page", {pageId: id, universeToken});
       if (requestVersion !== version) return;
       clearPage();
-      selectedPageId = page.id; contextName.textContent = page.title;
+      selectedPageId = page.id; contextName.textContent = displayTitle(page.title);
       title.textContent = page.title; titleInput.value = page.title; titleInput.hidden = false; title.hidden = true;
       pane.scrollTop = 0;
       for (const button of list.querySelectorAll<HTMLButtonElement>("button")) button.setAttribute("aria-current", String(button.dataset.pageId === selectedPageId));
@@ -207,14 +209,14 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
     count.textContent = String(pages.length); list.replaceChildren();
     for (const page of pages) {
       const li = document.createElement("li"), button = document.createElement("button");
-      button.type = "button"; button.className = "page-link"; button.textContent = page.title; button.dataset.pageId = page.id;
+      button.type = "button"; button.className = "page-link"; button.textContent = displayTitle(page.title); button.dataset.pageId = page.id;
       button.setAttribute("aria-current", String(selectedPageId === page.id));
       button.addEventListener("click", () => void selectPage(page.id)); li.append(button); list.append(li);
     }
   }
   titleInput.addEventListener("input", () => {
     if (!session || titleInput.readOnly) return;
-    try { session = recordTitleEdit(session, titleInput.value); contextName.textContent = titleInput.value || "Untitled document"; paint(); }
+    try { session = recordTitleEdit(session, titleInput.value); contextName.textContent = displayTitle(titleInput.value); paint(); }
     catch { titleInput.value = session.draftTitle; saveStatus.textContent = "This title is not supported."; }
   });
   newButton.addEventListener("click", () => void (async () => {

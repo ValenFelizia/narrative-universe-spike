@@ -340,3 +340,49 @@ test('narrow drawer restores document title focus without changing its selection
   const title=ui.doc.querySelector('#title-input'),toggle=ui.doc.querySelector('#library-toggle');title.focus();title.setSelectionRange(1,3);toggle.click();ui.doc.dispatchEvent(new ui.doc.defaultView.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
   assert.equal(ui.doc.activeElement,title);assert.equal(title.selectionStart,1);assert.equal(title.selectionEnd,3);ui.close();
 });
+
+test('empty titles keep a label after save, navigation, and reopen without renaming', async()=>{
+  const store=new Map([['a',{id:'a',title:'Page',body:'alpha',revision:0,mentionCount:0}],['b',{id:'b',title:'Other',body:'beta',revision:0,mentionCount:0}]]);
+  const ui=setup(async(cmd,args)=>{
+    if(cmd==='page_index')return [...store.values()].map(({id,title})=>({id,title}));
+    if(cmd==='read_page')return {...store.get(args.pageId)};
+    if(cmd==='save_page'){
+      const current=store.get(args.request.pageId);
+      const saved={...current,title:args.request.title??current.title,revision:current.revision+1};
+      store.set(saved.id,saved);
+      return {pageId:saved.id,sessionId:args.request.sessionId,requestId:args.request.requestId,title:saved.title,body:saved.body,revision:saved.revision};
+    }
+  });
+  const link=id=>ui.doc.querySelector(`.page-link[data-page-id="${id}"]`);
+  const input=()=>ui.doc.querySelector('#title-input');
+  const clearTitle=()=>{input().value='';input().dispatchEvent(new ui.doc.defaultView.Event('input',{bubbles:true}));};
+  ui.open('universe');await tick();
+  link('a').click();await tick();
+  clearTitle();
+  assert.equal(ui.doc.querySelector('#context-name').textContent,'Untitled document');
+  ui.doc.querySelector('#save').click();await tick();
+  assert.equal(store.get('a').title,'');
+  assert.equal(link('a').textContent,'Untitled document');
+  link('b').click();await tick();
+  link('a').click();await tick();
+  assert.equal(store.get('a').title,'');
+  assert.equal(input().value,'');
+  assert.equal(ui.doc.querySelector('#context-name').textContent,'Untitled document');
+  assert.equal(link('a').textContent,'Untitled document');
+  assert.equal(link('a').getAttribute('aria-current'),'true');
+  assert.equal(ui.view().state.doc.toString(),'alpha');
+  link('b').click();await tick();
+  clearTitle();
+  ui.doc.querySelector('#save').click();await tick();
+  assert.equal(store.get('b').title,'');
+  assert.deepEqual([...ui.doc.querySelectorAll('.page-link')].map(button=>button.textContent),['Untitled document','Untitled document']);
+  assert.deepEqual([...ui.doc.querySelectorAll('.page-link')].map(button=>button.dataset.pageId),['a','b']);
+  link('a').click();await tick();
+  assert.equal(link('a').getAttribute('aria-current'),'true');
+  assert.equal(ui.doc.querySelector('#context-name').textContent,'Untitled document');
+  assert.equal(ui.view().state.doc.toString(),'alpha');
+  link('b').click();await tick();
+  assert.equal(link('b').getAttribute('aria-current'),'true');
+  assert.equal(ui.view().state.doc.toString(),'beta');
+  ui.close();
+});
