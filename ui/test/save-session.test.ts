@@ -15,6 +15,14 @@ import {
   type SaveReply,
   type SaveState,
 } from "../src/save-session.ts";
+import type { Mention } from "../src/mentions.ts";
+
+const ELARA: Mention = {
+  id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  entityId: "11111111-1111-4111-8111-111111111111",
+  startUtf16: 0,
+  endUtf16: 5,
+};
 
 function insert(text: string, at: number, value: string): ChangeSet {
   return ChangeSet.of({ from: at, to: at, insert: value }, text.length);
@@ -24,13 +32,13 @@ function remove(text: string, from: number, to: number): ChangeSet {
   return ChangeSet.of({ from, to, insert: "" }, text.length);
 }
 
-function opened(doc = "D1", revision = 4, hasMentions = false): SaveState {
+function opened(doc = "D1", revision = 4, mentions: Mention[] = []): SaveState {
   return openSession({
     sessionId: "session-1",
     pageId: "22222222-2222-4222-8222-222222222222",
     doc,
     revision,
-    hasMentions,
+    mentions,
   });
 }
 
@@ -38,16 +46,19 @@ function reread(
   state: SaveState,
   doc: string,
   revision: number,
+  mentions: readonly Mention[] = state.baseMentions,
 ): {
   sessionId: string;
   pageId: string;
   doc: string;
+  mentions: readonly Mention[];
   revision: number;
 } {
   return {
     sessionId: state.sessionId,
     pageId: state.pageId,
     doc,
+    mentions,
     revision,
   };
 }
@@ -75,6 +86,7 @@ test("a valid acknowledgement survives typing during the save", () => {
 
   const reply: SaveReply = {
     status: "ok",
+    mentions: [],
     requestId: began.request.requestId,
     sessionId: "session-1",
     pageId: "22222222-2222-4222-8222-222222222222",
@@ -95,7 +107,7 @@ test("a valid acknowledgement survives typing during the save", () => {
   const second = started(state);
   assert.equal(second.request.expectedRevision, 5);
   assert.equal(second.request.doc, "D1ab");
-  assert.equal(second.request.edits.length, 1);
+  assert.equal(second.request.ops.length, 1);
 });
 
 test("a reply from another session or page is ignored", () => {
@@ -106,6 +118,7 @@ test("a reply from another session or page is ignored", () => {
 
   const foreign: SaveReply = {
     status: "ok",
+    mentions: [],
     requestId: began.request.requestId,
     sessionId: "session-2",
     pageId: began.request.pageId,
@@ -120,6 +133,7 @@ test("a reply from another session or page is ignored", () => {
 
   const staleRequest: SaveReply = {
     status: "ok",
+    mentions: [],
     requestId: began.request.requestId + 1,
     sessionId: began.request.sessionId,
     pageId: began.request.pageId,
@@ -164,6 +178,7 @@ test("a mismatched acknowledgement never overwrites the base", () => {
 
   const outcome = applyReply(state, {
     status: "ok",
+    mentions: [],
     requestId: began.request.requestId,
     sessionId: state.sessionId,
     pageId: state.pageId,
@@ -204,8 +219,8 @@ test("a busy save that did not commit stays retryable with its ledger", () => {
 
   const retry = started(state);
   assert.equal(retry.request.expectedRevision, 4);
-  assert.deepEqual(retry.request.edits, [
-    { start_utf16: 2, end_utf16: 2, inserted_text: "a" },
+  assert.deepEqual(retry.request.ops, [
+    { kind: "replace", startUtf16: 2, endUtf16: 2, insertedText: "a" },
   ]);
 });
 
@@ -214,7 +229,7 @@ test("another writer's revision cannot settle an unapplied R9 as clean", () => {
   // advance the revision while leaving that body alone, so matching text plus
   // the next revision is not evidence that this request committed.
   const base = "Elara";
-  let state = opened(base, 1, true);
+  let state = opened(base, 1, [ELARA]);
   state = recordEdit(
     state,
     ChangeSet.of({ from: 0, to: 5, insert: "Elara" }, base.length),
@@ -267,8 +282,8 @@ test("typing after a busy reply preserves the ambiguity and the later edit", () 
   assert.equal(next.request.expectedRevision, 4);
   assert.equal(next.request.doc, "D1ab");
   // Net mode composes the retried ledger against the base again.
-  assert.deepEqual(next.request.edits, [
-    { start_utf16: 2, end_utf16: 2, inserted_text: "ab" },
+  assert.deepEqual(next.request.ops, [
+    { kind: "replace", startUtf16: 2, endUtf16: 2, insertedText: "ab" },
   ]);
 });
 
@@ -289,6 +304,7 @@ test("a reread from another page or session never settles busy", () => {
     sessionId: state.sessionId,
     pageId: "33333333-3333-4333-8333-333333333333",
     doc: "D1a",
+    mentions: [],
     revision: 5,
   });
   assert.equal(otherPage.status, "busy");
@@ -298,6 +314,7 @@ test("a reread from another page or session never settles busy", () => {
     sessionId: "session-2",
     pageId: state.pageId,
     doc: "D1a",
+    mentions: [],
     revision: 5,
   });
   assert.equal(otherSession.status, "busy");
@@ -313,6 +330,7 @@ test("an acknowledgement with an impossible revision is refused", () => {
   for (const revision of [3, 4, 6, -1, 1.5, Number.NaN]) {
     const outcome = applyReply(state, {
       status: "ok",
+      mentions: [],
       requestId: began.request.requestId,
       sessionId: state.sessionId,
       pageId: state.pageId,
@@ -329,15 +347,16 @@ test("an acknowledgement with an impossible revision is refused", () => {
 
 test("a genuine no-op is accepted at the unchanged revision", () => {
   const base = "D1";
-  let state = opened(base, 7, false);
+  let state = opened(base, 7);
   state = recordEdit(state, insert(base, 2, "x"));
   state = recordEdit(state, remove("D1x", 2, 3));
   const began = started(state);
-  assert.deepEqual(began.request.edits, []);
+  assert.deepEqual(began.request.ops, []);
   assert.equal(began.request.doc, base);
 
   const outcome = applyReply(began.state, {
     status: "ok",
+    mentions: [],
     requestId: began.request.requestId,
     sessionId: state.sessionId,
     pageId: state.pageId,
@@ -358,6 +377,7 @@ test("a changed body at the unchanged revision is refused", () => {
 
   const outcome = applyReply(began.state, {
     status: "ok",
+    mentions: [],
     requestId: began.request.requestId,
     sessionId: state.sessionId,
     pageId: state.pageId,
@@ -391,6 +411,7 @@ test("the last representable revision accepts its save and then stops", () => {
 
   const outcome = applyReply(began.state, {
     status: "ok",
+    mentions: [],
     requestId: began.request.requestId,
     sessionId: state.sessionId,
     pageId: state.pageId,
@@ -408,28 +429,44 @@ test("the last representable revision accepts its save and then stops", () => {
   });
 });
 
-test("ledger mode does not accept a no-op from an unchanged revision", () => {
+test("an unchanged revision is accepted only when the whole aggregate is unchanged", () => {
   const base = "Elara";
-  let state = opened(base, 3, true);
-  // Insert and delete outside the mention: the body returns to the base, but
-  // only the reducer knows whether the mention survived.
-  state = recordEdit(state, insert(base, 5, "x"));
-  state = recordEdit(state, remove("Elarax", 5, 6));
-  const began = started(state);
-  assert.equal(began.request.doc, base);
-
-  const outcome = applyReply(began.state, {
+  const reply = (began: ReturnType<typeof started>, mentions: Mention[]): SaveReply => ({
     status: "ok",
     requestId: began.request.requestId,
-    sessionId: state.sessionId,
-    pageId: state.pageId,
+    sessionId: began.request.sessionId,
+    pageId: began.request.pageId,
     doc: base,
+    mentions,
     revision: 3,
   });
-  assert.equal(outcome.applied, false);
-  assert.equal(outcome.state.status, "error");
-  assert.equal(outcome.state.baseRevision, 3);
-  assert.equal(outcome.state.ledger.length, 2);
+
+  // An insertion at the end and its deletion keep the link: the aggregate is
+  // the base, so the store had nothing to write.
+  let kept = opened(base, 3, [ELARA]);
+  kept = recordEdit(kept, insert(base, 5, "x"));
+  kept = recordEdit(kept, remove("Elarax", 5, 6));
+  const neutral = started(kept);
+  assert.deepEqual(neutral.request.mentions, [ELARA]);
+  const accepted = applyReply(neutral.state, reply(neutral, [ELARA]));
+  assert.equal(accepted.applied, true);
+  assert.equal(accepted.state.status, "clean");
+  assert.equal(accepted.state.baseRevision, 3);
+
+  // R9: the same body after a replacement that removed the link. An
+  // unchanged revision cannot be the acknowledgement of that removal.
+  let lost = opened(base, 3, [ELARA]);
+  lost = recordEdit(lost, ChangeSet.of({ from: 0, to: 5, insert: "Elara" }, base.length));
+  const removal = started(lost);
+  assert.deepEqual(removal.request.mentions, []);
+  for (const mentions of [[], [ELARA]]) {
+    const outcome = applyReply(removal.state, reply(removal, mentions));
+    assert.equal(outcome.applied, false);
+    assert.equal(outcome.state.status, "error");
+    assert.equal(outcome.state.baseRevision, 3);
+    assert.deepEqual(outcome.state.draftMentions, []);
+    assert.equal(outcome.state.ledger.length, 1);
+  }
 });
 
 test("a reply that names another page is ignored", () => {
@@ -440,6 +477,7 @@ test("a reply that names another page is ignored", () => {
 
   const outcome = applyReply(state, {
     status: "ok",
+    mentions: [],
     requestId: began.request.requestId,
     sessionId: state.sessionId,
     pageId: "33333333-3333-4333-8333-333333333333",
@@ -454,7 +492,7 @@ test("a reply that names another page is ignored", () => {
 });
 
 test("net mode refuses an invalid draft before composition can hide it", () => {
-  const state = opened("abc", 0, false);
+  const state = opened("abc", 0);
 
   assert.throws(
     () => recordEdit(state, ChangeSet.of({ from: 1, to: 1, insert: "\u0000" }, 3)),
@@ -463,7 +501,7 @@ test("net mode refuses an invalid draft before composition can hide it", () => {
   assert.throws(
     () =>
       recordEdit(
-        opened("abc", 0, false),
+        opened("abc", 0),
         ChangeSet.of({ from: 1, to: 1, insert: "\uD800" }, 3),
       ),
     /unpaired/,
@@ -474,7 +512,7 @@ test("net mode refuses an invalid draft before composition can hide it", () => {
   assert.throws(
     () =>
       recordEdit(
-        opened("A📚B", 0, false),
+        opened("A📚B", 0),
         ChangeSet.of({ from: 2, to: 3, insert: "📠" }, 4),
       ),
     /surrogate pair/,
@@ -483,7 +521,7 @@ test("net mode refuses an invalid draft before composition can hide it", () => {
 });
 
 test("a rejected transaction is validated before its draft is applied", () => {
-  const state = opened("abc", 0, false);
+  const state = opened("abc", 0);
   const rejected = ChangeSet.of({ from: 1, to: 1, insert: "\u0000" }, 3);
   let applied = 0;
   // `docAfter` is the only draft builder in `recordEdit`, and the adapter
@@ -543,34 +581,34 @@ test("net mode composes while ledger mode keeps the ordered history", () => {
   const first = insert(base, 2, "x");
   const second = remove("Elxara", 2, 3);
 
-  let prose = opened(base, 0, false);
+  let prose = opened(base, 0);
   prose = recordEdit(prose, first);
   prose = recordEdit(prose, second);
   const net = started(prose);
-  assert.deepEqual(net.request.edits, []);
+  assert.deepEqual(net.request.ops, []);
   assert.equal(net.request.doc, base);
 
-  let linked = opened(base, 0, true);
+  let linked = opened(base, 0, [ELARA]);
   linked = recordEdit(linked, first);
   linked = recordEdit(linked, second);
   const ledger = started(linked);
-  assert.deepEqual(ledger.request.edits, [
-    { start_utf16: 2, end_utf16: 2, inserted_text: "x" },
-    { start_utf16: 2, end_utf16: 3, inserted_text: "" },
+  assert.deepEqual(ledger.request.ops, [
+    { kind: "replace", startUtf16: 2, endUtf16: 2, insertedText: "x" },
+    { kind: "replace", startUtf16: 2, endUtf16: 3, insertedText: "" },
   ]);
 });
 
 test("atomic title and body snapshots preserve typing and require matching acknowledgement", () => {
-  let state = openSession({sessionId: "s", pageId: "p", title: "Old", doc: "body", revision: 2, hasMentions: false});
+  let state = openSession({sessionId: "s", pageId: "p", title: "Old", doc: "body", revision: 2, mentions: []});
   state = recordTitleEdit(state, "New 📚");
   state = recordEdit(state, insert("body", 4, "!"));
   const began = started(state);
   assert.equal(began.request.titleChanged, true);
   assert.equal(began.request.title, "New 📚");
-  assert.equal(began.request.edits.length, 1);
+  assert.equal(began.request.ops.length, 1);
   state = recordTitleEdit(began.state, "Later");
   state = recordEdit(state, insert("body!", 5, "?"));
-  const reply = {status: "ok" as const, requestId: began.request.requestId, sessionId: "s", pageId: "p", title: "New 📚", doc: "body!", revision: 3};
+  const reply = {status: "ok" as const, requestId: began.request.requestId, sessionId: "s", pageId: "p", title: "New 📚", doc: "body!", mentions: [], revision: 3};
   assert.equal(applyReply(state, {...reply, title: "wrong"}).state.status, "error");
   assert.equal(applyReply(state, {...reply, revision: 2}).state.status, "error");
   state = applyReply(state, reply).state;
@@ -581,18 +619,18 @@ test("atomic title and body snapshots preserve typing and require matching ackno
 });
 
 test("title-only edits, reverts and busy verification retain both drafts", () => {
-  let state = openSession({sessionId: "s", pageId: "p", title: "Old", doc: "body", revision: 2, hasMentions: false});
+  let state = openSession({sessionId: "s", pageId: "p", title: "Old", doc: "body", revision: 2, mentions: []});
   state = recordTitleEdit(state, "New");
   assert.equal(isDirty(state), true);
   assert.deepEqual(beginSave(recordTitleEdit(state, "Old")), {ok: false, reason: "no_changes"});
   assert.throws(() => recordTitleEdit(state, "bad\u0000"), /NUL/);
   const began = started(state);
-  assert.deepEqual(began.request.edits, []);
+  assert.deepEqual(began.request.ops, []);
   state = applyReply(began.state, {status: "busy", requestId: began.request.requestId, sessionId: "s", pageId: "p", detail: "busy"}).state;
   state = recordTitleEdit(state, "Later");
-  assert.equal(reconcileBusy(state, {sessionId: "s", pageId: "p", title: "Other", doc: "body", revision: 2}).status, "error");
-  assert.equal(reconcileBusy(state, {sessionId: "s", pageId: "p", doc: "body", revision: 2}).status, "error");
-  state = reconcileBusy(state, {sessionId: "s", pageId: "p", title: "Old", doc: "body", revision: 2});
+  assert.equal(reconcileBusy(state, {sessionId: "s", pageId: "p", title: "Other", doc: "body", mentions: [], revision: 2}).status, "error");
+  assert.equal(reconcileBusy(state, {sessionId: "s", pageId: "p", doc: "body", mentions: [], revision: 2}).status, "error");
+  state = reconcileBusy(state, {sessionId: "s", pageId: "p", title: "Old", doc: "body", mentions: [], revision: 2});
   assert.equal(state.status, "dirty");
   assert.equal(state.draftTitle, "Later");
   assert.equal(started(state).request.title, "Later");

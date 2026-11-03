@@ -31,10 +31,10 @@ type FixtureCase = {
   id: string;
   base: string;
   mentions: FixtureMention[];
-  transactions: Spec[][];
+  transactions?: Spec[][];
   expected_body: string;
   expected_mentions: FixtureMention[];
-  expected_edits: Spec[];
+  expected_edits?: Spec[];
   expected_changed: boolean;
   expected_revision: number;
 };
@@ -95,9 +95,9 @@ function expectCode(run: () => void, code: string): void {
   });
 }
 
-test("every fixture matches CodeMirror, literal edits, and a plain replay", () => {
-  for (const item of fixture.cases) {
-    const transactions = buildTransactions(item.base, item.transactions);
+test("every text-only fixture matches CodeMirror, literal edits, and a plain replay", () => {
+  for (const item of fixture.cases.filter((held) => held.transactions !== undefined)) {
+    const transactions = buildTransactions(item.base, item.transactions!);
     const edits = toSequentialEditsFromTransactions(item.base, transactions);
 
     assert.deepEqual(asTuples(edits), item.expected_edits, item.id);
@@ -129,7 +129,7 @@ test("the rejected toB translation is wrong for R1, R2, R3, and R4", () => {
   assert.equal(cases.length, 4);
 
   for (const item of cases) {
-    const transactions = buildTransactions(item.base, item.transactions);
+    const transactions = buildTransactions(item.base, item.transactions!);
     const changes = composeTransactions(transactions, item.base.length);
     const naive: PageEdit[] = [];
     changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
@@ -170,7 +170,7 @@ test("composition collapses the history that still removes a mention", () => {
   );
   assert.ok(item);
 
-  const transactions = buildTransactions(item.base, item.transactions);
+  const transactions = buildTransactions(item.base, item.transactions!);
   const ledger = toSequentialEditsFromTransactions(item.base, transactions);
   assert.equal(ledger.length, 2);
 
@@ -187,7 +187,7 @@ test("a same-text replacement is still a save, not a clean document", () => {
   );
   assert.ok(item);
 
-  const transactions = buildTransactions(item.base, item.transactions);
+  const transactions = buildTransactions(item.base, item.transactions!);
   const net = composeTransactions(transactions, item.base.length);
   assert.equal(applyChanges(item.base, net), item.base);
   assert.equal(net.empty, false);

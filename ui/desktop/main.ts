@@ -3,12 +3,13 @@ import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { decideEditing } from "../src/adapter.ts";
+import type { Mention } from "../src/mentions.ts";
 import { applyReply, beginSave, isDirty, openSession, reconcileBusy, recordEdit, recordTitleEdit, MAX_SUPPORTED_REVISION, type SaveState } from "../src/save-session.ts";
 
 type PageIndexEntry = { id: string; title: string };
 type OpenedUniverse = { token: string; pages: PageIndexEntry[] };
-type PageContent = { id: string; title: string; body: string; revision: number | null; mentionCount: number };
-type SaveResponse = { pageId: string; sessionId: string; requestId: number; body: string; title: string; revision: number };
+type PageContent = { id: string; title: string; body: string; revision: number | null; mentions: Mention[] };
+type SaveResponse = { pageId: string; sessionId: string; requestId: number; body: string; title: string; mentions: Mention[]; revision: number };
 
 export function initDesktop(invokeCommand: typeof invoke): { requestClose: (token: string) => void } {
   const form = document.querySelector<HTMLFormElement>("#open-form")!;
@@ -83,8 +84,8 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
     verifying = true; paint();
     try {
       const page = await invokeCommand<PageContent>("read_page", {pageId, universeToken: token});
-      if (session && session.sessionId === identity && page.revision !== null && page.mentionCount === 0) {
-        session = reconcileBusy(session, {sessionId: identity, pageId: page.id, doc: page.body, title: page.title, revision: page.revision});
+      if (session && session.sessionId === identity && page.revision !== null) {
+        session = reconcileBusy(session, {sessionId: identity, pageId: page.id, doc: page.body, title: page.title, mentions: page.mentions, revision: page.revision});
         uncertain = session.status !== "dirty";
       }
     } catch { /* Preserve the draft and allow another verification. */ }
@@ -104,9 +105,9 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
     paint();
     saving = (async () => {
       try {
-        const response = await invokeCommand<SaveResponse>("save_page", { request: { universeToken, pageId: request.pageId, sessionId: request.sessionId, requestId: request.requestId, expectedRevision: request.expectedRevision, title: request.titleChanged ? request.title : null, edits: request.edits } });
+        const response = await invokeCommand<SaveResponse>("save_page", { request: { universeToken, pageId: request.pageId, sessionId: request.sessionId, requestId: request.requestId, expectedRevision: request.expectedRevision, title: request.titleChanged ? request.title : null, edits: request.ops, expectedBody: request.doc, expectedMentions: request.mentions } });
         if (!session || session.sessionId !== request.sessionId) return false;
-        const outcome = applyReply(session, {status: "ok", requestId: response.requestId, sessionId: response.sessionId, pageId: response.pageId, doc: response.body, title: response.title, revision: response.revision});
+        const outcome = applyReply(session, {status: "ok", requestId: response.requestId, sessionId: response.sessionId, pageId: response.pageId, doc: response.body, title: response.title, mentions: response.mentions, revision: response.revision});
         session = outcome.ignored ? {...outcome.state, status: "error", detail: "Save acknowledgement identity did not match."} : outcome.state;
         uncertain = !!outcome.ignored || !outcome.applied;
         if (outcome.applied && request.titleChanged) { pages = pages.map(p => p.id === request.pageId ? {...p, title: request.title} : p); renderPages(); }
@@ -126,8 +127,8 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
         if (replyStatus === "busy") {
           try {
             const page = await invokeCommand<PageContent>("read_page", {pageId: request.pageId, universeToken});
-            if (session && session.sessionId === request.sessionId && page.revision !== null && page.mentionCount === 0) {
-              session = reconcileBusy(session, {sessionId: request.sessionId, pageId: page.id, doc: page.body, title: page.title, revision: page.revision});
+            if (session && session.sessionId === request.sessionId && page.revision !== null) {
+              session = reconcileBusy(session, {sessionId: request.sessionId, pageId: page.id, doc: page.body, title: page.title, mentions: page.mentions, revision: page.revision});
               uncertain = session.status !== "dirty";
             }
           } catch { /* Keep the busy state and draft. */ }
@@ -177,14 +178,14 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       title.textContent = page.title; titleInput.value = page.title; titleInput.hidden = false; title.hidden = true;
       pane.scrollTop = 0;
       for (const button of list.querySelectorAll<HTMLButtonElement>("button")) button.setAttribute("aria-current", String(button.dataset.pageId === selectedPageId));
-      const decision = decideEditing(page.body, page.mentionCount);
+      const decision = decideEditing(page.body, page.mentions.length);
       const titleDecision = decideEditing(page.title, 0);
       if (!decision.editable || !titleDecision.editable || page.title.includes("\n") || page.revision === null || page.revision >= MAX_SUPPORTED_REVISION) {
         title.hidden = false; titleInput.hidden = true;
         body.textContent = page.body;
         saveStatus.textContent = page.title.includes("\n") ? "This page title contains line breaks and is read-only." : !decision.editable ? ({linked:"This page contains links and is read-only.", carriage_return:"This page contains carriage returns and is read-only.", nul:"This page contains NUL and is read-only.", unpaired_surrogate:"This page contains unsupported text and is read-only."})[decision.reason] : !titleDecision.editable ? "This page title contains unsupported text and is read-only." : "This page revision is not editable.";
       } else {
-        session = openSession({sessionId: crypto.randomUUID(), pageId: page.id, doc: page.body, title: page.title, revision: page.revision, hasMentions: false});
+        session = openSession({sessionId: crypto.randomUUID(), pageId: page.id, doc: page.body, title: page.title, revision: page.revision, mentions: page.mentions});
         editor = new EditorView({parent: body, state: EditorState.create({doc: page.body, extensions: [history(), keymap.of([...defaultKeymap, ...historyKeymap]), EditorView.lineWrapping, editability.of([])]}), dispatchTransactions(transactions, view) {
           if (!session || (transactions.some(transaction => transaction.docChanged) && (loading || deciding || session.baseRevision >= MAX_SUPPORTED_REVISION))) return;
           let next = session;
