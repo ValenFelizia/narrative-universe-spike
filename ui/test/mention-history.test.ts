@@ -210,6 +210,59 @@ test("a combined edit that unlinks one mention and keeps another undoes both", (
   assert.deepEqual(editor.mentions(), [{ ...VALDORIA, startUtf16: 24, endUtf16: 32 }]);
 });
 
+test("cursor moves on a linked page add no undo steps", () => {
+  const editor = new Editor(SCENE, [VALDORIA]);
+  editor.dispatch({ changes: { from: 0, insert: "Old " } });
+  const edited = "Old " + SCENE;
+  const shifted = { ...VALDORIA, startUtf16: 23, endUtf16: 31 };
+  for (const anchor of [0, 7, 30]) editor.dispatch({ selection: { anchor } });
+  assert.equal(undoDepth(editor.state), 1);
+
+  assert.equal(editor.undo(), true);
+  assert.equal(editor.text(), SCENE, "the first undo reverts the text edit");
+  assert.deepEqual(editor.mentions(), [VALDORIA]);
+  assert.equal(editor.undo(), false);
+
+  editor.dispatch({ selection: { anchor: 3 } });
+  assert.equal(redoDepth(editor.state), 1);
+  assert.equal(editor.redo(), true);
+  assert.equal(editor.text(), edited, "the first redo reapplies the text edit");
+  assert.deepEqual(editor.mentions(), [shifted]);
+  assert.equal(editor.redo(), false);
+});
+
+test("cursor moves before and after a link, and between edits, add no undo steps", () => {
+  const editor = new Editor(SCENE, []);
+  editor.dispatch({ selection: { anchor: 5 } });
+  editor.dispatch(linkSpec(VALDORIA));
+  editor.dispatch({ selection: { anchor: 2 } });
+  editor.dispatch({ selection: { anchor: 0, head: 5 } });
+  editor.dispatch({ changes: { from: 0, to: 5, insert: "Mira" } });
+  editor.dispatch({ selection: { anchor: 1 } });
+  editor.dispatch({ selection: { anchor: 4 } });
+  editor.dispatch({ changes: { from: 22, to: 23 } });
+  editor.dispatch({ selection: { anchor: 9 } });
+  assert.equal(undoDepth(editor.state), 3);
+  assert.deepEqual(editor.mentions(), []);
+
+  editor.undo();
+  assert.equal(editor.text(), "Mira crossed into Valdoria.");
+  assert.deepEqual(editor.mentions(), [{ ...VALDORIA, startUtf16: 18, endUtf16: 26 }]);
+  editor.dispatch({ selection: { anchor: 0 } });
+  editor.undo();
+  assert.equal(editor.text(), SCENE);
+  assert.deepEqual(editor.mentions(), [VALDORIA]);
+  editor.undo();
+  assert.deepEqual(editor.mentions(), []);
+  assert.equal(editor.undo(), false);
+
+  editor.dispatch({ selection: { anchor: 3 } });
+  while (editor.redo());
+  assert.equal(editor.text(), "Mira crossed into Valdria.");
+  assert.deepEqual(editor.mentions(), []);
+  assert.equal(undoDepth(editor.state), 3);
+});
+
 test("plain text undo keeps working without mentions", () => {
   const editor = new Editor("abc", []);
   editor.dispatch({ changes: { from: 3, insert: "d" } });
@@ -291,6 +344,7 @@ test("random Unicode editing with joined groups, combined text and link transact
   let restored = 0;
   let combined = 0;
   let relinked = 0;
+  let moves = 0;
   for (let seed = 1; seed <= 300; seed += 1) {
     const next = random(seed);
     const pick = <T>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!;
@@ -375,6 +429,15 @@ test("random Unicode editing with joined groups, combined text and link transact
         assert.ok(visited.has(snapshot()), `seed ${seed} step ${step} redo reached an unseen state`);
       }
       visited.add(snapshot());
+      if (next() < 0.4) {
+        // A cursor move changes no history depth, text, or mentions.
+        const depths = [undoDepth(editor.state), redoDepth(editor.state)];
+        const seen = snapshot();
+        editor.dispatch({ selection: { anchor: pick(scalarStarts(editor.text())) } }, next() < 0.5);
+        assert.deepEqual([undoDepth(editor.state), redoDepth(editor.state)], depths, `seed ${seed} step ${step} cursor move`);
+        assert.equal(snapshot(), seen);
+        moves += 1;
+      }
       for (const held of editor.mentions()) assert.equal(held.entityId, entityOf.get(held.id), `seed ${seed} entity`);
     }
     const reached = { text: editor.text(), mentions: editor.mentions() };
@@ -393,4 +456,5 @@ test("random Unicode editing with joined groups, combined text and link transact
   assert.ok(restored > 50, `restorations exercised: ${restored}`);
   assert.ok(combined > 300, `combined transactions exercised: ${combined}`);
   assert.ok(relinked > 100, `same-id relinks exercised: ${relinked}`);
+  assert.ok(moves > 2000, `cursor moves exercised: ${moves}`);
 });

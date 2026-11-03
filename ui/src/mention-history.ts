@@ -66,7 +66,11 @@ export const mentionField = StateField.define<readonly Mention[]>({
 const invertMentions = invertedEffects.of((tr) => {
   const before = tr.startState.field(mentionField, false);
   if (!before) return [];
-  if (before.length === 0 && mentionEffects(tr).length === 0) return [];
+  const effects = mentionEffects(tr);
+  // A transaction with no text change and no mention effect cannot change
+  // the mention set. Returning an effect for it, such as a cursor move, would
+  // make history record it as its own undo step.
+  if (effects.length === 0 && (tr.changes.empty || before.length === 0)) return [];
   return [restoreMentions.of(before)];
 });
 
