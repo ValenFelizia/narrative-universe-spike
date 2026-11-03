@@ -92,6 +92,16 @@ pub struct PageSummary {
     pub title: String,
 }
 
+/// One entity for a link picker: identity, label, and the labels of its
+/// optional type and primary page. No bodies, values, or assertions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntitySummary {
+    pub id: EntityId,
+    pub label: String,
+    pub type_label: Option<String>,
+    pub primary_page_title: Option<String>,
+}
+
 /// One transient editing command for a page.
 ///
 /// The operations are applied in order, each one in the coordinates of the
@@ -244,6 +254,45 @@ impl Store {
             pages.push(PageSummary { id, title });
         }
         Ok(pages)
+    }
+
+    /// Lists every entity in stable label-then-id order (SQLite BINARY, so
+    /// equal labels stay separate and ordered by id). Read only.
+    pub fn entity_index(&self) -> Result<Vec<EntitySummary>> {
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT e.id, e.label, t.label, p.title
+                 FROM entities AS e
+                 LEFT JOIN types AS t ON t.id = e.type_id
+                 LEFT JOIN pages AS p ON p.id = e.page_id
+                 ORDER BY e.label COLLATE BINARY, e.id COLLATE BINARY",
+            )
+            .map_err(|err| map_sql("prepare entity index", err))?;
+        let mut rows = statement
+            .query([])
+            .map_err(|err| map_sql("read entity index", err))?;
+        let mut entities = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .map_err(|err| map_sql("read entity index", err))?
+        {
+            let raw_id: String = row.get(0).map_err(|err| map_sql("read entity id", err))?;
+            let label: String = row
+                .get(1)
+                .map_err(|err| map_sql("read entity label", err))?;
+            let type_label: Option<String> =
+                row.get(2).map_err(|err| map_sql("read type label", err))?;
+            let primary_page_title: Option<String> =
+                row.get(3).map_err(|err| map_sql("read page title", err))?;
+            entities.push(EntitySummary {
+                id: parse_stored_id("entity", &raw_id, EntityId::parse)?,
+                label,
+                type_label,
+                primary_page_title,
+            });
+        }
+        Ok(entities)
     }
 
     /// Reads a page as one aggregate: title, body with its mentions, and the
