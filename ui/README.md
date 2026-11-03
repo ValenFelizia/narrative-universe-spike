@@ -31,9 +31,18 @@ npm run check   # tsc --noEmit
 npm test        # node --test test/*.test.ts
 ```
 
-The shared contract fixture lives at `tests/fixtures/bridge_cases.json` and is
-read by both the TypeScript tests and `tests/bridge_contract.rs`. Keep the two
-sides in sync by editing the fixture once.
+The shared contract fixtures live in `tests/fixtures/`. `bridge_cases.json`
+(R1 to R9 and the text cases, plus R10 to R28 for link, unlink, ordered text
+and link, and Unicode boundaries) is read by the TypeScript tests,
+`tests/bridge_contract.rs` (the real store and the pure reducer), and the
+desktop bridge tests (the real agreement check). `grapheme_boundaries.json`
+pins the extended grapheme cluster boundaries both sides must agree on. Edit
+each fixture once; every side reads the same file.
+
+`node scripts/webview2-parity.mjs` (after `cargo build --locked` in
+`src-tauri`) starts the desktop shell with remote debugging, imports
+`src/mentions.ts` inside the real WebView2, and replays both fixtures there.
+It exits non-zero on any disagreement.
 
 ## Contract summary
 
@@ -47,20 +56,36 @@ sides in sync by editing the fixture once.
   accounting before the changed body is allocated.
 - Only LF text is editable. CR, CRLF, NUL, and unpaired surrogates are refused
   before a transaction reaches Rust.
-- Pages that already hold mentions are read-only in PA-I3.
-- Mention-bearing pages send the ordered transaction ledger, never a composed
-  net diff, because composition erases history that the reducer needs.
+- `src/mentions.ts` mirrors the Rust reducer: the same exclusive
+  boundaries, the same drop rules, the same cluster check on survivors (with
+  `Intl.Segmenter` against `unicode-segmentation`), canonical order, and
+  sorted removed ids. A session refuses to open on stored mentions it cannot
+  validate.
+- The session ledger is ordered `text(ChangeSet)`, `link(Mention)`, and
+  `unlink(id)` entries. A session opened on a linked page, or one that links
+  or unlinks, sends that ledger in order; a mention-free session keeps the
+  composed net diff. Text entries record the ids they removed, and
+  `pendingDrops` names the ones the draft still lacks.
+- A mention id stays bound to its first entity for the whole open document,
+  across saves, unlinks, and history. A link that rebinds it is refused.
+- `src/mention-history.ts` puts the mention set in a CodeMirror state field
+  and uses `invertedEffects`: undo of a link unlinks, undo of an unlink
+  relinks, and undo of text that removed a link restores the same id, entity,
+  and range. The desktop must record each transaction into the session first
+  and drop any transaction the session refuses.
+- The desktop still opens linked pages read-only until PA-I4/C1-B; the
+  contract above is not yet used by visual code.
 - Every recorded transaction is checked against the live draft, so net mode
   cannot compose an invalid intermediate text out of existence before the
   adapter sees it.
 - An acknowledgement is accepted only when `requestId`, `sessionId`, and
   `pageId` all match the in-flight request and the body equals the sent
-  snapshot. Its revision must be exactly `expectedRevision + 1`, except for a
-  mention-free net request whose text did not change: that no-op may return
-  the unchanged revision and is provably aggregate-neutral. Ledger-mode
-  no-ops are not accepted from an unchanged revision, because the body can
-  stay identical while a mention disappears; PA-I3 linked pages are read-only
-  anyway, and A2 can add an explicit `changed` acknowledgement.
+  snapshot, the title, and the complete mention set. Its revision must be
+  exactly `expectedRevision + 1`, except when the whole sent aggregate
+  (body, title, and mentions) equals the base: then the store wrote nothing
+  and the unchanged revision is accepted. A body that returns to the base
+  while a mention disappears (R9) is not aggregate-neutral, so it cannot be
+  acknowledged from an unchanged revision.
 - Revisions must be safe integers between `0` and `Number.MAX_SAFE_INTEGER`.
   `openSession` refuses anything else. A save is refused with
   `revision_exhausted` when the base is already at `Number.MAX_SAFE_INTEGER`,
@@ -69,7 +94,7 @@ sides in sync by editing the fixture once.
   cannot prove that the request committed: another writer can advance the
   revision while leaving the body identical (the R9 shape). So busy
   reconciliation only proves non-commit, when the page still holds the base
-  body at the base revision. That makes the save retryable with its whole
+  body, title, and mention set at the base revision. That makes the save retryable with its whole
   ledger intact. Any other reread is an error. A busy path is never reported
   clean. Typing keeps the ambiguity, and a new save is refused until a reread
   settles it.
