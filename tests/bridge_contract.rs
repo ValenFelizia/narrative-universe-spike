@@ -5,8 +5,9 @@ mod support;
 use std::collections::HashSet;
 
 use narrative_universe::{
-    Entity, EntityId, Error, Mention, MentionEdit, MentionId, Page, PageEdit, PageId, PageRevision,
-    Store, UniverseId,
+    apply_mention_edit, validate_mentions, AnnotatedBody, Entity, EntityId, Error, Mention,
+    MentionEdit, MentionId, Page, PageEdit, PageId, PageRevision, Store, UniverseId,
+    ValidationReason,
 };
 use serde::Deserialize;
 
@@ -26,9 +27,34 @@ struct FixtureCase {
     mentions: Vec<FixtureMention>,
     expected_body: String,
     expected_mentions: Vec<FixtureMention>,
+    #[serde(default)]
     expected_edits: Vec<(u32, u32, String)>,
+    expected_ops: Option<Vec<FixtureOp>>,
+    expected_dropped: Option<Vec<String>>,
     expected_changed: bool,
     expected_revision: i64,
+}
+
+/// One ordered save operation, in the coordinates of the body that the
+/// previous operation produced.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FixtureOp {
+    Replace(u32, u32, String),
+    Link(FixtureMention),
+    Unlink(String),
+}
+
+#[derive(Deserialize)]
+struct GraphemeFile {
+    cases: Vec<GraphemeCase>,
+}
+
+#[derive(Deserialize)]
+struct GraphemeCase {
+    id: String,
+    text: String,
+    boundaries: Vec<u32>,
 }
 
 #[derive(Deserialize)]
@@ -97,16 +123,12 @@ fn seed(store: &mut Store, case: &FixtureCase) -> PageRevision {
             body: case.base.clone(),
         })
         .expect("page");
-    if case.mentions.is_empty() {
-        return PageRevision::ZERO;
-    }
-
     let mut seen: HashSet<&str> = HashSet::new();
-    for held in &case.mentions {
-        if seen.insert(held.entity_id.as_str()) {
+    for entity in entity_ids(case) {
+        if seen.insert(entity) {
             store
                 .create_entity(Entity {
-                    id: EntityId::parse(&held.entity_id).expect("entity id"),
+                    id: EntityId::parse(entity).expect("entity id"),
                     label: "Synthetic".to_string(),
                     type_id: None,
                     page_id: None,
@@ -123,22 +145,63 @@ fn seed(store: &mut Store, case: &FixtureCase) -> PageRevision {
             })
         })
         .collect();
+    if links.is_empty() {
+        return PageRevision::ZERO;
+    }
     store
         .save_page_edits(&id, PageRevision::ZERO, &links)
         .expect("seed links")
         .revision
 }
 
-fn edits(case: &FixtureCase) -> Vec<PageEdit> {
-    case.expected_edits
+fn entity_ids(case: &FixtureCase) -> Vec<&str> {
+    let mut ids: Vec<&str> = case
+        .mentions
         .iter()
-        .map(|(start, end, inserted)| {
-            PageEdit::Mention(MentionEdit::ReplaceText {
+        .map(|held| held.entity_id.as_str())
+        .collect();
+    for op in case.expected_ops.iter().flatten() {
+        if let FixtureOp::Link(held) = op {
+            ids.push(held.entity_id.as_str());
+        }
+    }
+    ids
+}
+
+fn mention_edits(case: &FixtureCase) -> Vec<MentionEdit> {
+    match &case.expected_ops {
+        Some(ops) => ops
+            .iter()
+            .map(|op| match op {
+                FixtureOp::Replace(start, end, inserted) => MentionEdit::ReplaceText {
+                    start_utf16: *start,
+                    end_utf16: *end,
+                    inserted_text: inserted.clone(),
+                },
+                FixtureOp::Link(held) => MentionEdit::Link {
+                    mention: mention(held),
+                },
+                FixtureOp::Unlink(id) => MentionEdit::Unlink {
+                    mention_id: MentionId::parse(id).expect("mention id"),
+                },
+            })
+            .collect(),
+        None => case
+            .expected_edits
+            .iter()
+            .map(|(start, end, inserted)| MentionEdit::ReplaceText {
                 start_utf16: *start,
                 end_utf16: *end,
                 inserted_text: inserted.clone(),
             })
-        })
+            .collect(),
+    }
+}
+
+fn edits(case: &FixtureCase) -> Vec<PageEdit> {
+    mention_edits(case)
+        .into_iter()
+        .map(PageEdit::Mention)
         .collect()
 }
 
@@ -318,4 +381,69 @@ fn a_stale_save_rejects_the_ledger_without_losing_the_committed_body() {
     let stored = store.page_document(&page_id()).expect("document");
     assert_eq!(stored.body.body, "winner");
     assert_eq!(stored.revision, PageRevision::new(1).expect("revision"));
+}
+
+#[test]
+fn bridge_cases_replay_through_the_pure_reducer_with_their_dropped_ids() {
+    for case in fixture().cases {
+        let mut body = AnnotatedBody {
+            body: case.base.clone(),
+            mentions: case.mentions.iter().map(mention).collect(),
+        };
+        let mut dropped: Vec<String> = Vec::new();
+        for edit in mention_edits(&case) {
+            let (next, removed) =
+                apply_mention_edit(&body, &edit).unwrap_or_else(|err| panic!("{}: {err}", case.id));
+            if matches!(edit, MentionEdit::ReplaceText { .. }) {
+                dropped.extend(removed.iter().map(|id| id.as_str().to_string()));
+            }
+            body = next;
+        }
+        dropped.retain(|id| !body.mentions.iter().any(|held| held.id.as_str() == id));
+        dropped.sort();
+        dropped.dedup();
+        assert_eq!(body.body, case.expected_body, "{} body", case.id);
+        assert_eq!(
+            ids(&body.mentions),
+            expected_ids(&case.expected_mentions),
+            "{} mentions",
+            case.id
+        );
+        if let Some(expected) = &case.expected_dropped {
+            assert_eq!(&dropped, expected, "{} dropped", case.id);
+        }
+    }
+}
+
+#[test]
+fn grapheme_boundaries_match_the_shared_corpus() {
+    let corpus: GraphemeFile =
+        serde_json::from_str(include_str!("fixtures/grapheme_boundaries.json"))
+            .expect("grapheme json");
+    let entity = EntityId::parse(ENTITY).expect("entity");
+    let id = MentionId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").expect("mention");
+    for case in corpus.cases {
+        let length = case.text.encode_utf16().count() as u32;
+        let mut found = vec![0];
+        for end in 1..=length {
+            let body = AnnotatedBody {
+                body: case.text.clone(),
+                mentions: vec![Mention {
+                    id: id.clone(),
+                    entity_id: entity.clone(),
+                    start_utf16: 0,
+                    end_utf16: end,
+                }],
+            };
+            match validate_mentions(&body) {
+                Ok(()) => found.push(end),
+                Err(Error::Validation {
+                    reason: ValidationReason::SplitGrapheme | ValidationReason::SplitScalar,
+                    ..
+                }) => {}
+                Err(other) => panic!("{}: unexpected {other}", case.id),
+            }
+        }
+        assert_eq!(found, case.boundaries, "{} boundaries", case.id);
+    }
 }

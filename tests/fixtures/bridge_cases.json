@@ -231,6 +231,906 @@
       "expected_edits": [[0, 3, "c"]],
       "expected_changed": true,
       "expected_revision": 1
+    },
+    {
+      "id": "R10_link_occurrence",
+      "base": "Elara crossed into Valdoria.",
+      "mentions": [],
+      "steps": [
+        {
+          "link": {
+            "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "entity_id": "11111111-1111-4111-8111-111111111111",
+            "start_utf16": 19,
+            "end_utf16": 27
+          }
+        }
+      ],
+      "expected_body": "Elara crossed into Valdoria.",
+      "expected_mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 19,
+          "end_utf16": 27
+        }
+      ],
+      "expected_ops": [
+        {
+          "link": {
+            "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "entity_id": "11111111-1111-4111-8111-111111111111",
+            "start_utf16": 19,
+            "end_utf16": 27
+          }
+        }
+      ],
+      "expected_dropped": [],
+      "expected_changed": true,
+      "expected_revision": 1
+    },
+    {
+      "id": "R11_unlink",
+      "base": "Elara crossed into Valdoria.",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 19,
+          "end_utf16": 27
+        }
+      ],
+      "steps": [
+        {
+          "unlink": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        }
+      ],
+      "expected_body": "Elara crossed into Valdoria.",
+      "expected_mentions": [],
+      "expected_ops": [
+        {
+          "unlink": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        }
+      ],
+      "expected_dropped": [],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R12_insert_before",
+      "base": "Elara crossed into Valdoria.",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 19,
+          "end_utf16": 27
+        }
+      ],
+      "steps": [
+        {
+          "text": [
+            [
+              0,
+              0,
+              "Old "
+            ]
+          ]
+        }
+      ],
+      "expected_body": "Old Elara crossed into Valdoria.",
+      "expected_mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 23,
+          "end_utf16": 31
+        }
+      ],
+      "expected_ops": [
+        {
+          "replace": [
+            0,
+            0,
+            "Old "
+          ]
+        }
+      ],
+      "expected_dropped": [],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R13_insert_at_start_shifts",
+      "base": "Elara crossed into Valdoria.",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 19,
+          "end_utf16": 27
+        }
+      ],
+      "steps": [
+        {
+          "text": [
+            [
+              19,
+              19,
+              "the "
+            ]
+          ]
+        }
+      ],
+      "expected_body": "Elara crossed into the Valdoria.",
+      "expected_mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 23,
+          "end_utf16": 31
+        }
+      ],
+      "expected_ops": [
+        {
+          "replace": [
+            19,
+            19,
+            "the "
+          ]
+        }
+      ],
+      "expected_dropped": [],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R14_insert_at_end_excluded",
+      "base": "Elara crossed into Valdoria.",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 19,
+          "end_utf16": 27
+        }
+      ],
+      "steps": [
+        {
+          "text": [
+            [
+              27,
+              27,
+              "n"
+            ]
+          ]
+        }
+      ],
+      "expected_body": "Elara crossed into Valdorian.",
+      "expected_mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 19,
+          "end_utf16": 27
+        }
+      ],
+      "expected_ops": [
+        {
+          "replace": [
+            27,
+            27,
+            "n"
+          ]
+        }
+      ],
+      "expected_dropped": [],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R15_insert_strictly_inside",
+      "base": "Elara crossed into Valdoria.",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 19,
+          "end_utf16": 27
+        }
+      ],
+      "steps": [
+        {
+          "text": [
+            [
+              22,
+              22,
+              "x"
+            ]
+          ]
+        }
+      ],
+      "expected_body": "Elara crossed into Valxdoria.",
+      "expected_mentions": [],
+      "expected_ops": [
+        {
+          "replace": [
+            22,
+            22,
+            "x"
+          ]
+        }
+      ],
+      "expected_dropped": [
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      ],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R16_delete_covering",
+      "base": "Elara crossed into Valdoria.",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 19,
+          "end_utf16": 27
+        }
+      ],
+      "steps": [
+        {
+          "text": [
+            [
+              18,
+              28,
+              ""
+            ]
+          ]
+        }
+      ],
+      "expected_body": "Elara crossed into",
+      "expected_mentions": [],
+      "expected_ops": [
+        {
+          "replace": [
+            18,
+            28,
+            ""
+          ]
+        }
+      ],
+      "expected_dropped": [
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      ],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R17_delete_across_start",
+      "base": "Elara crossed into Valdoria.",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 19,
+          "end_utf16": 27
+        }
+      ],
+      "steps": [
+        {
+          "text": [
+            [
+              14,
+              21,
+              ""
+            ]
+          ]
+        }
+      ],
+      "expected_body": "Elara crossed ldoria.",
+      "expected_mentions": [],
+      "expected_ops": [
+        {
+          "replace": [
+            14,
+            21,
+            ""
+          ]
+        }
+      ],
+      "expected_dropped": [
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      ],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R18_replace_ending_at_start",
+      "base": "Elara crossed into Valdoria.",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 19,
+          "end_utf16": 27
+        }
+      ],
+      "steps": [
+        {
+          "text": [
+            [
+              14,
+              19,
+              "to "
+            ]
+          ]
+        }
+      ],
+      "expected_body": "Elara crossed to Valdoria.",
+      "expected_mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 17,
+          "end_utf16": 25
+        }
+      ],
+      "expected_ops": [
+        {
+          "replace": [
+            14,
+            19,
+            "to "
+          ]
+        }
+      ],
+      "expected_dropped": [],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R19_combining_mark_at_end",
+      "base": "Elara crossed into Valdoria.",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 19,
+          "end_utf16": 27
+        }
+      ],
+      "steps": [
+        {
+          "text": [
+            [
+              27,
+              27,
+              "\u0301"
+            ]
+          ]
+        }
+      ],
+      "expected_body": "Elara crossed into Valdoria\u0301.",
+      "expected_mentions": [],
+      "expected_ops": [
+        {
+          "replace": [
+            27,
+            27,
+            "\u0301"
+          ]
+        }
+      ],
+      "expected_dropped": [
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      ],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R20_zwj_glued_at_end",
+      "base": "I saw \ud83d\udc69 today",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 6,
+          "end_utf16": 8
+        }
+      ],
+      "steps": [
+        {
+          "text": [
+            [
+              8,
+              8,
+              "\u200d\ud83d\udcbb"
+            ]
+          ]
+        }
+      ],
+      "expected_body": "I saw \ud83d\udc69\u200d\ud83d\udcbb today",
+      "expected_mentions": [],
+      "expected_ops": [
+        {
+          "replace": [
+            8,
+            8,
+            "\u200d\ud83d\udcbb"
+          ]
+        }
+      ],
+      "expected_dropped": [
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      ],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R21_zwj_sequence_multi_range",
+      "base": "I saw \ud83d\udc69\u200d\ud83d\udcbb today",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 6,
+          "end_utf16": 11
+        }
+      ],
+      "steps": [
+        {
+          "text": [
+            [
+              6,
+              6,
+              "X"
+            ],
+            [
+              11,
+              11,
+              "!"
+            ]
+          ]
+        }
+      ],
+      "expected_body": "I saw X\ud83d\udc69\u200d\ud83d\udcbb! today",
+      "expected_mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 7,
+          "end_utf16": 12
+        }
+      ],
+      "expected_ops": [
+        {
+          "replace": [
+            6,
+            6,
+            "X"
+          ]
+        },
+        {
+          "replace": [
+            12,
+            12,
+            "!"
+          ]
+        }
+      ],
+      "expected_dropped": [],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R22_regional_indicator_repair",
+      "base": "\ud83c\udde6\ud83c\uddf7\ud83c\uddfa\ud83c\uddfe",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 4,
+          "end_utf16": 8
+        }
+      ],
+      "steps": [
+        {
+          "text": [
+            [
+              0,
+              2,
+              ""
+            ]
+          ]
+        }
+      ],
+      "expected_body": "\ud83c\uddf7\ud83c\uddfa\ud83c\uddfe",
+      "expected_mentions": [],
+      "expected_ops": [
+        {
+          "replace": [
+            0,
+            2,
+            ""
+          ]
+        }
+      ],
+      "expected_dropped": [
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      ],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R23_indic_conjunct_join",
+      "base": "\u0915\u094d \u0937",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 3,
+          "end_utf16": 4
+        }
+      ],
+      "steps": [
+        {
+          "text": [
+            [
+              2,
+              3,
+              ""
+            ]
+          ]
+        }
+      ],
+      "expected_body": "\u0915\u094d\u0937",
+      "expected_mentions": [],
+      "expected_ops": [
+        {
+          "replace": [
+            2,
+            3,
+            ""
+          ]
+        }
+      ],
+      "expected_dropped": [
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      ],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R24_multi_range_two_links",
+      "base": "Elara met Valdoria",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 0,
+          "end_utf16": 5
+        },
+        {
+          "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "entity_id": "33333333-3333-4333-8333-333333333333",
+          "start_utf16": 10,
+          "end_utf16": 18
+        }
+      ],
+      "steps": [
+        {
+          "text": [
+            [
+              0,
+              0,
+              "Dear "
+            ],
+            [
+              7,
+              7,
+              "X"
+            ],
+            [
+              18,
+              18,
+              " today"
+            ]
+          ]
+        }
+      ],
+      "expected_body": "Dear Elara mXet Valdoria today",
+      "expected_mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 5,
+          "end_utf16": 10
+        },
+        {
+          "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "entity_id": "33333333-3333-4333-8333-333333333333",
+          "start_utf16": 16,
+          "end_utf16": 24
+        }
+      ],
+      "expected_ops": [
+        {
+          "replace": [
+            0,
+            0,
+            "Dear "
+          ]
+        },
+        {
+          "replace": [
+            12,
+            12,
+            "X"
+          ]
+        },
+        {
+          "replace": [
+            24,
+            24,
+            " today"
+          ]
+        }
+      ],
+      "expected_dropped": [],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R25_text_and_link_ordered",
+      "base": "Elara crossed into Valdoria.",
+      "mentions": [],
+      "steps": [
+        {
+          "text": [
+            [
+              0,
+              0,
+              "Old "
+            ]
+          ]
+        },
+        {
+          "link": {
+            "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "entity_id": "11111111-1111-4111-8111-111111111111",
+            "start_utf16": 23,
+            "end_utf16": 31
+          }
+        },
+        {
+          "text": [
+            [
+              0,
+              4,
+              ""
+            ]
+          ]
+        }
+      ],
+      "expected_body": "Elara crossed into Valdoria.",
+      "expected_mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 19,
+          "end_utf16": 27
+        }
+      ],
+      "expected_ops": [
+        {
+          "replace": [
+            0,
+            0,
+            "Old "
+          ]
+        },
+        {
+          "link": {
+            "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "entity_id": "11111111-1111-4111-8111-111111111111",
+            "start_utf16": 23,
+            "end_utf16": 31
+          }
+        },
+        {
+          "replace": [
+            0,
+            4,
+            ""
+          ]
+        }
+      ],
+      "expected_dropped": [],
+      "expected_changed": true,
+      "expected_revision": 1
+    },
+    {
+      "id": "R26_undo_restores_original_id",
+      "base": "Elara crossed into Valdoria.",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 19,
+          "end_utf16": 27
+        }
+      ],
+      "steps": [
+        {
+          "text": [
+            [
+              22,
+              23,
+              ""
+            ]
+          ]
+        },
+        {
+          "text": [
+            [
+              22,
+              22,
+              "d"
+            ]
+          ]
+        },
+        {
+          "link": {
+            "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "entity_id": "11111111-1111-4111-8111-111111111111",
+            "start_utf16": 19,
+            "end_utf16": 27
+          }
+        }
+      ],
+      "expected_body": "Elara crossed into Valdoria.",
+      "expected_mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 19,
+          "end_utf16": 27
+        }
+      ],
+      "expected_ops": [
+        {
+          "replace": [
+            22,
+            23,
+            ""
+          ]
+        },
+        {
+          "replace": [
+            22,
+            22,
+            "d"
+          ]
+        },
+        {
+          "link": {
+            "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "entity_id": "11111111-1111-4111-8111-111111111111",
+            "start_utf16": 19,
+            "end_utf16": 27
+          }
+        }
+      ],
+      "expected_dropped": [],
+      "expected_changed": false,
+      "expected_revision": 1
+    },
+    {
+      "id": "R27_unlink_then_link_new_id",
+      "base": "Elara crossed into Valdoria.",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 19,
+          "end_utf16": 27
+        }
+      ],
+      "steps": [
+        {
+          "unlink": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        },
+        {
+          "link": {
+            "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "entity_id": "33333333-3333-4333-8333-333333333333",
+            "start_utf16": 19,
+            "end_utf16": 27
+          }
+        }
+      ],
+      "expected_body": "Elara crossed into Valdoria.",
+      "expected_mentions": [
+        {
+          "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "entity_id": "33333333-3333-4333-8333-333333333333",
+          "start_utf16": 19,
+          "end_utf16": 27
+        }
+      ],
+      "expected_ops": [
+        {
+          "unlink": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        },
+        {
+          "link": {
+            "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "entity_id": "33333333-3333-4333-8333-333333333333",
+            "start_utf16": 19,
+            "end_utf16": 27
+          }
+        }
+      ],
+      "expected_dropped": [],
+      "expected_changed": true,
+      "expected_revision": 2
+    },
+    {
+      "id": "R28_adjacent_links_insert_between",
+      "base": "ElaraValdoria",
+      "mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 0,
+          "end_utf16": 5
+        },
+        {
+          "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "entity_id": "33333333-3333-4333-8333-333333333333",
+          "start_utf16": 5,
+          "end_utf16": 13
+        }
+      ],
+      "steps": [
+        {
+          "text": [
+            [
+              5,
+              5,
+              " "
+            ]
+          ]
+        }
+      ],
+      "expected_body": "Elara Valdoria",
+      "expected_mentions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "entity_id": "11111111-1111-4111-8111-111111111111",
+          "start_utf16": 0,
+          "end_utf16": 5
+        },
+        {
+          "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "entity_id": "33333333-3333-4333-8333-333333333333",
+          "start_utf16": 6,
+          "end_utf16": 14
+        }
+      ],
+      "expected_ops": [
+        {
+          "replace": [
+            5,
+            5,
+            " "
+          ]
+        }
+      ],
+      "expected_dropped": [],
+      "expected_changed": true,
+      "expected_revision": 2
     }
   ]
 }
