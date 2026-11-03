@@ -10,6 +10,7 @@ import {
   applyMentionOp,
   applyTransaction,
   canonicalMentions,
+  effectiveEffects,
   linkOp,
   MentionError,
   replaceOp,
@@ -179,13 +180,15 @@ export function recordEdit(
   // across saves, unlinks, and history. The reducer alone cannot see this
   // once the id has been dropped.
   let bound = state.bound;
-  for (const effect of effects) {
-    if (effect.kind !== "link") continue;
-    const entity = bound.get(effect.mention.id);
-    if (entity !== undefined && entity !== effect.mention.entityId) {
-      throw new MentionError("mention_id_conflict", effect.mention.id);
+  for (const effect of effectiveEffects(effects)) {
+    const linked = effect.kind === "link" ? [effect.mention] : effect.kind === "restore" ? effect.mentions : [];
+    for (const mention of linked) {
+      const entity = bound.get(mention.id);
+      if (entity !== undefined && entity !== mention.entityId) {
+        throw new MentionError("mention_id_conflict", mention.id);
+      }
+      if (entity === undefined) bound = new Map(bound).set(mention.id, mention.entityId);
     }
-    if (entity === undefined) bound = new Map(bound).set(effect.mention.id, effect.mention.entityId);
   }
   // Net mode composes before it translates, so a transaction that would be
   // rejected on its own could otherwise be cancelled by a later one and

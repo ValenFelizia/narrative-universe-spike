@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 
 import { ChangeSet } from "@codemirror/state";
 
-import type { Mention } from "../src/mentions.ts";
+import type { Mention, MentionOp } from "../src/mentions.ts";
 
 export type Spec = [number, number, string];
 export type FixtureMention = { id: string; entity_id: string; start_utf16: number; end_utf16: number };
@@ -40,4 +40,27 @@ export function steps(item: FixtureCase): FixtureStep[] {
 
 export function changesFor(doc: string, specs: Spec[]): ChangeSet {
   return ChangeSet.of(specs.map(([from, to, insert]) => ({ from, to, insert })), doc.length);
+}
+
+/// The operations a case expects on the wire, in order.
+export function expectedOps(item: FixtureCase): MentionOp[] {
+  if (!item.expected_ops) {
+    return (item.expected_edits ?? []).map(([startUtf16, endUtf16, insertedText]) => ({
+      kind: "replace",
+      startUtf16,
+      endUtf16,
+      insertedText,
+    }));
+  }
+  return item.expected_ops.map((op): MentionOp => {
+    if ("replace" in op) {
+      const [startUtf16, endUtf16, insertedText] = op.replace;
+      return { kind: "replace", startUtf16, endUtf16, insertedText };
+    }
+    if ("link" in op) {
+      const held = asMention(op.link);
+      return { kind: "link", mentionId: held.id, entityId: held.entityId, startUtf16: held.startUtf16, endUtf16: held.endUtf16 };
+    }
+    return { kind: "unlink", mentionId: op.unlink };
+  });
 }

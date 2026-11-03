@@ -272,7 +272,25 @@ export function linkOp(mention: Mention): MentionOp {
 /// transaction's text changes.
 export type MentionEffect =
   | { kind: "link"; mention: Mention }
-  | { kind: "unlink"; mentionId: string };
+  | { kind: "unlink"; mentionId: string }
+  /// Makes the mention set exactly this one. Each held mention that is not in
+  /// it with the same id, entity, and range is unlinked, then each missing one
+  /// is linked. History uses it to restore a whole state, and it expands into
+  /// the ordinary unlink and link operations the bridge replays.
+  | { kind: "restore"; mentions: readonly Mention[] };
+
+export type AppliedEffect = Exclude<MentionEffect, { kind: "restore" }>;
+
+/// A restore decides the whole set, so effects before the last one in a
+/// transaction are overwritten and never applied. This matters when undo
+/// covers a joined history group: the restores of later events arrive first,
+/// mapped back through earlier changes where a range can land inside a
+/// cluster, and the earliest event's exact restore comes last.
+export function effectiveEffects(effects: readonly MentionEffect[]): readonly MentionEffect[] {
+  let last = effects.length - 1;
+  while (last >= 0 && effects[last]!.kind !== "restore") last -= 1;
+  return last < 0 ? effects : effects.slice(last);
+}
 
 export type TransactionResult = {
   doc: string;
@@ -281,7 +299,7 @@ export type TransactionResult = {
   removed: string[];
   /// The effects that changed the mention set, in order. A link that is
   /// already held and an unlink of an absent id change nothing.
-  applied: MentionEffect[];
+  applied: AppliedEffect[];
 };
 
 /// Predicts one editor transaction the way the bridge will replay it: the
@@ -312,9 +330,22 @@ export function applyTransaction(
       body = { body: after, mentions };
     }
   }
-  const applied: MentionEffect[] = [];
-  for (const effect of effects) {
-    if (effect.kind === "link") {
+  const applied: AppliedEffect[] = [];
+  const holds = (set: readonly Mention[], mention: Mention) => set.some((other) => sameMentions([other], [mention]));
+  for (const effect of effectiveEffects(effects)) {
+    if (effect.kind === "restore") {
+      const target = canonicalMentions(effect.mentions);
+      for (const held of canonicalMentions(body.mentions)) {
+        if (holds(target, held)) continue;
+        body = applyMentionOp(body, { kind: "unlink", mentionId: held.id });
+        applied.push({ kind: "unlink", mentionId: held.id });
+      }
+      for (const mention of target) {
+        if (holds(body.mentions, mention)) continue;
+        body = applyMentionOp(body, linkOp(mention));
+        applied.push({ kind: "link", mention });
+      }
+    } else if (effect.kind === "link") {
       const next = applyMentionOp(body, linkOp(effect.mention));
       if (!sameMentions(next.mentions, body.mentions)) applied.push(effect);
       body = next;

@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   applyMentionOp,
+  applyTransaction,
   MentionError,
   validateMentions,
   type AnnotatedBody,
@@ -19,33 +20,11 @@ import {
   recordUnlink,
   type SaveState,
 } from "../src/save-session.ts";
-import { asMention, changesFor, fixture, read, steps, type FixtureCase, type FixtureOp } from "./fixture.ts";
+import { asMention, changesFor, expectedOps, fixture, read, steps, type FixtureCase } from "./fixture.ts";
 
 const corpus = read("grapheme_boundaries.json") as {
   cases: { id: string; text: string; boundaries: number[] }[];
 };
-
-function expectedOps(item: FixtureCase): MentionOp[] {
-  if (!item.expected_ops) {
-    return (item.expected_edits ?? []).map(([startUtf16, endUtf16, insertedText]) => ({
-      kind: "replace",
-      startUtf16,
-      endUtf16,
-      insertedText,
-    }));
-  }
-  return item.expected_ops.map((op): MentionOp => {
-    if ("replace" in op) {
-      const [startUtf16, endUtf16, insertedText] = op.replace;
-      return { kind: "replace", startUtf16, endUtf16, insertedText };
-    }
-    if ("link" in op) {
-      const held = asMention(op.link);
-      return { kind: "link", mentionId: held.id, entityId: held.entityId, startUtf16: held.startUtf16, endUtf16: held.endUtf16 };
-    }
-    return { kind: "unlink", mentionId: op.unlink };
-  });
-}
 
 test("grapheme cluster boundaries match the shared corpus", () => {
   for (const item of corpus.cases) {
@@ -277,4 +256,31 @@ test("invalid links are refused without touching the draft", () => {
   }
   assert.equal(recordUnlink(state, "cccccccc-cccc-4ccc-8ccc-cccccccccccc"), state);
   assert.equal(recordLink(state, VALDORIA), state);
+});
+
+test("a restore makes the set exact through unlink and link, and the last restore decides", () => {
+  const entity = "11111111-1111-4111-8111-111111111111";
+  const id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const other = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const doc = "Elara crossed the river.";
+  const renamed: Mention = { id, entityId: entity, startUtf16: 0, endUtf16: 8 };
+  const original: Mention = { id, entityId: entity, startUtf16: 0, endUtf16: 5 };
+  const river: Mention = { id: other, entityId: entity, startUtf16: 18, endUtf16: 23 };
+  const result = applyTransaction("Valdoria crossed the river.", [renamed], changesFor("Valdoria crossed the river.", [[0, 8, "Elara"]]), [
+    { kind: "restore", mentions: [{ ...original, endUtf16: 3 }] },
+    { kind: "restore", mentions: [original, river] },
+  ]);
+  assert.equal(result.doc, doc);
+  assert.deepEqual(result.mentions, [original, river]);
+  assert.deepEqual(result.removed, [id]);
+  assert.deepEqual(result.applied, [
+    { kind: "link", mention: original },
+    { kind: "link", mention: river },
+  ]);
+
+  const moved = applyTransaction(doc, [original], changesFor(doc, []), [{ kind: "restore", mentions: [{ ...original, startUtf16: 6, endUtf16: 13 }] }]);
+  assert.deepEqual(moved.applied, [
+    { kind: "unlink", mentionId: id },
+    { kind: "link", mention: { ...original, startUtf16: 6, endUtf16: 13 } },
+  ]);
 });

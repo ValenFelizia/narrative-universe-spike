@@ -1,19 +1,21 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { EditorState, Transaction, type TransactionSpec } from "@codemirror/state";
+import { EditorState, Transaction, type StateEffect, type TransactionSpec } from "@codemirror/state";
 import { history, redo, redoDepth, undo, undoDepth } from "@codemirror/commands";
 
 import {
+  linkMention,
   linkSpec,
   mentionField,
   mentionHistory,
   recordTransaction,
+  unlinkMention,
   unlinkSpec,
 } from "../src/mention-history.ts";
-import { canonicalMentions, type Mention } from "../src/mentions.ts";
+import { canonicalMentions, MentionError, type Mention } from "../src/mentions.ts";
 import { beginSave, openSession, pendingDrops, type SaveState } from "../src/save-session.ts";
-import { asMention, changesFor, fixture, steps } from "./fixture.ts";
+import { asMention, changesFor, expectedOps, fixture, steps } from "./fixture.ts";
 
 const PLACE = "11111111-1111-4111-8111-111111111111";
 const HOUSE = "33333333-3333-4333-8333-333333333333";
@@ -136,6 +138,78 @@ test("a joined typing group restores the link at its original range", () => {
   assert.deepEqual(editor.mentions(), [VALDORIA]);
 });
 
+const RIVER = "Elara crossed the river.";
+const ELARA: Mention = { id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", entityId: PLACE, startUtf16: 0, endUtf16: 5 };
+const RENAMED: Mention = { ...ELARA, endUtf16: 8 };
+
+function caseNamed(id: string) {
+  const item = fixture.cases.find((held) => held.id === id);
+  assert.ok(item, id);
+  return item;
+}
+
+test("undo of one transaction that replaces linked text and relinks the same id restores the original link", () => {
+  const editor = new Editor(RIVER, [ELARA]);
+  editor.dispatch({ changes: { from: 0, to: 5, insert: "Valdoria" }, effects: linkMention.of(RENAMED) });
+  assert.equal(editor.text(), "Valdoria crossed the river.");
+  assert.deepEqual(editor.mentions(), [RENAMED]);
+  assert.deepEqual(pendingDrops(editor.session), []);
+
+  assert.equal(editor.undo(), true);
+  assert.equal(editor.text(), RIVER);
+  assert.deepEqual(editor.mentions(), [ELARA]);
+  assert.deepEqual(pendingDrops(editor.session), []);
+  const undone = beginSave(editor.session);
+  assert.equal(undone.ok, true);
+  if (!undone.ok) return;
+  assert.deepEqual(undone.request.mentions, [ELARA]);
+  assert.equal(undone.request.doc, RIVER);
+  // The same operations the shared case replays through the Rust reducer,
+  // the real store with reopen, and the bridge agreement check.
+  assert.deepEqual(undone.request.ops, expectedOps(caseNamed("R29_combined_relink_then_undo")));
+
+  assert.equal(editor.redo(), true);
+  assert.equal(editor.text(), "Valdoria crossed the river.");
+  assert.deepEqual(editor.mentions(), [RENAMED]);
+  const redone = beginSave(editor.session);
+  assert.equal(redone.ok, true);
+  if (!redone.ok) return;
+  assert.deepEqual(redone.request.mentions, [RENAMED]);
+  assert.deepEqual(redone.request.ops, expectedOps(caseNamed("R30_combined_relink_undo_then_redo")));
+
+  assert.equal(editor.undo(), true);
+  assert.deepEqual(editor.mentions(), [ELARA]);
+  assert.equal(editor.undo(), false);
+});
+
+test("a combined relink joined with typing undoes to the original link in one step", () => {
+  const editor = new Editor(RIVER, [ELARA]);
+  editor.dispatch({ changes: { from: 5, insert: " Vane" } });
+  editor.dispatch({ changes: { from: 0, to: 10, insert: "Valdoria" }, effects: linkMention.of(RENAMED) }, true);
+  editor.dispatch({ changes: { from: 8, insert: "n" } }, true);
+  assert.equal(editor.text(), "Valdorian crossed the river.");
+  assert.deepEqual(editor.mentions(), [RENAMED]);
+  assert.equal(undoDepth(editor.state), 1);
+
+  editor.undo();
+  assert.equal(editor.text(), RIVER);
+  assert.deepEqual(editor.mentions(), [ELARA]);
+  editor.redo();
+  assert.equal(editor.text(), "Valdorian crossed the river.");
+  assert.deepEqual(editor.mentions(), [RENAMED]);
+});
+
+test("a combined edit that unlinks one mention and keeps another undoes both", () => {
+  const editor = new Editor(SCENE, [{ ...ELARA }, VALDORIA]);
+  editor.dispatch({ changes: { from: 5, insert: " Vane" }, effects: unlinkMention.of(ELARA.id) });
+  assert.deepEqual(editor.mentions(), [{ ...VALDORIA, startUtf16: 24, endUtf16: 32 }]);
+  editor.undo();
+  assert.equal(editor.text(), SCENE);
+  assert.deepEqual(editor.mentions(), canonicalMentions([ELARA, VALDORIA]));
+  editor.redo();
+  assert.deepEqual(editor.mentions(), [{ ...VALDORIA, startUtf16: 24, endUtf16: 32 }]);
+});
+
 test("plain text undo keeps working without mentions", () => {
   const editor = new Editor("abc", []);
   editor.dispatch({ changes: { from: 3, insert: "d" } });
@@ -212,9 +286,11 @@ function clusterStarts(text: string): number[] {
   return starts;
 }
 
-test("random Unicode editing with joined groups, links, undo, and redo keeps identity", () => {
+test("random Unicode editing with joined groups, combined text and link transactions, undo, and redo keeps identity", () => {
   const entities = [PLACE, HOUSE];
   let restored = 0;
+  let combined = 0;
+  let relinked = 0;
   for (let seed = 1; seed <= 300; seed += 1) {
     const next = random(seed);
     const pick = <T>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!;
@@ -225,45 +301,85 @@ test("random Unicode editing with joined groups, links, undo, and redo keeps ide
     ];
     const editor = new Editor(base, initial);
     const entityOf = new Map(initial.map((held) => [held.id, held.entityId]));
+    const snapshot = () => JSON.stringify([editor.text(), editor.mentions()]);
+    // Without changes outside history, every undo and redo lands on a state
+    // the editor has already been in, mentions included.
+    const visited = new Set([snapshot()]);
     let fresh = 2;
+    const freshId = () => {
+      fresh += 1;
+      return `00000000-0000-4000-8000-${String(fresh).padStart(12, "0")}`;
+    };
+    // The desktop drops a transaction the session refuses.
+    const attempt = (spec: TransactionSpec, join: boolean): boolean => {
+      try {
+        editor.dispatch(spec, join);
+        return true;
+      } catch (error) {
+        if (error instanceof MentionError) return false;
+        throw error;
+      }
+    };
     for (let step = 0; step < 40; step += 1) {
       const roll = next();
       const text = editor.text();
       const scalars = scalarStarts(text);
-      if (roll < 0.35) {
+      if (roll < 0.3) {
         editor.dispatch({ changes: { from: pick(scalars), insert: pick(PIECES) } }, next() < 0.6);
-      } else if (roll < 0.55 && text.length > 0) {
+      } else if (roll < 0.45 && text.length > 0) {
         const a = pick(scalars), b = pick(scalars);
         editor.dispatch({ changes: { from: Math.min(a, b), to: Math.max(a, b), insert: next() < 0.3 ? pick(PIECES) : "" } }, next() < 0.6);
-      } else if (roll < 0.62) {
+      } else if (roll < 0.52) {
         const a = pick(scalars), b = pick(scalars);
         if (a !== b) editor.dispatch({ changes: [{ from: Math.min(a, b), insert: pick(PIECES) }, { from: Math.max(a, b), insert: pick(PIECES) }] }, next() < 0.5);
-      } else if (roll < 0.72) {
+      } else if (roll < 0.6) {
         const clusters = clusterStarts(text);
         const a = pick(clusters), b = pick(clusters);
         const start = Math.min(a, b), end = Math.max(a, b);
         const free = start < end && !editor.mentions().some((held) => start < held.endUtf16 && held.startUtf16 < end);
         if (free) {
-          fresh += 1;
-          const id = `00000000-0000-4000-8000-${String(fresh).padStart(12, "0")}`;
+          const id = freshId();
           const entityId = pick(entities);
           entityOf.set(id, entityId);
           editor.dispatch(linkSpec({ id, entityId, startUtf16: start, endUtf16: end }));
         }
-      } else if (roll < 0.77 && editor.mentions().length > 0) {
+      } else if (roll < 0.66 && editor.mentions().length > 0) {
         editor.dispatch(unlinkSpec(pick(editor.mentions()).id));
+      } else if (roll < 0.76) {
+        // One transaction replaces text and links the inserted range, often
+        // reusing the id of a link that the same replacement drops, sometimes
+        // also unlinking another held mention.
+        const clusters = clusterStarts(text);
+        const a = pick(clusters), b = pick(clusters);
+        const from = Math.min(a, b), to = Math.max(a, b);
+        const insert = pick(PIECES);
+        const covered = editor.mentions().filter((held) => from < held.endUtf16 && held.startUtf16 < to);
+        const reuse = covered.length > 0 && next() < 0.7 ? pick(covered) : undefined;
+        const id = reuse?.id ?? freshId();
+        const entityId = reuse?.entityId ?? pick(entities);
+        const others = editor.mentions().filter((held) => held.id !== id);
+        const effects: StateEffect<unknown>[] = [linkMention.of({ id, entityId, startUtf16: from, endUtf16: from + insert.length })];
+        if (others.length > 0 && next() < 0.3) effects.push(unlinkMention.of(pick(others).id));
+        if (attempt({ changes: { from, to, insert }, effects }, next() < 0.5)) {
+          entityOf.set(id, entityId);
+          combined += 1;
+          if (reuse) relinked += 1;
+        }
       } else if (roll < 0.9) {
         const before = new Set(editor.mentions().map((held) => held.id));
         editor.undo();
         restored += editor.mentions().filter((held) => !before.has(held.id)).length;
+        assert.ok(visited.has(snapshot()), `seed ${seed} step ${step} undo reached an unseen state`);
       } else {
         editor.redo();
+        assert.ok(visited.has(snapshot()), `seed ${seed} step ${step} redo reached an unseen state`);
       }
+      visited.add(snapshot());
       for (const held of editor.mentions()) assert.equal(held.entityId, entityOf.get(held.id), `seed ${seed} entity`);
     }
     const reached = { text: editor.text(), mentions: editor.mentions() };
     const depth = redoDepth(editor.state);
-    while (editor.undo());
+    while (editor.undo()) assert.ok(visited.has(snapshot()), `seed ${seed} full undo reached an unseen state`);
     assert.equal(editor.text(), base, `seed ${seed} undone text`);
     assert.deepEqual(editor.mentions(), canonicalMentions(initial), `seed ${seed} undone mentions`);
     while (editor.redo());
@@ -275,4 +391,6 @@ test("random Unicode editing with joined groups, links, undo, and redo keeps ide
     if (began.ok) assert.deepEqual(began.request.mentions, editor.mentions());
   }
   assert.ok(restored > 50, `restorations exercised: ${restored}`);
+  assert.ok(combined > 300, `combined transactions exercised: ${combined}`);
+  assert.ok(relinked > 100, `same-id relinks exercised: ${relinked}`);
 });

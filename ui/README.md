@@ -69,10 +69,14 @@ It exits non-zero on any disagreement.
 - A mention id stays bound to its first entity for the whole open document,
   across saves, unlinks, and history. A link that rebinds it is refused.
 - `src/mention-history.ts` puts the mention set in a CodeMirror state field
-  and uses `invertedEffects`: undo of a link unlinks, undo of an unlink
-  relinks, and undo of text that removed a link restores the same id, entity,
-  and range. The desktop must record each transaction into the session first
-  and drop any transaction the session refuses.
+  and uses `invertedEffects`. The inverse of every transaction on a linked
+  page is a `restore` of its whole starting mention set, applied after the
+  inverse text change. Undo therefore returns each id with its entity and
+  range, even when one transaction replaced linked text and relinked the
+  same id elsewhere. A restore expands into ordinary unlink and link
+  operations, and the last restore in a transaction decides the set. The
+  desktop must record each transaction into the session first and drop any
+  transaction the session refuses.
 - The desktop still opens linked pages read-only until PA-I4/C1-B; the
   contract above is not yet used by visual code.
 - Every recorded transaction is checked against the live draft, so net mode
