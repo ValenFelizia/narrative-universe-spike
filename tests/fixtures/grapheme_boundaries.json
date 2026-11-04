@@ -1,0 +1,27 @@
+{
+  "unicode": "17.0.0",
+  "cases": [
+    { "id": "latin", "text": "Valdoria", "boundaries": [0, 1, 2, 3, 4, 5, 6, 7, 8] },
+    { "id": "line_feed", "text": "a\nb", "boundaries": [0, 1, 2, 3] },
+    { "id": "combining_acute", "text": "éx", "boundaries": [0, 2, 3] },
+    { "id": "stacked_combining", "text": "ạ́b", "boundaries": [0, 3, 4] },
+    { "id": "combining_after_space", "text": " ́", "boundaries": [0, 2] },
+    { "id": "astral_letter", "text": "A📚B", "boundaries": [0, 1, 3, 4] },
+    { "id": "zwj_sequence", "text": "👩‍💻x", "boundaries": [0, 5, 6] },
+    { "id": "zwj_family", "text": "👨‍👩‍👧", "boundaries": [0, 8] },
+    { "id": "zwj_between_letters", "text": "a‍b", "boundaries": [0, 2, 3] },
+    { "id": "emoji_modifier", "text": "👋🏽a", "boundaries": [0, 4, 5] },
+    { "id": "regional_pair_pair", "text": "🇦🇷🇺🇾", "boundaries": [0, 4, 8] },
+    { "id": "regional_odd", "text": "🇷🇺🇾", "boundaries": [0, 4, 6] },
+    { "id": "keycap", "text": "1️⃣", "boundaries": [0, 3] },
+    { "id": "variation_selector", "text": "☺️.", "boundaries": [0, 2, 3] },
+    { "id": "tag_flag", "text": "🏴󠁧󠁢󠁳󠁣󠁴󠁿", "boundaries": [0, 14] },
+    { "id": "devanagari_conjunct", "text": "क्ष", "boundaries": [0, 3] },
+    { "id": "devanagari_split_conjunct", "text": "क् ष", "boundaries": [0, 2, 3, 4] },
+    { "id": "devanagari_vowel_sign", "text": "कि", "boundaries": [0, 2] },
+    { "id": "bengali_conjunct_zwj", "text": "ক্‍ষ", "boundaries": [0, 4] },
+    { "id": "hangul_jamo", "text": "한", "boundaries": [0, 3] },
+    { "id": "thai_spacing_mark", "text": "กำ", "boundaries": [0, 2] },
+    { "id": "arabic_prepend", "text": "؀ب", "boundaries": [0, 2] }
+  ]
+}

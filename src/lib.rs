@@ -20,8 +20,8 @@ pub use model::{
     Value, ValueClass,
 };
 pub use store::{
-    Counts, ImportOutcome, MentionOccurrence, PageDocument, PageEdit, PageSnapshot, PageSummary,
-    PossibleIncompatibility, Snapshot, Store,
+    Counts, EntitySummary, ImportOutcome, MentionOccurrence, PageDocument, PageEdit, PageSnapshot,
+    PageSummary, PossibleIncompatibility, Snapshot, Store,
 };
 
 pub const SCHEMA_VERSION: i32 = 2;

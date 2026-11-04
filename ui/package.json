@@ -6,7 +6,7 @@
   "description": "Headless CodeMirror 6 to Rust edit adapter and save-session contract for PA-I3 A1.",
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "node --test test/adapter.test.ts test/save-session.test.ts test/desktop.test.ts",
+    "test": "node --test test/adapter.test.ts test/save-session.test.ts test/mentions.test.ts test/mention-history.test.ts test/desktop.test.ts",
     "desktop:check": "tsc --noEmit -p desktop/tsconfig.json",
     "desktop:frontend:dev": "vite --config desktop/vite.config.ts",
     "desktop:frontend:build": "vite build --config desktop/vite.config.ts",

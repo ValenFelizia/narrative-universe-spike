@@ -13,10 +13,10 @@ function setup(invoke) {
   dom.window.HTMLElement.prototype.scrollIntoView = () => {};
   dom.window.HTMLDialogElement.prototype.showModal = function() { this.open = true; };
   dom.window.HTMLDialogElement.prototype.close = function() { this.open = false; };
-  const controller=initDesktop(async (cmd,args) => { if(cmd === "open_universe") { await invoke(cmd,args); return {token: "test-token", pages: await invoke("page_index")}; } const result = await invoke(cmd,args); if (cmd === "save_page" && result && result.title === undefined) return {...result, title: args.request.title ?? "Page"}; return result; }), doc=dom.window.document;
+  const controller=initDesktop(async (cmd,args) => { if(cmd === "open_universe") { await invoke(cmd,args); return {token: "test-token", pages: await invoke("page_index")}; } const result = await invoke(cmd,args); if (cmd === "save_page" && result) return {mentions: [], ...result, title: result.title ?? args.request.title ?? "Page"}; return result; }), doc=dom.window.document;
   return {doc, controller, open(path){doc.querySelector('#database-path').value=path;doc.querySelector('#open-form').dispatchEvent(new dom.window.Event('submit',{cancelable:true}));}, view(){const node=doc.querySelector('.cm-editor'); return node ? EditorView.findFromDOM(node) : null;}, close(){dom.window.close();}};
 }
-const page = {id:'a',title:'Page',body:'original',revision:0,mentionCount:0};
+const page = {id:'a',title:'Page',body:'original',revision:0,mentions:[]};
 
 test('discard blocks button and keyboard saves while page or universe transition is pending', async()=>{
   for (const target of ['page','universe']) {
@@ -83,7 +83,7 @@ test('save acknowledgement keeps later edits dirty and close guard protects them
 });
 
 test('linked and unsupported pages are read-only', async()=>{
-  const ui=setup(async cmd=>cmd==='page_index'?[{id:'a',title:'Page'}]:cmd==='read_page'?{...page,mentionCount:1}:undefined);
+  const ui=setup(async cmd=>cmd==='page_index'?[{id:'a',title:'Page'}]:cmd==='read_page'?{...page,mentions:[{id:'m',entityId:'e',startUtf16:0,endUtf16:1}]}:undefined);
   ui.open('a'); await tick(); assert.equal(ui.view(),null); assert.match(ui.doc.querySelector('#save-status').textContent,/links.*read-only/i); ui.close();
 });
 
@@ -208,7 +208,7 @@ test('lost creation response preserves draft and verification never retries crea
 test('read-only page remains selected after creation verification refreshes the list', async()=>{
   const ui=setup(async cmd=>{
     if(cmd==='page_index') return [{id:'a',title:'Page'}];
-    if(cmd==='read_page') return {...page,mentionCount:1};
+    if(cmd==='read_page') return {...page,mentions:[{id:'m',entityId:'e',startUtf16:0,endUtf16:1}]};
     if(cmd==='create_page') throw {};
   });
   ui.open('a'); await tick();
@@ -342,7 +342,7 @@ test('narrow drawer restores document title focus without changing its selection
 });
 
 test('empty titles keep a label after save, navigation, and reopen without renaming', async()=>{
-  const store=new Map([['a',{id:'a',title:'Page',body:'alpha',revision:0,mentionCount:0}],['b',{id:'b',title:'Other',body:'beta',revision:0,mentionCount:0}]]);
+  const store=new Map([['a',{id:'a',title:'Page',body:'alpha',revision:0,mentions:[]}],['b',{id:'b',title:'Other',body:'beta',revision:0,mentions:[]}]]);
   const ui=setup(async(cmd,args)=>{
     if(cmd==='page_index')return [...store.values()].map(({id,title})=>({id,title}));
     if(cmd==='read_page')return {...store.get(args.pageId)};
@@ -384,5 +384,36 @@ test('empty titles keep a label after save, navigation, and reopen without renam
   link('b').click();await tick();
   assert.equal(link('b').getAttribute('aria-current'),'true');
   assert.equal(ui.view().state.doc.toString(),'beta');
+  ui.close();
+});
+
+test('save sends tagged ops with the full predicted aggregate and refuses a mention it did not send', async()=>{
+  let sent;
+  const ui=setup(async(cmd,args)=>{
+    if(cmd==='page_index') return [{id:'a',title:'Page'}];
+    if(cmd==='read_page') return page;
+    if(cmd==='save_page'){sent=args.request;return {pageId:'a',sessionId:sent.sessionId,requestId:sent.requestId,body:'original draft',title:'Page',revision:1,mentions:[{id:'m',entityId:'e',startUtf16:0,endUtf16:8}]};}
+  });
+  ui.open('a');await tick();ui.view().dispatch({changes:{from:8,insert:' draft'}});
+  ui.doc.querySelector('#save').click();await tick();
+  assert.deepEqual(sent.edits,[{kind:'replace',startUtf16:8,endUtf16:8,insertedText:' draft'}]);
+  assert.equal(sent.expectedBody,'original draft');
+  assert.deepEqual(sent.expectedMentions,[]);
+  assert.doesNotMatch(ui.doc.querySelector('#save-status').textContent,/^Saved$/);
+  assert.equal(ui.doc.querySelector('#save').disabled,true);
+  assert.equal(ui.view().state.doc.toString(),'original draft');
+  ui.close();
+});
+
+test('a mention mismatch refusal keeps the draft and is never reported as saved', async()=>{
+  const ui=setup(async(cmd,args)=>{
+    if(cmd==='page_index') return [{id:'a',title:'Page'}];
+    if(cmd==='read_page') return page;
+    if(cmd==='save_page') throw {kind:'mention_mismatch',message:['m'],pageId:'a',sessionId:args.request.sessionId,requestId:args.request.requestId};
+  });
+  ui.open('a');await tick();ui.view().dispatch({changes:{from:0,insert:'An '}});
+  ui.doc.querySelector('#save').click();await tick();
+  assert.match(ui.doc.querySelector('#save-status').textContent,/draft is preserved|could not be confirmed/i);
+  assert.equal(ui.view().state.doc.toString(),'An original');
   ui.close();
 });
