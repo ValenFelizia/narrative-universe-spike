@@ -420,6 +420,7 @@ test('a mention mismatch refusal keeps the draft and is never reported as saved'
 import { undo, redo, isolateHistory } from "@codemirror/commands";
 import { mentionField } from "../src/mention-history.ts";
 import { prepareEntityIndex } from "../desktop/connect.ts";
+import { EditorSelection, EditorState, StateEffect } from "@codemirror/state";
 const entities = [
   {id:'place-0001',label:'Valdoria',typeLabel:'Place',primaryPageTitle:'Atlas'},
   {id:'house-0002',label:'Valdoria',typeLabel:'House',primaryPageTitle:null},
@@ -487,6 +488,43 @@ test('typing and arrow navigation reuse prepared captions without rereading the 
   choose(ui,'house-0002');assert.equal(ui.view().state.field(mentionField)[0].entityId,'house-0002');ui.close();
 });
 
+test('exact saved-link selection and caret share inspection and retain captured selection', async()=>{
+  const held={id:'saved-occurrence',entityId:'house-0002',startUtf16:0,endUtf16:8};
+  const ui=connectSetup(undefined,{...page,body:'Valdoria at dawn.',mentions:[held]});ui.open('a');await tick();const view=ui.view();
+  for(const [selection,shortcut] of [[{anchor:0,head:8},true],[{anchor:8,head:0},false],[{anchor:3},true]]) {
+    view.dispatch({selection});const captured=view.state.selection;
+    const action=ui.doc.querySelector('.link-entity-action');assert.equal(action.hidden,false);assert.equal(action.textContent,'Inspect link');
+    if(shortcut) key(ui,view.contentDOM,'k',true); else action.click();await tick();
+    const popup=ui.doc.querySelector('.entity-picker');assert.equal(popup.hidden,false);assert.equal(popup.getAttribute('aria-label'),'Inspect link');
+    assert.match(popup.textContent,/Valdoria.*House.*No primary page.*Saved link/);assert.equal(popup.querySelector('[role="combobox"]'),null);
+    assert.ok([...popup.querySelectorAll('button')].some(b=>b.textContent==='Unlink'));assert.deepEqual(view.state.field(mentionField),[held]);assert.equal(ui.doc.querySelector('#save-status').textContent,'Saved');
+    key(ui,popup,'Escape');assert.equal(view.hasFocus,true);assert.ok(view.state.selection.eq(captured));
+  }
+  view.dispatch({selection:{anchor:0,head:8}});ui.doc.querySelector('.link-entity-action').click();await tick();
+  view.dispatch({selection:{anchor:10}});assert.equal(ui.doc.querySelector('.entity-picker').hidden,true);assert.deepEqual(view.state.field(mentionField),[held]);ui.close();
+});
+
+test('partial, containing and multiple selections cannot inspect or alter an existing mention', async()=>{
+  const held={id:'saved-occurrence',entityId:'house-0002',startUtf16:2,endUtf16:10};
+  const ui=connectSetup(undefined,{...page,body:'A Valdoria at dawn.',mentions:[held]});ui.open('a');await tick();const view=ui.view();
+  for(const selection of [{anchor:2,head:9},{anchor:3,head:10},{anchor:0,head:11}]) {
+    view.dispatch({selection});assert.equal(ui.doc.querySelector('.link-entity-action').hidden,true);
+    key(ui,view.contentDOM,'k',true);await tick();assert.equal(ui.doc.querySelector('.entity-picker').hidden,true);assert.match(ui.doc.querySelector('#save-status').textContent,/Unlink the existing occurrence first/);assert.deepEqual(view.state.field(mentionField),[held]);
+  }
+  view.dispatch({effects:StateEffect.appendConfig.of(EditorState.allowMultipleSelections.of(true))});
+  view.dispatch({selection:EditorSelection.create([EditorSelection.range(2,10),EditorSelection.cursor(15)])});assert.equal(view.state.selection.ranges.length,2);
+  key(ui,view.contentDOM,'k',true);await tick();assert.equal(ui.doc.querySelector('.entity-picker').hidden,true);assert.equal(ui.doc.querySelector('.link-entity-action').hidden,true);assert.match(ui.doc.querySelector('#save-status').textContent,/Select one phrase/);assert.deepEqual(view.state.field(mentionField),[held]);ui.close();
+});
+
+test('exact draft-link inspection creates no extra history and captured drift cancels safely', async()=>{
+  const ui=connectSetup();ui.open('a');await tick();await picker(ui);choose(ui);const view=ui.view(),held={...view.state.field(mentionField)[0]};
+  view.dispatch({selection:{anchor:0,head:8}});key(ui,view.contentDOM,'k',true);await tick();assert.match(ui.doc.querySelector('.entity-picker').textContent,/Unsaved link/);
+  const unlink=[...ui.doc.querySelectorAll('.entity-picker button')].find(b=>b.textContent==='Unlink');view.dispatch({selection:{anchor:10}});unlink.click();assert.deepEqual(view.state.field(mentionField),[held]);
+  undo(view);assert.deepEqual(view.state.field(mentionField),[]);redo(view);assert.deepEqual(view.state.field(mentionField),[held]);
+  view.dispatch({selection:{anchor:0,head:8}});ui.doc.querySelector('.link-entity-action').click();await tick();
+  [...ui.doc.querySelectorAll('.entity-picker button')].find(b=>b.textContent==='Unlink').click();assert.deepEqual(view.state.field(mentionField),[]);undo(view);assert.deepEqual(view.state.field(mentionField),[held]);ui.close();
+});
+
 test('Escape restores selection and focus; changed selection and document cancel picker', async()=>{
   const ui=connectSetup();ui.open('a');await tick();const view=ui.view();let search=await picker(ui);
   key(ui,search,'Escape');assert.equal(view.hasFocus,true);assert.equal(view.state.selection.main.to,8);
@@ -540,7 +578,13 @@ test('link-only close guard keeps draft; Save confirms full aggregate and update
 
 test('stale, busy, mismatch and unknown save outcomes retain mentions and refuse new links', async()=>{
   for(const kind of ['stale','busy','mention_mismatch','unknown']) {
-    const ui=connectSetup(async(cmd,args)=>{if(cmd==='save_page')throw kind==='unknown'?{}:{...args.request,kind};});
+    let reads=0;
+    const ui=setup(async(cmd,args)=>{
+      if(cmd==='page_index')return [{id:'a',title:'Page'}];
+      if(cmd==='read_page')return {...page,body:'Valdoria at dawn.',revision:reads++===0?0:1};
+      if(cmd==='entity_index')return entities;
+      if(cmd==='save_page')throw kind==='unknown'?{}:{...args.request,kind};
+    });
     ui.open('a');await tick();await picker(ui);choose(ui);const view=ui.view(),original={...view.state.field(mentionField)[0]};ui.doc.querySelector('#save').click();await tick();
     assert.deepEqual(view.state.field(mentionField),[original]);assert.doesNotMatch(ui.doc.querySelector('#save-status').textContent,/^Saved$/);
     view.dispatch({selection:{anchor:0,head:8}});key(ui,view.contentDOM,'k',true);await tick();assert.equal(ui.doc.querySelector('.entity-picker').hidden,true);ui.close();

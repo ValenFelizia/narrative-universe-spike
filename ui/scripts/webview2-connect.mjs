@@ -7,6 +7,7 @@ const ui = fileURLToPath(new URL('..', import.meta.url));
 const evidence = fileURLToPath(new URL('../../docs/evidence/connect-native/', import.meta.url));
 mkdirSync(evidence, {recursive:true});
 const database = join(mkdtempSync(join(tmpdir(), 'connect-native-')), 'synthetic.sqlite');
+const webviewProfile = mkdtempSync(join(tmpdir(), 'connect-webview-'));
 execFileSync(fileURLToPath(new URL('../../target/debug/spike.exe', import.meta.url)), ['import-new', database, fileURLToPath(new URL('../../tests/fixtures/connect-smoke.json', import.meta.url))]);
 const vite = spawn(process.execPath, ['node_modules/vite/bin/vite.js','--config','desktop/vite.config.ts'],{cwd:ui,stdio:'ignore',windowsHide:true});
 let app;
@@ -24,7 +25,7 @@ const evaluate = async (url,expression) => (await command(url,'Runtime.evaluate'
 const imports = `const {EditorView}=await import('/@fs/'+${JSON.stringify(ui.replaceAll('\\','/').replace(/\/$/, ''))}+'/node_modules/@codemirror/view/dist/index.js'); const {mentionField}=await import('/@fs/'+${JSON.stringify(ui.replaceAll('\\','/').replace(/\/$/, ''))}+'/src/mention-history.ts');`;
 try {
   for(let i=0;i<80;i++){try{if((await fetch('http://127.0.0.1:5173/')).ok)break;}catch{}await pause(250);}
-  app=spawn(fileURLToPath(new URL('../src-tauri/target/debug/narrative-universe-desktop.exe',import.meta.url)),[],{cwd:ui,stdio:'ignore',windowsHide:true,env:{...process.env,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9334'}});
+  app=spawn(fileURLToPath(new URL('../src-tauri/target/debug/narrative-universe-desktop.exe',import.meta.url)),[],{cwd:ui,stdio:'ignore',windowsHide:true,env:{...process.env,WEBVIEW2_USER_DATA_FOLDER:webviewProfile,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9334'}});
   let url=await target();
   const result=await evaluate(url,`(async()=>{${imports}
     const wait=()=>new Promise(r=>setTimeout(r,150));const assert=(v,m)=>{if(!v)throw Error(m)};
@@ -48,8 +49,27 @@ try {
   await evaluate(url,`(async()=>{${imports}const v=EditorView.findFromDOM(document.querySelector('.cm-editor'));v.dispatch({selection:{anchor:${result.from+1}}});v.contentDOM.dispatchEvent(new KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));await new Promise(r=>setTimeout(r,200));})()`);
   await screenshot('inspect.png');
   await new Promise(resolve => { app.once('exit', resolve); app.kill(); });
-  app=spawn(fileURLToPath(new URL('../src-tauri/target/debug/narrative-universe-desktop.exe',import.meta.url)),[],{cwd:ui,stdio:'ignore',windowsHide:true,env:{...process.env,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9334'}});
+  app=spawn(fileURLToPath(new URL('../src-tauri/target/debug/narrative-universe-desktop.exe',import.meta.url)),[],{cwd:ui,stdio:'ignore',windowsHide:true,env:{...process.env,WEBVIEW2_USER_DATA_FOLDER:webviewProfile,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9334'}});
   url=await target();
+  const exactSelection = await evaluate(url, `(async()=>{${imports}
+    const wait=()=>new Promise(r=>setTimeout(r,200));const assert=(v,m)=>{if(!v)throw Error(m)};
+    document.querySelector('#database-path').value=${JSON.stringify(database)};document.querySelector('#open-form').requestSubmit();await wait();await wait();
+    const view=EditorView.findFromDOM(document.querySelector('.cm-editor')),original=${JSON.stringify(linked.original)};
+    const unchanged=()=>assert(JSON.stringify(view.state.field(mentionField))===JSON.stringify([original]),'exact selection retains mention identity');
+    unchanged();
+    for(const shortcut of [true,false]) {
+      view.dispatch({selection:{anchor:original.startUtf16,head:original.endUtf16}});
+      const captured=view.state.selection,action=document.querySelector('.link-entity-action');assert(!action.hidden&&action.textContent==='Inspect link','exact selection contextual Inspect link');
+      if(shortcut)view.contentDOM.dispatchEvent(new KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));else action.click();await wait();
+      const popup=document.querySelector('.entity-picker');assert(!popup.hidden&&popup.getAttribute('aria-label')==='Inspect link','exact selection inspector');assert(popup.textContent.includes('Saved link')&&popup.textContent.includes('Place'),'saved target inspector');assert(!popup.querySelector('[role="combobox"]'),'no new link search');unchanged();assert(document.querySelector('#save-status').textContent==='Saved','inspection leaves aggregate clean');
+      popup.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));assert(view.hasFocus&&view.state.selection.eq(captured),'exact selection Escape focus and range');
+    }
+    view.dispatch({selection:{anchor:original.startUtf16,head:original.endUtf16-1}});assert(document.querySelector('.link-entity-action').hidden,'partial overlap hides action');view.contentDOM.dispatchEvent(new KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));await wait();assert(document.querySelector('.entity-picker').hidden,'partial overlap refuses popup');unchanged();
+    view.dispatch({selection:{anchor:original.startUtf16,head:original.endUtf16}});document.querySelector('.link-entity-action').click();await wait();view.dispatch({selection:{anchor:0}});assert(document.querySelector('.entity-picker').hidden,'exact inspection selection drift cancels');unchanged();
+    view.dispatch({selection:{anchor:original.startUtf16,head:original.endUtf16}});document.querySelector('.link-entity-action').click();await wait();
+    return ['saved/relaunched exact selection inspects via Ctrl+K and contextual action','exact inspection preserves mention identity and clean aggregate','exact selection Escape restores focus and range','partial overlap remains refused','exact inspection cancels on selection drift'];
+  })()`);
+  await screenshot('exact-selection-inspect.png');
   const resumed = await evaluate(url, `(async()=>{${imports}
     const wait=()=>new Promise(r=>setTimeout(r,200));const assert=(v,m)=>{if(!v)throw Error(m)};
     document.querySelector('#database-path').value=${JSON.stringify(database)};document.querySelector('#open-form').requestSubmit();await wait();await wait();
@@ -74,6 +94,7 @@ try {
   })()`);
   await screenshot('long-scene.png');
   linked.checks.push(...resumed.checks);
+  linked.checks.push(...exactSelection);
   writeFileSync(join(evidence,'result.json'),JSON.stringify({...result,...linked,synthetic:true},null,2)+'\n');
   console.log(JSON.stringify({...result,...linked,synthetic:true},null,2));
 } finally { app?.kill();vite.kill(); }

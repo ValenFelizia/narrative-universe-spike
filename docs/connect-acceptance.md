@@ -140,3 +140,33 @@ keyboard, pointer, Escape, stale-capture and history tests still pass.
 Rust suites and native acceptance were not repeated for this picker-only change.
 The earlier native evidence and the remaining human acceptance limits above are
 unchanged.
+
+## D3 exact-selection refinement
+
+Valen/Ari's #35 acceptance finding `6666149588` approves inspection when one
+selection exactly matches an existing mention, as well as a caret inside it.
+One shared selection classifier now routes both Ctrl+K and the contextual action.
+The action says **Inspect link** for either inspection case. Partial overlaps,
+containing selections and multiple ranges still refuse without changing data.
+
+PASS: `npm run check`, `npm run desktop:check`, `npm test` (113 tests),
+`npm run desktop:frontend:build`, and `git diff --check`. Focused regressions cover
+saved and draft exact selection, reversed selection, both entry points, caret
+inspection, Escape focus/range, stale selection cancellation, refusal cases,
+and unchanged mention identity and Undo/Redo. The unresolved-Busy fixture now
+uses a changed reread revision so it actually exercises an ambiguous outcome.
+
+PASS: extended `node scripts/webview2-connect.mjs` against the real desktop with
+a disposable synthetic database and a separate temporary WebView2 profile.
+After Save and process relaunch, an exact selection inspects the persisted link
+through both entry points, keeps the same ID/entity/range and clean aggregate,
+and returns focus and selection on Escape. Partial overlap refuses; selection
+drift cancels. Earlier native save/history/Unlink assertions also passed.
+See [`exact-selection-inspect.png`](evidence/connect-native/exact-selection-inspect.png)
+and the refreshed `result.json`.
+
+The first native attempt could not find a debugging target; using a separate
+profile allowed the probe to run without closing the active acceptance app.
+The native probe still uses injected keyboard events at 1120x780, DPR 1, Edg/156.
+Physical Ctrl+K retesting and the remaining human acceptance steps above stay
+pending. Rust/bridge code is unchanged and those suites were not repeated.

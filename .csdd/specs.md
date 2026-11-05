@@ -132,6 +132,9 @@ Sources: #31 approval comment `6592317042`, merged PR #34, and authorized #33.
   history. No global lifetime claim is made after persisted unlink and reopen.
 - D3 requires Ctrl+K and a discreet near-selection Link entity action using the
   same anchored picker. Escape returns focus and the captured selection.
+  As refined in #35 acceptance comment `6666149588`, a caret inside a mention
+  or one selection exactly matching it inspects that same link. The contextual
+  action says Inspect link; partial, containing, and multiple selections refuse.
 - D4 requires label, type, and primary-page title, plus a short ID suffix for
   otherwise exact ties. No candidate is selected automatically by matching text.
 - A valid selection is one nonempty range, without line breaks or overlap,

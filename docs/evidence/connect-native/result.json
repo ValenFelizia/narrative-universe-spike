@@ -10,7 +10,7 @@
     "Valdoria · Place · Atlas · …0016"
   ],
   "original": {
-    "id": "84f29c0d-d34d-4072-bf2c-2491be9247c5",
+    "id": "14ce9e39-f91e-4e1c-8acc-18e4dd9eddda",
     "entityId": "00000000-0000-4000-8000-000000000014",
     "startUtf16": 19,
     "endUtf16": 27
@@ -28,7 +28,12 @@
     "deliberate Unlink and Save",
     "long scene picker preserves prose width",
     "Escape restores focus and selection",
-    "long scene drop notice visible"
+    "long scene drop notice visible",
+    "saved/relaunched exact selection inspects via Ctrl+K and contextual action",
+    "exact inspection preserves mention identity and clean aggregate",
+    "exact selection Escape restores focus and range",
+    "partial overlap remains refused",
+    "exact inspection cancels on selection drift"
   ],
   "synthetic": true
 }

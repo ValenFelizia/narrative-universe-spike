@@ -19,6 +19,19 @@ export function selectionRefusal(view: EditorView): string | null {
   catch (error) { return (error instanceof MentionError && error.reason === "overlapping_mentions") ? "Unlink the existing occurrence first." : "Select whole characters."; }
   return null;
 }
+type SelectionContext = { kind: "inspect"; mention: Mention } | { kind: "link" } | { kind: "refused"; reason: string };
+function selectionContext(view: EditorView): SelectionContext {
+  const ranges = view.state.selection.ranges;
+  if (ranges.length === 1) {
+    const range = ranges[0]!;
+    const mention = view.state.field(mentionField).find(m => range.empty
+      ? range.head >= m.startUtf16 && range.head < m.endUtf16
+      : range.from === m.startUtf16 && range.to === m.endUtf16);
+    if (mention) return {kind: "inspect", mention};
+  }
+  const reason = selectionRefusal(view);
+  return reason ? {kind: "refused", reason} : {kind: "link"};
+}
 export function prepareEntityIndex(entities: readonly EntitySummary[]): EntityOption[] {
   const rows = entities.map(e => ({id: e.id, caption: `${e.label} · ${e.typeLabel ?? "Untyped"} · ${e.primaryPageTitle ?? "No primary page"}`}));
   const groups = new Map<string, string[]>();
@@ -72,7 +85,7 @@ export function connectEditor(options: {
     element.style.top = `${Math.max(8, Math.min(top + 6, window.innerHeight - element.offsetHeight - 12))}px`;
   }
   function confirm(c: Capture, entityId: string): void {
-    if (picker.kind !== "search" || !picker.entities.some(e => e.id === entityId) || !valid(c) || selectionRefusal(c.view)) { close(); options.message("Selection changed. Select the phrase again."); return; }
+    if (picker.kind !== "search" || !picker.entities.some(e => e.id === entityId) || !valid(c) || selectionContext(c.view).kind !== "link") { close(); options.message("Selection changed. Select the phrase again."); return; }
     const {from, to} = c.selection.main;
     close(); c.view.dispatch(linkSpec({id: crypto.randomUUID(), entityId, startUtf16: from, endUtf16: to})); c.view.focus();
   }
@@ -81,8 +94,9 @@ export function connectEditor(options: {
     const s = options.session()!;
     const capture: Capture = {view, doc: view.state.doc, selection: view.state.selection, mentions: view.state.field(mentionField), sessionId: s.sessionId, pageId: s.pageId, token: options.token()};
     const range = view.state.selection.main;
-    const mention = range.empty && view.state.selection.ranges.length === 1 ? s.draftMentions.find(m => range.head >= m.startUtf16 && range.head < m.endUtf16) : undefined;
-    if (!mention) { const refusal = selectionRefusal(view); if (refusal) { options.message(refusal); return; } }
+    const context = selectionContext(view);
+    if (context.kind === "refused") { options.message(context.reason); return; }
+    const mention = context.kind === "inspect" ? context.mention : undefined;
     close(); picker = {...capture, kind: "loading"}; const pending = picker;
     popup.replaceChildren(); popup.textContent = "Loading entities…"; popup.hidden = false; action.hidden = true; position(popup, view);
     let index: EntitySummary[];
@@ -94,6 +108,7 @@ export function connectEditor(options: {
     popup.replaceChildren();
     const cancel = document.createElement("button"); cancel.type = "button"; cancel.textContent = "Cancel · Esc"; cancel.onclick = () => close(true);
     if (mention) {
+      popup.setAttribute("aria-label", "Inspect link");
       picker = {...capture, kind: "inspect", mention};
       const label = document.createElement("p"), entity = entities.find(e => e.id === mention.entityId);
       label.textContent = (entity ? entity.caption : `Unavailable entity · ${mention.entityId}`) + (s.baseMentions.some(m => sameMentions([m], [mention])) ? " · Saved link" : " · Unsaved link");
@@ -101,6 +116,7 @@ export function connectEditor(options: {
       unlink.onclick = () => { if (picker.kind !== "inspect" || !valid(capture)) { close(); return; } close(); view.dispatch(unlinkSpec(mention.id)); view.focus(); };
       popup.append(label, unlink, cancel); unlink.focus();
     } else {
+      popup.setAttribute("aria-label", "Link entity");
       const search = document.createElement("input"), results = document.createElement("div");
       search.setAttribute("aria-label", "Search existing entities"); search.setAttribute("role", "combobox"); search.setAttribute("aria-expanded", "true"); search.setAttribute("aria-controls", "entity-results"); search.setAttribute("aria-autocomplete", "list");
       results.id = "entity-results"; results.setAttribute("role", "listbox");
@@ -146,7 +162,10 @@ export function connectEditor(options: {
   function refresh(): void {
     const s = options.session(), view = options.view();
     if (picker.kind !== "closed" && !valid(picker)) close();
-    action.hidden = picker.kind !== "closed" || !view || !options.allowed() || selectionRefusal(view) !== null;
+    const context = view ? selectionContext(view) : null;
+    const label = context?.kind === "inspect" ? "Inspect link" : "Link entity";
+    action.textContent = label; action.title = `${label} (Ctrl+K)`;
+    action.hidden = picker.kind !== "closed" || !view || !options.allowed() || context?.kind === "refused";
     if (!action.hidden && view) position(action, view);
     const drops = s ? pendingDrops(s) : [];
     notice.hidden = drops.length === 0; notice.replaceChildren();
