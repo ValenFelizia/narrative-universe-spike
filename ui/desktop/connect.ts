@@ -5,8 +5,9 @@ import { mentionField, linkSpec, unlinkSpec } from "../src/mention-history.ts";
 import { MentionError, sameMentions, validateMentions, type Mention } from "../src/mentions.ts";
 import { pendingDrops, type SaveState } from "../src/save-session.ts";
 export type EntitySummary = { id: string; label: string; typeLabel: string | null; primaryPageTitle: string | null };
+type EntityOption = { id: string; caption: string; searchText: string; label: string; suffix: string };
 type Capture = { view: EditorView; doc: Text; selection: EditorSelection; mentions: readonly Mention[]; sessionId: string; pageId: string; token: string };
-type Picker = { kind: "closed" } | (Capture & ({ kind: "search"; entities: EntitySummary[]; activeId: string | null } | { kind: "inspect"; mention: Mention } | { kind: "loading" }));
+type Picker = { kind: "closed" } | (Capture & ({ kind: "search"; entities: EntityOption[]; activeId: string | null } | { kind: "inspect"; mention: Mention } | { kind: "loading" }));
 export function selectionRefusal(view: EditorView): string | null {
   const ranges = view.state.selection.ranges;
   if (ranges.length !== 1) return "Select one phrase to link.";
@@ -18,12 +19,31 @@ export function selectionRefusal(view: EditorView): string | null {
   catch (error) { return (error instanceof MentionError && error.reason === "overlapping_mentions") ? "Unlink the existing occurrence first." : "Select whole characters."; }
   return null;
 }
-export function entityCaption(entity: EntitySummary, all: readonly EntitySummary[]): string {
-  const caption = (e: EntitySummary) => `${e.label} · ${e.typeLabel ?? "Untyped"} · ${e.primaryPageTitle ?? "No primary page"}`;
-  const tied = all.filter(e => caption(e) === caption(entity));
-  let length = 4;
-  while (length < entity.id.length && tied.some(e => e.id !== entity.id && e.id.slice(-length) === entity.id.slice(-length))) length++;
-  return caption(entity) + (tied.length > 1 ? ` · …${entity.id.slice(-length)}` : "");
+export function prepareEntityIndex(entities: readonly EntitySummary[]): EntityOption[] {
+  const rows = entities.map(e => ({id: e.id, caption: `${e.label} · ${e.typeLabel ?? "Untyped"} · ${e.primaryPageTitle ?? "No primary page"}`}));
+  const groups = new Map<string, string[]>();
+  for (const row of rows) {
+    const group = groups.get(row.caption);
+    if (group) group.push(row.id); else groups.set(row.caption, [row.id]);
+  }
+  const suffixCounts = new Map<string, Map<string, number>>();
+  for (const [caption, ids] of groups) {
+    const counts = new Map<string, number>();
+    if (ids.length > 1) for (const id of new Set(ids)) {
+      for (let length = 4; length <= id.length; length++) {
+        const suffix = id.slice(-length); counts.set(suffix, (counts.get(suffix) ?? 0) + 1);
+      }
+    }
+    suffixCounts.set(caption, counts);
+  }
+  return rows.map(row => {
+    let length = 4;
+    const counts = suffixCounts.get(row.caption)!;
+    while (length < row.id.length && (counts.get(row.id.slice(-length)) ?? 0) > 1) length++;
+    const caption = row.caption + (groups.get(row.caption)!.length > 1 ? ` · …${row.id.slice(-length)}` : "");
+    const split = caption.lastIndexOf(" · …");
+    return {id: row.id, caption, searchText: caption.toLocaleLowerCase(), label: split < 0 ? caption : caption.slice(0, split), suffix: split < 0 ? "" : caption.slice(split)};
+  });
 }
 export function connectEditor(options: {
   session: () => SaveState | null; view: () => EditorView | null; token: () => string;
@@ -65,17 +85,18 @@ export function connectEditor(options: {
     if (!mention) { const refusal = selectionRefusal(view); if (refusal) { options.message(refusal); return; } }
     close(); picker = {...capture, kind: "loading"}; const pending = picker;
     popup.replaceChildren(); popup.textContent = "Loading entities…"; popup.hidden = false; action.hidden = true; position(popup, view);
-    let entities: EntitySummary[];
-    try { entities = await options.entities(capture.token); }
+    let index: EntitySummary[];
+    try { index = await options.entities(capture.token); }
     catch { if (picker === pending) { close(true); options.message("Entities could not be read. Your draft is preserved."); } return; }
     if (picker !== pending) return;
     if (!valid(capture)) { close(); return; }
+    const entities = prepareEntityIndex(index);
     popup.replaceChildren();
     const cancel = document.createElement("button"); cancel.type = "button"; cancel.textContent = "Cancel · Esc"; cancel.onclick = () => close(true);
     if (mention) {
       picker = {...capture, kind: "inspect", mention};
       const label = document.createElement("p"), entity = entities.find(e => e.id === mention.entityId);
-      label.textContent = (entity ? entityCaption(entity, entities) : `Unavailable entity · ${mention.entityId}`) + (s.baseMentions.some(m => sameMentions([m], [mention])) ? " · Saved link" : " · Unsaved link");
+      label.textContent = (entity ? entity.caption : `Unavailable entity · ${mention.entityId}`) + (s.baseMentions.some(m => sameMentions([m], [mention])) ? " · Saved link" : " · Unsaved link");
       const unlink = document.createElement("button"); unlink.type = "button"; unlink.textContent = "Unlink";
       unlink.onclick = () => { if (picker.kind !== "inspect" || !valid(capture)) { close(); return; } close(); view.dispatch(unlinkSpec(mention.id)); view.focus(); };
       popup.append(label, unlink, cancel); unlink.focus();
@@ -85,16 +106,16 @@ export function connectEditor(options: {
       results.id = "entity-results"; results.setAttribute("role", "listbox");
       search.value = capture.doc.sliceString(range.from, range.to);
       picker = {...capture, kind: "search", entities, activeId: null};
-      const filtered = () => entities.filter(e => entityCaption(e, entities).toLocaleLowerCase().includes(search.value.toLocaleLowerCase()));
+      const filtered = () => { const query = search.value.toLocaleLowerCase(); return entities.filter(e => e.searchText.includes(query)); };
       function render(): void {
         results.replaceChildren(); const state = picker; if (state.kind !== "search") return;
         search.removeAttribute("aria-activedescendant");
         const matches = filtered();
         for (const e of matches) {
           const row = document.createElement("button"); row.type = "button"; row.id = `entity-${e.id}`; row.dataset.entityId = e.id;
-          row.setAttribute("role", "option"); row.setAttribute("aria-selected", String(state.activeId === e.id)); const caption = entityCaption(e, entities), suffix = caption.lastIndexOf(" \u00b7 \u2026");
-          row.textContent = suffix < 0 ? caption : caption.slice(0, suffix);
-          if (suffix >= 0) { const id = document.createElement("span"); id.className = "entity-id"; id.textContent = caption.slice(suffix); row.append(id); }
+          row.setAttribute("role", "option"); row.setAttribute("aria-selected", String(state.activeId === e.id));
+          row.textContent = e.label;
+          if (e.suffix) { const id = document.createElement("span"); id.className = "entity-id"; id.textContent = e.suffix; row.append(id); }
           if (state.activeId === e.id) search.setAttribute("aria-activedescendant", row.id);
           row.onclick = () => confirm(capture, e.id); results.append(row);
         }

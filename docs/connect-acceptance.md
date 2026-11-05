@@ -121,3 +121,22 @@ the real WebView2 probe with that assertion and inspected the new screenshot.
 The reviewer found no independently demonstrated hard stop-condition violation.
 The coordinator also repeated both Rust test suites, UI checks, and frontend build.
 The reviewer did not rerun tests or perform human native acceptance.
+
+## Greptile P2 follow-up
+
+The picker prepares captions, locale-normalized search text and exact-tie ID
+suffixes once for each loaded entity index. Filtering, rendering and inspection
+reuse those prepared rows. Caption groups and suffix counts replace repeated
+full-index duplicate searches; entity order and stable IDs remain unchanged.
+
+PASS: `npm run check`, `npm run desktop:check`, `npm test` (110 tests),
+`npm run desktop:frontend:build`, and `git diff --check` for this follow-up.
+Focused regressions cover exact captions, shortest distinguishing suffixes,
+optional type/page labels, case normalization and index order. An instrumented
+index verifies that repeated search input and Arrow navigation do not reread
+source entity fields, while reopening prepares a newly fetched index. Existing
+keyboard, pointer, Escape, stale-capture and history tests still pass.
+
+Rust suites and native acceptance were not repeated for this picker-only change.
+The earlier native evidence and the remaining human acceptance limits above are
+unchanged.

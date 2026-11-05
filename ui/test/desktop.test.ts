@@ -419,7 +419,7 @@ test('a mention mismatch refusal keeps the draft and is never reported as saved'
 });
 import { undo, redo, isolateHistory } from "@codemirror/commands";
 import { mentionField } from "../src/mention-history.ts";
-import { entityCaption } from "../desktop/connect.ts";
+import { prepareEntityIndex } from "../desktop/connect.ts";
 const entities = [
   {id:'place-0001',label:'Valdoria',typeLabel:'Place',primaryPageTitle:'Atlas'},
   {id:'house-0002',label:'Valdoria',typeLabel:'House',primaryPageTitle:null},
@@ -441,11 +441,50 @@ test('visible action and shortcut share picker; exact ties show ids; Enter requi
   const ui=connectSetup();ui.open('a');await tick();const view=ui.view();view.dispatch({selection:{anchor:0,head:8}});
   const action=ui.doc.querySelector('.link-entity-action');assert.equal(action.hidden,false);action.click();await tick();
   const search=ui.doc.querySelector('[role="combobox"]');assert.equal(search.value,'Valdoria');assert.equal(ui.doc.querySelectorAll('.entity-id').length,2);
-  assert.match(entityCaption(entities[0],entities),/0001/);assert.doesNotMatch(entityCaption(entities[1],entities),/0002/);
+  const captions=prepareEntityIndex(entities);assert.match(captions[0].caption,/0001/);assert.doesNotMatch(captions[1].caption,/0002/);
   key(ui,search,'Enter');assert.equal(view.state.field(mentionField).length,0);
   key(ui,search,'ArrowDown');key(ui,search,'ArrowDown');key(ui,search,'Enter');
   assert.equal(view.state.field(mentionField)[0].entityId,'house-0002');assert.equal(view.hasFocus,true);
   assert.equal(ui.doc.querySelector('#save').disabled,false);assert.ok(ui.doc.querySelector('.entity-mention.draft'));ui.close();
+});
+
+test('prepared captions preserve exact ties, shortest unique suffixes, null labels and index order', ()=>{
+  const index=[
+    {id:'a10001',label:'VÁLDORIA',typeLabel:'Place',primaryPageTitle:'Atlas'},
+    {id:'house0001',label:'VÁLDORIA',typeLabel:'House',primaryPageTitle:'Atlas'},
+    {id:'b10001',label:'VÁLDORIA',typeLabel:'Place',primaryPageTitle:'Atlas'},
+    {id:'c0002',label:'VÁLDORIA',typeLabel:'Place',primaryPageTitle:'Atlas'},
+    {id:'untyped',label:'Other',typeLabel:null,primaryPageTitle:null},
+  ];
+  const prepared=prepareEntityIndex(index);
+  assert.deepEqual(prepared.map(e=>e.id),index.map(e=>e.id));
+  assert.deepEqual(prepared.map(e=>e.caption),[
+    'VÁLDORIA · Place · Atlas · …a10001','VÁLDORIA · House · Atlas',
+    'VÁLDORIA · Place · Atlas · …b10001','VÁLDORIA · Place · Atlas · …0002',
+    'Other · Untyped · No primary page',
+  ]);
+  for(const e of prepared) { assert.equal(e.label+e.suffix,e.caption);assert.equal(e.searchText,e.caption.toLocaleLowerCase()); }
+  assert.deepEqual(prepareEntityIndex([...index].reverse()).reverse(),prepared);
+});
+
+test('typing and arrow navigation reuse prepared captions without rereading the entity index', async()=>{
+  let reads=0,loads=0;
+  const observed=entities.map(e=>Object.fromEntries(Object.keys(e).map(k=>[k,e[k]])));
+  for(const e of observed) for(const k of Object.keys(e)) { const value=e[k];Object.defineProperty(e,k,{get(){reads++;return value;}}); }
+  const ui=setup(async(cmd,args)=>cmd==='page_index'?[{id:'a',title:'Page'}]:cmd==='read_page'?{...page,body:'Valdoria at dawn.'}:cmd==='entity_index'?(loads++,observed):undefined);
+  ui.open('a');await tick();const search=await picker(ui),preparedReads=reads;
+  assert.equal(preparedReads,observed.length*4);
+  const captions=()=>[...ui.doc.querySelectorAll('[data-entity-id]')].map(row=>row.textContent);
+  assert.deepEqual(captions(),['Valdoria · Place · Atlas · …0001','Valdoria · House · No primary page','Valdoria · Place · Atlas · …0003']);
+  for(const query of ['Place','0003','House','VALDORIA','']) {
+    search.value=query;search.dispatchEvent(new ui.doc.defaultView.Event('input',{bubbles:true}));
+    key(ui,search,'ArrowDown');key(ui,search,'ArrowDown');key(ui,search,'ArrowUp');
+    assert.equal(reads,preparedReads);assert.equal(loads,1);
+    if(query==='0003') assert.equal(ui.doc.querySelector('[aria-selected="true"]').dataset.entityId,'place-0003');
+  }
+  key(ui,search,'Escape');assert.equal(ui.view().hasFocus,true);assert.equal(ui.view().state.selection.main.to,8);
+  await picker(ui);assert.equal(loads,2);assert.equal(reads,preparedReads*2);
+  choose(ui,'house-0002');assert.equal(ui.view().state.field(mentionField)[0].entityId,'house-0002');ui.close();
 });
 
 test('Escape restores selection and focus; changed selection and document cancel picker', async()=>{
