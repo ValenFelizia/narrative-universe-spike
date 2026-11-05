@@ -417,7 +417,7 @@ test('a mention mismatch refusal keeps the draft and is never reported as saved'
   assert.equal(ui.view().state.doc.toString(),'An original');
   ui.close();
 });
-import { undo, redo } from "@codemirror/commands";
+import { undo, redo, isolateHistory } from "@codemirror/commands";
 import { mentionField } from "../src/mention-history.ts";
 import { entityCaption } from "../desktop/connect.ts";
 const entities = [
@@ -473,6 +473,22 @@ test('persistent drop notice and Undo/Redo preserve identity; deliberate Unlink 
   assert.match(ui.doc.querySelector('.entity-picker').textContent,/Valdoria.*Place.*Unsaved link/);
   [...ui.doc.querySelectorAll('.entity-picker button')].find(b=>b.textContent==='Unlink').click();assert.equal(view.state.field(mentionField).length,0);assert.equal(ui.doc.querySelector('.link-drop-notice').hidden,true);
   undo(view);assert.deepEqual(view.state.field(mentionField),[original]);redo(view);assert.equal(view.state.field(mentionField).length,0);ui.close();
+});
+
+test('drop notice undoes the last change and persists until each link is restored', async()=>{
+  const mentions=[{id:'first',entityId:'place-0001',startUtf16:0,endUtf16:8},{id:'second',entityId:'house-0002',startUtf16:12,endUtf16:20}];
+  const ui=connectSetup(undefined,{...page,body:'Valdoria at Valdoria.',mentions});ui.open('a');await tick();const view=ui.view();
+  const isolated=()=>isolateHistory.of('full');
+  view.dispatch({changes:{from:2,insert:'x'},annotations:isolated()});
+  view.dispatch({changes:{from:15,insert:'x'},annotations:isolated()});
+  view.dispatch({changes:{from:view.state.doc.length,insert:' Later.'},annotations:isolated()});
+  const notice=ui.doc.querySelector('.link-drop-notice');
+  assert.match(notice.textContent,/2 links removed.*Undo recent edits/);
+  assert.equal(notice.querySelector('button').textContent,'Undo last change');
+  notice.querySelector('button').click();
+  assert.equal(view.state.doc.toString().endsWith('Later.'),false);assert.equal(view.state.field(mentionField).length,0);assert.equal(notice.hidden,false);
+  notice.querySelector('button').click();assert.equal(view.state.field(mentionField)[0].id,'second');assert.match(notice.textContent,/1 link removed/);
+  notice.querySelector('button').click();assert.deepEqual(view.state.field(mentionField),mentions);assert.equal(notice.hidden,true);ui.close();
 });
 
 test('link-only close guard keeps draft; Save confirms full aggregate and updates decorations', async()=>{

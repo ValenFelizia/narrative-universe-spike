@@ -1,8 +1,7 @@
 # Connect acceptance handoff
 
 Issue #33, based on approved D1-D6 in #31 and merged #34 at `dceda4d`.
-Synthetic data only. Parent independent review and Valen/Ari acceptance remain
-required before merge. No push or PR was made by this implementation agent.
+Synthetic data only. Valen/Ari acceptance remains required before merge.
 
 ## Implementation
 
@@ -28,7 +27,7 @@ excludes links. The seed and schema remain unchanged.
 ## Automated evidence
 
 - PASS: `npm ci`, `npm run check`, `npm run desktop:check`, `npm test`
-  (107 tests), and `npm run desktop:frontend:build` in `ui`.
+  (108 tests after review), and `npm run desktop:frontend:build` in `ui`.
 - PASS: pinned Rust 1.96.0 `cargo test --locked --all-targets -j 1` at root
   (338 tests including the new import/reopen fixture test).
 - PASS: pinned Rust 1.96.0 `cargo test --locked -j 1` in `ui/src-tauri`
@@ -71,6 +70,8 @@ PASS in this native run:
 - Ctrl+K inspect, deliberate Unlink without an accidental-drop warning, and Save.
 - Long-scene popup leaves prose width unchanged. Escape returns editor focus
   and the captured selection.
+- A text-driven drop in the long scene leaves its notice inside the visible
+  viewport. The refreshed long-scene screenshot shows that notice.
 - `node scripts/webview2-parity.mjs` matches all 22 boundary and 37 reducer cases
   in real WebView2 with zero failures.
 
@@ -103,3 +104,20 @@ No production backup, crash recovery, mobile or cross-platform claim is made.
 
 Stop on silent link loss, identity replacement, stale text being linked, false
 Saved or content loss. Do not relax a contract to complete acceptance.
+
+## Independent review and corrections
+
+GPT 6.1 Terra High independently reviewed `03c3f99` against `dceda4d`, the
+approved decisions, and #33. Its verdict was REQUEST CHANGES for the drop
+notice's promise that one Undo would restore a link even after later edits.
+The button now says **Undo last change**, and the notice explains that restoring
+links requires undoing recent edits. A new regression drops two links in separate
+history events, makes another edit, and checks each successive Undo and exact
+restored identities. All 108 UI tests pass.
+
+The review also requested an accurate coordinate-fallback comment, now corrected,
+and identified long-scene notice visibility as untested. The coordinator reran
+the real WebView2 probe with that assertion and inspected the new screenshot.
+The reviewer found no independently demonstrated hard stop-condition violation.
+The coordinator also repeated both Rust test suites, UI checks, and frontend build.
+The reviewer did not rerun tests or perform human native acceptance.

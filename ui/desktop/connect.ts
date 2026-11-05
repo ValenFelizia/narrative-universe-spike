@@ -46,7 +46,7 @@ export function connectEditor(options: {
   }
   function position(element: HTMLElement, view: EditorView): void {
     let rect;
-    try { rect = view.coordsAtPos(view.state.selection.main.to); } catch { /* Layout is unavailable in headless tests. */ }
+    try { rect = view.coordsAtPos(view.state.selection.main.to); } catch { /* Fall back to the viewport corner if coordinates are unavailable. */ }
     const left = rect?.left ?? 0, top = rect?.bottom ?? 0;
     element.style.left = `${Math.max(8, Math.min(left, window.innerWidth - element.offsetWidth - 12))}px`;
     element.style.top = `${Math.max(8, Math.min(top + 6, window.innerHeight - element.offsetHeight - 12))}px`;
@@ -130,8 +130,8 @@ export function connectEditor(options: {
     const drops = s ? pendingDrops(s) : [];
     notice.hidden = drops.length === 0; notice.replaceChildren();
     if (drops.length) {
-      notice.append(`${drops.length} ${drops.length === 1 ? "link removed" : "links removed"} by editing. Undo restores the original identity. `);
-      const button = document.createElement("button"); button.type = "button"; button.textContent = "Undo"; button.onclick = () => { const v = options.view(); if (v) { undo(v); v.focus(); } }; notice.append(button);
+      notice.append(`${drops.length} ${drops.length === 1 ? "link removed" : "links removed"} by editing. Undo recent edits to restore links. `);
+      const button = document.createElement("button"); button.type = "button"; button.textContent = "Undo last change"; button.onclick = () => { const v = options.view(); if (v) { undo(v); v.focus(); } }; notice.append(button);
     }
   }
   const extensions: Extension = [keymap.of([{key: "Mod-k", run(view) { void open(view); return true; }}]), EditorView.decorations.of(view => {

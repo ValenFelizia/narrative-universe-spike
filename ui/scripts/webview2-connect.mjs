@@ -65,7 +65,12 @@ try {
     const long=EditorView.findFromDOM(document.querySelector('.cm-editor'));long.dispatch({selection:{anchor:14,head:22}});long.focus();
     const before=document.querySelector('.cm-content').getBoundingClientRect().width;document.querySelector('.link-entity-action').click();await wait();const after=document.querySelector('.cm-content').getBoundingClientRect().width;assert(before===after,'prose width unchanged');
     document.querySelector('.entity-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));assert(long.hasFocus&&long.state.selection.main.from===14,'Escape focus/selection');
-    return {checks:['process relaunch persisted same mention id','save and reopen same mention id','inspect saved link','deliberate Unlink and Save','long scene picker preserves prose width','Escape restores focus and selection'],proseWidth:before};
+    document.querySelector('.link-entity-action').click();await wait();document.querySelector('[data-entity-id="00000000-0000-4000-8000-000000000014"]').click();
+    long.dispatch({changes:{from:16,insert:'x'}});await wait();
+    const notice=document.querySelector('.link-drop-notice'),bounds=notice.getBoundingClientRect();
+    assert(!notice.hidden&&bounds.top>=0&&bounds.bottom<=innerHeight,'long scene drop notice visible');
+    assert(notice.querySelector('button').textContent==='Undo last change','ordinary Undo label');
+    return {checks:['process relaunch persisted same mention id','save and reopen same mention id','inspect saved link','deliberate Unlink and Save','long scene picker preserves prose width','Escape restores focus and selection','long scene drop notice visible'],proseWidth:before};
   })()`);
   await screenshot('long-scene.png');
   linked.checks.push(...resumed.checks);
