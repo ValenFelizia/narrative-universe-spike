@@ -18,10 +18,10 @@ organizing fictional worlds. It aims to combine freeform pages with structured
 entities, user-defined properties, and assertions that can preserve competing
 hypotheses without silently deciding what is canon.
 
-The repository is currently a headless Rust/SQLite spike, not a usable writing
-application. **I1 — persistence and relationships** and **I2 — canon
-alternatives and reversible archival** are the reviewed baseline. I3 JSON
-exchange is not an accepted specification until G3 review.
+The Rust/SQLite foundation now has a Tauri 2 desktop editorial workspace for
+synthetic personal-alpha testing. Accepted Write and Connect contracts below
+are grounded in #31's approved decisions and merged PR #34 at `dceda4d`.
+This does not establish production backup or crash recovery acceptance.
 
 ## Requirements
 
@@ -49,11 +49,9 @@ I1, as documented:
 ## Constraints
 
 - Do not store irreplaceable writing in this experimental format.
-- Not implemented as accepted product behavior: editing UI, Tauri, MCP, full
-  history, and a fictional timeline engine. JSON exchange is under G3 review
-  and is not recorded here as an accepted contract.
-- This spike does not commit the product to Tauri. The implementation
-  language and future desktop shell are still being validated.
+- Tauri 2 and the manual-save editorial workspace are the synthetic desktop
+  alpha implementation. MCP, a fictional timeline engine, and production
+  recovery are outside the accepted Write/Connect scope.
 - No license is selected. Public repository visibility is not a license grant.
   External contributors should discuss licensing before a substantial patch.
 - The crate is `narrative-universe` `0.1.0`, edition 2021, `publish = false`,
@@ -112,3 +110,43 @@ I1, as documented:
   `cargo clippy --locked --all-targets -- -D warnings`, and
   `cargo test --locked --all-targets`. Persistence changes need tests against
   real SQLite files, including close/reopen where relevant.
+
+## Accepted Write and Connect contracts
+
+Sources: #31 approval comment `6592317042`, merged PR #34, and authorized #33.
+
+- Manual Save treats title, exact prose, and mentions as one revision-checked
+  aggregate. Link and Unlink belong to the same draft and dirty-leave guard.
+- The Rust reducer is canonical. The client predicts ordered edits, then the
+  bridge checks expected body and mention set before writing. A mismatch
+  writes nothing. Acknowledgements must match request, session, page, revision,
+  body, title, and mentions before the UI may report Saved.
+- The existing read-only entity index supplies stable IDs, labels, type labels,
+  and primary-page titles. Linking is intentional and never creates entities,
+  assertions, provenance, or canon. No schema change is required.
+- D1 allows ordinary text edits to invalidate a link, with an immediate,
+  persistent nonmodal notice until confirmed Save, restoration, or deliberate
+  resolution. Deliberate Unlink is distinct from text-driven invalidation.
+- D2 requires text, Link, and Unlink history. Undo restores the original mention
+  ID, entity, and range. IDs cannot be rebound within the active document and
+  history. No global lifetime claim is made after persisted unlink and reopen.
+- D3 requires Ctrl+K and a discreet near-selection Link entity action using the
+  same anchored picker. Escape returns focus and the captured selection.
+  As refined in #35 acceptance comment `6666149588`, a caret inside a mention
+  or one selection exactly matching it inspects that same link. The contextual
+  action says Inspect link; partial, containing, and multiple selections refuse.
+- D4 requires label, type, and primary-page title, plus a short ID suffix for
+  otherwise exact ties. No candidate is selected automatically by matching text.
+- A valid selection is one nonempty range, without line breaks or overlap,
+  aligned to graphemes. Document, session, universe, and selection changes cancel
+  a pending picker. Read-only and unresolved save states refuse new linking.
+- Linked prose remains writable through the ordered mention-aware transaction
+  path. CR, NUL, invalid scalars, and exhausted revisions retain their locks.
+- D5 uses `tests/fixtures/connect-smoke.json` with `spike import-new`; the process
+  replay seed remains unchanged. D6 retains structured drafts in memory on stale,
+  Busy, uncertain, and mismatch outcomes. Copying text excludes links. Only a
+  confirmed Discard may abandon the draft. Durable structured recovery and rebase
+  are deferred for synthetic use only.
+- #33's editor integration has automated UI regressions. Native evidence and
+  remaining human acceptance are recorded in `docs/connect-acceptance.md`.
+  Independent review and Valen/Ari's Windows acceptance are still merge gates.

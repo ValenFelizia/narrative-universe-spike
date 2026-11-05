@@ -1,0 +1,39 @@
+{
+  "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0",
+  "width": 1120,
+  "height": 780,
+  "dpr": 1,
+  "from": 19,
+  "candidates": [
+    "Valdoria · Place · Atlas · …0014",
+    "Valdoria · House · No primary page",
+    "Valdoria · Place · Atlas · …0016"
+  ],
+  "original": {
+    "id": "14ce9e39-f91e-4e1c-8acc-18e4dd9eddda",
+    "entityId": "00000000-0000-4000-8000-000000000014",
+    "startUtf16": 19,
+    "endUtf16": 27
+  },
+  "checks": [
+    "native picker",
+    "explicit Place selection",
+    "manual Save",
+    "text-driven notice",
+    "Undo same id/entity/range",
+    "Redo notice",
+    "process relaunch persisted same mention id",
+    "save and reopen same mention id",
+    "inspect saved link",
+    "deliberate Unlink and Save",
+    "long scene picker preserves prose width",
+    "Escape restores focus and selection",
+    "long scene drop notice visible",
+    "saved/relaunched exact selection inspects via Ctrl+K and contextual action",
+    "exact inspection preserves mention identity and clean aggregate",
+    "exact selection Escape restores focus and range",
+    "partial overlap remains refused",
+    "exact inspection cancels on selection drift"
+  ],
+  "synthetic": true
+}

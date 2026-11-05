@@ -227,15 +227,13 @@ export type EditDecision =
       reason:
         | "carriage_return"
         | "nul"
-        | "unpaired_surrogate"
-        | "linked";
+        | "unpaired_surrogate";
     };
 
-/// PA-I3 policy. A page with any stored occurrence opens read-only, because
-/// the reducer is history-sensitive and PA-I4 owns link affordances.
+/// Linked editing uses the ordered mention-aware session and history.
 export function decideEditing(
   text: string,
-  mentionCount: number,
+  _mentionCount: number,
 ): EditDecision {
   try {
     assertEditableText(text);
@@ -251,9 +249,6 @@ export function decideEditing(
       }
     }
     throw error;
-  }
-  if (mentionCount > 0) {
-    return { editable: false, reason: "linked" };
   }
   return { editable: true };
 }

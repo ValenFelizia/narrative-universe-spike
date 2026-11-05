@@ -279,12 +279,9 @@ test("an empty document accepts an insertion", () => {
   assert.deepEqual(asTuples(toSequentialEdits(changes, "")), [[0, 0, "x"]]);
 });
 
-test("PA-I3 opens linked and unsupported documents read-only", () => {
+test("linked documents are writable and unsupported text stays read-only", () => {
   assert.deepEqual(decideEditing("plain prose", 0), { editable: true });
-  assert.deepEqual(decideEditing("linked prose", 1), {
-    editable: false,
-    reason: "linked",
-  });
+  assert.deepEqual(decideEditing("linked prose", 1), { editable: true });
   assert.deepEqual(decideEditing("a\r\nb", 0), {
     editable: false,
     reason: "carriage_return",

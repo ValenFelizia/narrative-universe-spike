@@ -4,7 +4,10 @@ import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { decideEditing } from "../src/adapter.ts";
 import type { Mention } from "../src/mentions.ts";
-import { applyReply, beginSave, isDirty, openSession, reconcileBusy, recordEdit, recordTitleEdit, MAX_SUPPORTED_REVISION, type SaveState } from "../src/save-session.ts";
+import { applyReply, beginSave, isDirty, openSession, reconcileBusy, recordTitleEdit, MAX_SUPPORTED_REVISION, type SaveState } from "../src/save-session.ts";
+
+import { mentionHistory, mentionEffects, recordTransaction } from "../src/mention-history.ts";
+import { connectEditor, type EntitySummary } from "./connect.ts";
 
 type PageIndexEntry = { id: string; title: string };
 type OpenedUniverse = { token: string; pages: PageIndexEntry[] };
@@ -47,7 +50,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       else toggleLibrary.focus();
     }
   }
-  toggleLibrary.addEventListener("click", () => { const opening = library.hidden; setLibrary(opening, !opening && narrow()); });
+  toggleLibrary.addEventListener("click", () => { const opening = library.hidden; setLibrary(opening, !opening && narrow()); paint(); });
   document.addEventListener("keydown", event => { if (event.key === "Escape" && narrow() && !library.hidden && !dialog.open) { event.preventDefault(); setLibrary(false, true); } });
   let universeToken = "";
   let session: SaveState | null = null;
@@ -66,14 +69,21 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   // An empty stored title is valid. Only its labels fall back; the title itself is never rewritten.
   const displayTitle = (value: string): string => value || "Untitled document";
 
+  const connect = connectEditor({session: () => session, view: () => editor, token: () => universeToken,
+    allowed: () => !(narrow() && !library.hidden) && !!session && !loading && !deciding && !transitioning && !verifying && !uncertain && !session.inFlight && session.baseRevision < MAX_SUPPORTED_REVISION && ["clean", "dirty"].includes(session.status),
+    entities: token => invokeCommand<EntitySummary[]>("entity_index", {universeToken: token}),
+    message: text => { saveStatus.textContent = text; }, host: pane});
+
   function paint(): void {
+    connect.refresh();
     newButton.disabled = !universeToken || !!pendingCreate || transitioning || loading || deciding || verifying || !!saving;
     verifyCreate.hidden = !pendingCreate;
     titleInput.readOnly = !session || loading || deciding || transitioning || session.baseRevision >= MAX_SUPPORTED_REVISION;
     if (!session) { saveButton.disabled = true; verifyButton.hidden = true; return; }
-    const labels = {clean: "Saved", dirty: "Unsaved", saving: "Saving…", stale: "Changed elsewhere. Copy your draft before leaving.", busy: "Database busy. Your draft is preserved.", error: "Save could not be confirmed. Your draft is preserved."};
-    saveStatus.textContent = session.baseRevision >= MAX_SUPPORTED_REVISION ? "Revision limit reached. Copy any unsaved draft; this page is read-only." : uncertain ? "Save could not be confirmed. Continue editing to select and copy your draft." : labels[session.status];
+    const labels = {clean: "Saved", dirty: "Unsaved", saving: "Saving…", stale: "Changed elsewhere. Structured draft retained in memory. Copying text does not include links.", busy: "Database busy. Your draft is preserved.", error: "Save could not be confirmed. Your draft is preserved."};
+    saveStatus.textContent = session.baseRevision >= MAX_SUPPORTED_REVISION ? "Revision limit reached. Copy any unsaved draft; this page is read-only." : uncertain ? "Save could not be confirmed. Structured draft retained in memory. Copying text does not include links." : labels[session.status];
     saveButton.disabled = transitioning || deciding || loading || verifying || session.baseRevision >= MAX_SUPPORTED_REVISION || !isDirty(session) || session.inFlight !== null || ["stale", "error", "busy"].includes(session.status);
+    if (session.detail?.startsWith("mention_mismatch")) saveStatus.textContent = "Links did not match the canonical reducer. Nothing was saved. Structured draft retained in memory; copying text does not include links. " + session.detail;
     verifyButton.hidden = session.status !== "busy" || !uncertain;
     verifyButton.disabled = transitioning || deciding || loading || verifying;
   }
@@ -110,10 +120,11 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
         const outcome = applyReply(session, {status: "ok", requestId: response.requestId, sessionId: response.sessionId, pageId: response.pageId, doc: response.body, title: response.title, mentions: response.mentions, revision: response.revision});
         session = outcome.ignored ? {...outcome.state, status: "error", detail: "Save acknowledgement identity did not match."} : outcome.state;
         uncertain = !!outcome.ignored || !outcome.applied;
+        if (outcome.applied && editor) editor.dispatch({});
         if (outcome.applied && request.titleChanged) { pages = pages.map(p => p.id === request.pageId ? {...p, title: request.title} : p); renderPages(); }
       } catch (error) {
         if (!session || session.sessionId !== request.sessionId) return false;
-        const failure = typeof error === "object" && error !== null ? error as Partial<SaveResponse> & {kind?: unknown} : {};
+        const failure = typeof error === "object" && error !== null ? error as Partial<SaveResponse> & {kind?: unknown; message?: unknown} : {};
         if (failure.pageId !== request.pageId || failure.sessionId !== request.sessionId || failure.requestId !== request.requestId) {
           session = {...session, status: "error", detail: "Save outcome could not be identified."};
           uncertain = true;
@@ -123,7 +134,8 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
         const kind = String(failure.kind);
         const replyStatus = kind === "stale" ? "stale" : kind === "busy" ? "busy" : "error";
         uncertain = replyStatus !== "stale";
-        session = applyReply(session, {status: replyStatus, requestId: request.requestId, sessionId: request.sessionId, pageId: request.pageId, detail: kind}).state;
+        session = applyReply(session, {status: replyStatus, requestId: request.requestId, sessionId: request.sessionId, pageId: request.pageId, detail: kind === "mention_mismatch" ? `${kind}: ${String(failure.message ?? "")}` : kind}).state;
+        editor?.dispatch({});
         if (replyStatus === "busy") {
           try {
             const page = await invokeCommand<PageContent>("read_page", {pageId: request.pageId, universeToken});
@@ -183,15 +195,15 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       if (!decision.editable || !titleDecision.editable || page.title.includes("\n") || page.revision === null || page.revision >= MAX_SUPPORTED_REVISION) {
         title.hidden = false; titleInput.hidden = true;
         body.textContent = page.body;
-        saveStatus.textContent = page.title.includes("\n") ? "This page title contains line breaks and is read-only." : !decision.editable ? ({linked:"This page contains links and is read-only.", carriage_return:"This page contains carriage returns and is read-only.", nul:"This page contains NUL and is read-only.", unpaired_surrogate:"This page contains unsupported text and is read-only."})[decision.reason] : !titleDecision.editable ? "This page title contains unsupported text and is read-only." : "This page revision is not editable.";
+        saveStatus.textContent = page.title.includes("\n") ? "This page title contains line breaks and is read-only." : !decision.editable ? ({carriage_return:"This page contains carriage returns and is read-only.", nul:"This page contains NUL and is read-only.", unpaired_surrogate:"This page contains unsupported text and is read-only."})[decision.reason] : !titleDecision.editable ? "This page title contains unsupported text and is read-only." : "This page revision is not editable.";
       } else {
         session = openSession({sessionId: crypto.randomUUID(), pageId: page.id, doc: page.body, title: page.title, revision: page.revision, mentions: page.mentions});
-        editor = new EditorView({parent: body, state: EditorState.create({doc: page.body, extensions: [history(), keymap.of([...defaultKeymap, ...historyKeymap]), EditorView.lineWrapping, editability.of([])]}), dispatchTransactions(transactions, view) {
-          if (!session || (transactions.some(transaction => transaction.docChanged) && (loading || deciding || session.baseRevision >= MAX_SUPPORTED_REVISION))) return;
+        editor = new EditorView({parent: body, state: EditorState.create({doc: page.body, extensions: [mentionHistory(page.mentions), connect.extensions, history(), keymap.of([...defaultKeymap, ...historyKeymap]), EditorView.lineWrapping, editability.of([])]}), dispatchTransactions(transactions, view) {
+          if (!session || (transactions.some(transaction => transaction.docChanged || mentionEffects(transaction).length > 0) && (loading || deciding || transitioning || session.baseRevision >= MAX_SUPPORTED_REVISION))) return;
           let next = session;
-          try { for (const transaction of transactions) next = recordEdit(next, transaction.changes); }
+          try { for (const transaction of transactions) next = recordTransaction(next, transaction); }
           catch { saveStatus.textContent = "This edit is not supported; the draft was not changed."; return; }
-          view.update(transactions); session = next; paint();
+          session = next; view.update(transactions); paint();
         }});
         paint();
       }
