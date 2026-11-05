@@ -47,7 +47,7 @@ test('busy verification can be retried without writing; changed base stays uncer
     });
     ui.open('a');await tick();const view=ui.view();view.dispatch({changes:{from:8,insert:' draft'}});ui.doc.querySelector('#save').click();await tick();
     assert.equal(ui.doc.querySelector('#verify').hidden,false);ui.doc.querySelector('#verify').click();await tick();assert.equal(saves,1);assert.equal(view.state.doc.toString(),'original draft');
-    if(changed) { assert.match(ui.doc.querySelector('#save-status').textContent,/copy your draft/i); assert.equal(ui.doc.querySelector('#save').disabled,true); }
+    if(changed) { assert.match(ui.doc.querySelector('#save-status').textContent,/draft.*memory/i); assert.equal(ui.doc.querySelector('#save').disabled,true); }
     else { ui.doc.querySelector('#save').click();await tick();assert.equal(saves,2);assert.match(ui.doc.querySelector('#save-status').textContent,/saved/i); }
     ui.close();
   }
@@ -82,9 +82,9 @@ test('save acknowledgement keeps later edits dirty and close guard protects them
   assert.equal(view.state.doc.toString(),'original A B'); ui.controller.requestClose('token'); await tick(); assert.ok(ui.doc.querySelector('#guard').open); assert.ok(!calls.includes('close_window')); ui.close();
 });
 
-test('linked and unsupported pages are read-only', async()=>{
+test('linked pages open with the mention-aware editor', async()=>{
   const ui=setup(async cmd=>cmd==='page_index'?[{id:'a',title:'Page'}]:cmd==='read_page'?{...page,mentions:[{id:'m',entityId:'e',startUtf16:0,endUtf16:1}]}:undefined);
-  ui.open('a'); await tick(); assert.equal(ui.view(),null); assert.match(ui.doc.querySelector('#save-status').textContent,/links.*read-only/i); ui.close();
+  ui.open('a'); await tick(); assert.ok(ui.view()); assert.ok(ui.doc.querySelector('.entity-mention.saved')); ui.close();
 });
 
 test('navigation is blocked while page loading, and selection resets scroll', async()=>{
@@ -208,7 +208,7 @@ test('lost creation response preserves draft and verification never retries crea
 test('read-only page remains selected after creation verification refreshes the list', async()=>{
   const ui=setup(async cmd=>{
     if(cmd==='page_index') return [{id:'a',title:'Page'}];
-    if(cmd==='read_page') return {...page,mentions:[{id:'m',entityId:'e',startUtf16:0,endUtf16:1}]};
+    if(cmd==='read_page') return {...page,body:'original\r'};
     if(cmd==='create_page') throw {};
   });
   ui.open('a'); await tick();
@@ -217,7 +217,7 @@ test('read-only page remains selected after creation verification refreshes the 
   ui.doc.querySelector('#new-page').click(); await tick();
   ui.doc.querySelector('#verify-create').click(); await tick();
   assert.equal(ui.doc.querySelector('.page-link').getAttribute('aria-current'),'true');
-  assert.equal(ui.doc.querySelector('#page-body').textContent,'original');
+  assert.equal(ui.doc.querySelector('#page-body').textContent,'original\r');
   ui.close();
 });
 
@@ -413,7 +413,106 @@ test('a mention mismatch refusal keeps the draft and is never reported as saved'
   });
   ui.open('a');await tick();ui.view().dispatch({changes:{from:0,insert:'An '}});
   ui.doc.querySelector('#save').click();await tick();
-  assert.match(ui.doc.querySelector('#save-status').textContent,/draft is preserved|could not be confirmed/i);
+  assert.match(ui.doc.querySelector('#save-status').textContent,/draft.*retained|could not be confirmed/i);
   assert.equal(ui.view().state.doc.toString(),'An original');
   ui.close();
+});
+import { undo, redo } from "@codemirror/commands";
+import { mentionField } from "../src/mention-history.ts";
+import { entityCaption } from "../desktop/connect.ts";
+const entities = [
+  {id:'place-0001',label:'Valdoria',typeLabel:'Place',primaryPageTitle:'Atlas'},
+  {id:'house-0002',label:'Valdoria',typeLabel:'House',primaryPageTitle:null},
+  {id:'place-0003',label:'Valdoria',typeLabel:'Place',primaryPageTitle:'Atlas'},
+];
+function connectSetup(extra = async()=>undefined, initial = {...page,body:'Valdoria at dawn.'}) {
+  return setup(async(cmd,args)=>{
+    if(cmd==='page_index')return [{id:'a',title:'Page'},{id:'b',title:'Other'}];
+    if(cmd==='read_page')return {...initial,id:args.pageId};
+    if(cmd==='entity_index')return entities;
+    return extra(cmd,args);
+  });
+}
+function key(ui, target, name, ctrlKey=false) { target.dispatchEvent(new ui.doc.defaultView.KeyboardEvent('keydown',{key:name,ctrlKey,bubbles:true,cancelable:true})); }
+async function picker(ui) { const view=ui.view(); view.dispatch({selection:{anchor:0,head:8}}); key(ui,view.contentDOM,'k',true); await tick(); return ui.doc.querySelector('[role="combobox"]'); }
+function choose(ui, id='place-0001') { ui.doc.querySelector(`[data-entity-id="${id}"]`).click(); }
+
+test('visible action and shortcut share picker; exact ties show ids; Enter requires explicit choice', async()=>{
+  const ui=connectSetup();ui.open('a');await tick();const view=ui.view();view.dispatch({selection:{anchor:0,head:8}});
+  const action=ui.doc.querySelector('.link-entity-action');assert.equal(action.hidden,false);action.click();await tick();
+  const search=ui.doc.querySelector('[role="combobox"]');assert.equal(search.value,'Valdoria');assert.equal(ui.doc.querySelectorAll('.entity-id').length,2);
+  assert.match(entityCaption(entities[0],entities),/0001/);assert.doesNotMatch(entityCaption(entities[1],entities),/0002/);
+  key(ui,search,'Enter');assert.equal(view.state.field(mentionField).length,0);
+  key(ui,search,'ArrowDown');key(ui,search,'ArrowDown');key(ui,search,'Enter');
+  assert.equal(view.state.field(mentionField)[0].entityId,'house-0002');assert.equal(view.hasFocus,true);
+  assert.equal(ui.doc.querySelector('#save').disabled,false);assert.ok(ui.doc.querySelector('.entity-mention.draft'));ui.close();
+});
+
+test('Escape restores selection and focus; changed selection and document cancel picker', async()=>{
+  const ui=connectSetup();ui.open('a');await tick();const view=ui.view();let search=await picker(ui);
+  key(ui,search,'Escape');assert.equal(view.hasFocus,true);assert.equal(view.state.selection.main.to,8);
+  await picker(ui);view.dispatch({selection:{anchor:9}});assert.equal(ui.doc.querySelector('.entity-picker').hidden,true);
+  await picker(ui);view.dispatch({changes:{from:0,insert:'x'}});assert.equal(ui.doc.querySelector('.entity-picker').hidden,true);assert.equal(view.state.field(mentionField).length,0);ui.close();
+});
+
+test('selection refusals never expand graphemes or link multiple lines', async()=>{
+  const ui=connectSetup(undefined,{...page,body:'a\u0301\nValdoria'});ui.open('a');await tick();const view=ui.view();
+  for(const selection of [{anchor:0},{anchor:0,head:1},{anchor:0,head:4}]) {
+    view.dispatch({selection});key(ui,view.contentDOM,'k',true);await tick();assert.equal(ui.doc.querySelector('.entity-picker').hidden,true);assert.equal(view.state.field(mentionField).length,0);
+  }
+  ui.close();
+});
+
+test('persistent drop notice and Undo/Redo preserve identity; deliberate Unlink is distinct', async()=>{
+  const ui=connectSetup();ui.open('a');await tick();await picker(ui);choose(ui);const view=ui.view(), original={...view.state.field(mentionField)[0]};
+  view.dispatch({changes:{from:3,insert:'x'}});assert.equal(ui.doc.querySelector('.entity-mention'),null);assert.equal(ui.doc.querySelector('.link-drop-notice').hidden,false);
+  view.dispatch({selection:{anchor:10}});assert.equal(ui.doc.querySelector('.link-drop-notice').hidden,false);
+  undo(view);assert.deepEqual(view.state.field(mentionField),[original]);assert.equal(ui.doc.querySelector('.link-drop-notice').hidden,true);
+  redo(view);assert.equal(view.state.field(mentionField).length,0);undo(view);
+  view.dispatch({selection:{anchor:1}});key(ui,view.contentDOM,'k',true);await tick();
+  assert.match(ui.doc.querySelector('.entity-picker').textContent,/Valdoria.*Place.*Unsaved link/);
+  [...ui.doc.querySelectorAll('.entity-picker button')].find(b=>b.textContent==='Unlink').click();assert.equal(view.state.field(mentionField).length,0);assert.equal(ui.doc.querySelector('.link-drop-notice').hidden,true);
+  undo(view);assert.deepEqual(view.state.field(mentionField),[original]);redo(view);assert.equal(view.state.field(mentionField).length,0);ui.close();
+});
+
+test('link-only close guard keeps draft; Save confirms full aggregate and updates decorations', async()=>{
+  let sent, revision=0;const ui=connectSetup(async(cmd,args)=>{if(cmd==='save_page'){sent=args.request;return {...sent,body:sent.expectedBody,title:'Page',mentions:sent.expectedMentions,revision:++revision};}});
+  ui.open('a');await tick();await picker(ui);choose(ui);const view=ui.view(),id=view.state.field(mentionField)[0].id;
+  ui.controller.requestClose('x');await tick();assert.equal(ui.doc.querySelector('#guard').open,true);ui.doc.querySelector('#continue').click();await tick();assert.equal(view.state.field(mentionField)[0].id,id);
+  ui.doc.querySelector('#save').click();await tick();assert.equal(sent.expectedMentions[0].id,id);assert.match(ui.doc.querySelector('#save-status').textContent,/^Saved$/);assert.ok(ui.doc.querySelector('.entity-mention.saved'));
+  view.dispatch({changes:{from:2,insert:'x'}});assert.equal(ui.doc.querySelector('.link-drop-notice').hidden,false);ui.doc.querySelector('#save').click();await tick();assert.equal(ui.doc.querySelector('.link-drop-notice').hidden,true);ui.close();
+});
+
+test('stale, busy, mismatch and unknown save outcomes retain mentions and refuse new links', async()=>{
+  for(const kind of ['stale','busy','mention_mismatch','unknown']) {
+    const ui=connectSetup(async(cmd,args)=>{if(cmd==='save_page')throw kind==='unknown'?{}:{...args.request,kind};});
+    ui.open('a');await tick();await picker(ui);choose(ui);const view=ui.view(),original={...view.state.field(mentionField)[0]};ui.doc.querySelector('#save').click();await tick();
+    assert.deepEqual(view.state.field(mentionField),[original]);assert.doesNotMatch(ui.doc.querySelector('#save-status').textContent,/^Saved$/);
+    view.dispatch({selection:{anchor:0,head:8}});key(ui,view.contentDOM,'k',true);await tick();assert.equal(ui.doc.querySelector('.entity-picker').hidden,true);ui.close();
+  }
+});
+
+test('late entity index results cannot reopen canceled or switched picker', async()=>{
+  const pending=deferred();const ui=setup(async(cmd,args)=>cmd==='page_index'?[{id:'a',title:'Page'},{id:'b',title:'Other'}]:cmd==='read_page'?{...page,id:args.pageId,body:'Valdoria'}:cmd==='entity_index'?pending.promise:undefined);
+  ui.open('a');await tick();await picker(ui);key(ui,ui.view().contentDOM,'Escape');pending.resolve(entities);await tick();assert.equal(ui.doc.querySelector('.entity-picker').hidden,true);assert.equal(ui.view().state.field(mentionField).length,0);ui.close();
+});
+
+test('search filter resets choice by stable id; keyboard and pointer cannot pick old filtered row', async()=>{
+  const ui=connectSetup();ui.open('a');await tick();const search=await picker(ui);key(ui,search,'ArrowDown');search.value='House';search.dispatchEvent(new ui.doc.defaultView.Event('input',{bubbles:true}));key(ui,search,'Enter');assert.equal(ui.view().state.field(mentionField).length,0);key(ui,search,'ArrowUp');key(ui,search,'Enter');assert.equal(ui.view().state.field(mentionField)[0].entityId,'house-0002');ui.close();
+});
+
+test('linked editor boundary edits and refused text transactions preserve exact draft and identity', async()=>{
+  for(const [from,insert,expectedStart,drop] of [[0,'x',1,false],[8,'x',0,false],[3,'x',0,true],[8,'\u0301',0,true]]) {
+    const held={id:'original',entityId:'place-0001',startUtf16:0,endUtf16:8};const ui=connectSetup(undefined,{...page,body:'Valdoria',mentions:[held]});ui.open('a');await tick();const view=ui.view();
+    view.dispatch({changes:{from,insert}});assert.equal(view.state.field(mentionField).length,drop?0:1);assert.equal(ui.doc.querySelector('.link-drop-notice').hidden,!drop);
+    if(!drop)assert.equal(view.state.field(mentionField)[0].startUtf16,expectedStart);
+    undo(view);assert.deepEqual(view.state.field(mentionField),[held]);const before=view.state.doc.toString();view.dispatch({changes:{from:0,insert:'\u0000'}});assert.equal(view.state.doc.toString(),before);assert.deepEqual(view.state.field(mentionField),[held]);ui.close();
+  }
+});
+
+test('link-only navigation supports explicit Discard and Save then proceed', async()=>{
+  for(const choice of ['discard','save-proceed']) {
+    let sent;const ui=connectSetup(async(cmd,args)=>{if(cmd==='save_page'){sent=args.request;return {...sent,body:sent.expectedBody,mentions:sent.expectedMentions,title:'Page',revision:1};}});
+    ui.open('a');await tick();await picker(ui);choose(ui);ui.doc.querySelectorAll('.page-link')[1].click();await tick();assert.equal(ui.doc.querySelector('#guard').open,true);ui.doc.querySelector('#'+choice).click();await tick();assert.equal(ui.doc.querySelector('#context-name').textContent,'Page');assert.equal(ui.view().state.field(mentionField).length,0);assert.equal(!!sent,choice==='save-proceed');ui.close();
+  }
 });

@@ -1,0 +1,105 @@
+# Connect acceptance handoff
+
+Issue #33, based on approved D1-D6 in #31 and merged #34 at `dceda4d`.
+Synthetic data only. Parent independent review and Valen/Ari acceptance remain
+required before merge. No push or PR was made by this implementation agent.
+
+## Implementation
+
+`SaveState` and `mentionField` own the aggregate. A discriminated picker state
+captures the editor, document, universe token, session, selection and mentions.
+The alternative was putting picker state in another CodeMirror field. The
+controller keeps asynchronous index loading and DOM focus separate from the
+canonical mention history without duplicating the mention model.
+
+Transactions are recorded before the view updates. A refused transaction changes
+neither draft nor view. Stored links are editable with the existing text and
+revision locks. Decorations distinguish saved and draft links. Both Ctrl+K and
+the selection action open the anchored existing-entity picker. Enter requires an
+explicit arrow-key choice; pointer selection uses entity IDs. Exact display ties
+show a subdued suffix, extended when needed to distinguish IDs.
+
+Text invalidation uses `pendingDrops`. Undo restores the original identity.
+A regression found that deliberate Unlink after Undo revived a historical drop
+warning. Ordered Link/Unlink entries now resolve the earlier notice. Failed
+saves retain the structured draft and never report Saved. Copying text explicitly
+excludes links. The seed and schema remain unchanged.
+
+## Automated evidence
+
+- PASS: `npm ci`, `npm run check`, `npm run desktop:check`, `npm test`
+  (107 tests), and `npm run desktop:frontend:build` in `ui`.
+- PASS: pinned Rust 1.96.0 `cargo test --locked --all-targets -j 1` at root
+  (338 tests including the new import/reopen fixture test).
+- PASS: pinned Rust 1.96.0 `cargo test --locked -j 1` in `ui/src-tauri`
+  (19 tests), and formatting checks in both crates.
+- Initial concurrent Rust builds failed with resource/compiler errors, including
+  `0xc000012d`, metadata errors and `STATUS_STACK_BUFFER_OVERRUN`. Single-job
+  pinned retries passed. Supplemental 1.99.1 root and Tauri tests also passed.
+- PASS: pinned Rust 1.96.0 `cargo clippy --locked --all-targets -j 1 -- -D warnings`
+  in both crates, and `cargo build --locked -j 1` in `ui/src-tauri`.
+  Final native captures use this pinned build. Earlier exploratory native runs
+  used the supplemental 1.99.1 build.
+
+UI regressions cover selection refusals, explicit candidate choice, exact ties,
+search choice reset, Escape focus/selection, canceled asynchronous lookup, document
+and selection drift, boundary and interior edits, invalid text rejection, original
+mention identity through Undo/Redo, persistent warnings, deliberate Unlink,
+link-only guards, Save then proceed, Discard, mismatch and unresolved saves.
+Existing reducer/property tests cover joined history and Unicode transaction parity.
+
+## Actual native evidence
+
+The repeatable `ui/scripts/webview2-connect.mjs` imports the fixture via the real
+`spike import-new` CLI into a newly reserved temporary database, launches the real
+Tauri executable with WebView2 debugging, and operates its actual DOM and editor.
+It does not substitute a browser mock or a fake bridge. Native shortcut checks
+use synthetic DOM keyboard events through the application's bindings; they do
+not prove physical keyboard routing or OS close events.
+
+Windows reported `10.0.26300.0`. WebView2 reported Edg/156. Viewport was 1120x780
+CSS pixels with devicePixelRatio 1. This is not a claim of other display scales.
+
+PASS in this native run:
+
+- Visible contextual action and anchored picker with all three Valdoria entities.
+- Place/House disambiguation and suffixes for the two exact Place/Atlas ties.
+- Link, manual Save, immediate text-drop notice, Ctrl+Z same ID/entity/range,
+  and Ctrl+Y repeating the drop.
+- Process termination and relaunch against the same synthetic file preserve the
+  committed mention ID. Explicit reopen also retains it.
+- Ctrl+K inspect, deliberate Unlink without an accidental-drop warning, and Save.
+- Long-scene popup leaves prose width unchanged. Escape returns editor focus
+  and the captured selection.
+- `node scripts/webview2-parity.mjs` matches all 22 boundary and 37 reducer cases
+  in real WebView2 with zero failures.
+
+Screenshots and the machine-readable result are in
+[`evidence/connect-native`](evidence/connect-native). Picker and inspection PNGs
+were visually inspected. The relaunch probe terminates the process after the
+aggregate was saved; it does not exercise the guarded window-close UX.
+
+## Remaining human Windows acceptance
+
+UNTESTED: physical Ctrl+K and keyboard-only operation, OS X and Alt+F4 link-only
+close guard, IME composition, screen-reader announcements, varied display scale,
+long-scene scrolled selection at screen edges, and subjective visual acceptance.
+Native stale/Busy/uncertain multi-process interaction is not manually accepted;
+the automated controller, session and real SQLite bridge suites test those paths.
+No production backup, crash recovery, mobile or cross-platform claim is made.
+
+1. Import `tests/fixtures/connect-smoke.json` with
+   `cargo run --locked --bin spike -- import-new <new.sqlite> tests/fixtures/connect-smoke.json`.
+2. Run the desktop and open that synthetic file. On the short and long scenes,
+   select Valdoria, use each entry point, filter, choose House or one exact Place
+   tie, and cancel with Escape. Check selection, focus, wrap and scroll retention.
+3. Save, close normally, relaunch, inspect the same target, Unlink and keep typing.
+4. Type before, at start, at end, inside and across the occurrence. Check the
+   persistent notice and original ID restoration through Undo/Redo. Save/reopen.
+5. Make only a link change. Exercise X and Alt+F4 with Continue, Save then proceed,
+   and explicit Discard. Confirm the structured draft survives unresolved saves.
+6. Use another instance for a stale revision. Confirm no false Saved or reload
+   replaces the draft. Text copied to the clipboard must not imply link recovery.
+
+Stop on silent link loss, identity replacement, stale text being linked, false
+Saved or content loss. Do not relax a contract to complete acceptance.

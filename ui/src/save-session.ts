@@ -244,10 +244,12 @@ export function pendingDrops(state: SaveState): string[] {
   const dropped = new Set<string>();
   for (const entry of state.ledger) {
     if (entry.kind === "text") {
-      for (const id of entry.removed) if (!live.has(id)) dropped.add(id);
+      for (const id of entry.removed) dropped.add(id);
+    } else {
+      dropped.delete(entry.kind === "link" ? entry.mention.id : entry.mentionId);
     }
   }
-  return [...dropped].sort();
+  return [...dropped].filter(id => !live.has(id)).sort();
 }
 
 /// A mention-free session sends one composed diff. Mode turns to ledger on
