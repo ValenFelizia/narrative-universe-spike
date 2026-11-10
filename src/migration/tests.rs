@@ -18,11 +18,10 @@ use crate::store::{Counts, PageEdit, PageSnapshot, Snapshot, Store};
 use super::{
     build_verified_candidate, migrate_v1_to_current, preflight_source, run_migration, sidecar_path,
     verify_candidate, verify_current, Checkpoint, MigrationStage, PinnedSource, Publication,
-    LEGACY_V1_EARLY, LEGACY_V1_LATE,
+    LEGACY_V1_EARLY, LEGACY_V1_LATE, LEGACY_V2,
 };
 
 const FIXTURE: &str = include_str!("../../tests/fixtures/v1_universe.sql");
-const V2_FIXTURE: &str = include_str!("../../tests/fixtures/v2_universe.sql");
 
 const UNIVERSE: &str = "11111111-1111-4111-8111-111111111111";
 const PAGE_ONE: &str = "22222222-2222-4222-8222-222222222222";
@@ -838,7 +837,9 @@ fn rejects_a_source_that_is_not_schema_version_one() {
 fn rejects_a_preserved_v2_database_used_as_a_source() {
     let (_dir, source, candidate) = layout();
     let conn = Connection::open(&source).expect("open v2 source");
-    conn.execute_batch(V2_FIXTURE).expect("v2 schema");
+    conn.execute_batch(LEGACY_V2).expect("v2 schema");
+    conn.execute_batch("PRAGMA user_version = 2")
+        .expect("v2 header");
     drop(conn);
     let before = fs::read(&source).expect("source bytes");
     let entries = dir_names(source.parent().expect("source parent"));

@@ -27,7 +27,7 @@ const DEFINITION_TWO: &str = "99999999-9999-4999-8999-999999999999";
 const ASSERTION_ONE: &str = "88888888-8888-4888-8888-888888888888";
 
 const REVEAL_FIXTURE: &str = include_str!("fixtures/reveal-facts.json");
-const V2_SCHEMA: &str = include_str!("fixtures/v2_universe.sql");
+const V2_SCHEMA: &str = include_str!("../src/migration/legacy_v2.sql");
 
 fn universe() -> UniverseId {
     UniverseId::parse(UNIVERSE).expect("universe")
@@ -605,6 +605,8 @@ fn a_preserved_version_two_database_is_refused_intact_with_its_own_message() {
     {
         let conn = Connection::open(&scratch.path).expect("raw");
         conn.execute_batch(V2_SCHEMA).expect("version 2 schema");
+        conn.execute_batch("PRAGMA user_version = 2")
+            .expect("version 2 header");
         conn.execute(
             "INSERT INTO metadata (singleton, universe_id) VALUES (1, ?1)",
             [UNIVERSE],
@@ -712,6 +714,69 @@ fn a_file_that_only_claims_version_two_is_foreign_not_preserved() {
         ),
         "{err}"
     );
+}
+
+/// A schema impostor carries the version 2 header and all seven version 2 table
+/// names, or the version 2 DDL with one object added or missing. None of them
+/// is a preserved version 2 universe, and the refusal leaves each file intact.
+#[test]
+fn a_version_two_impostor_with_every_table_name_is_foreign() {
+    let skeletal = "CREATE TABLE metadata (singleton INTEGER PRIMARY KEY, universe_id TEXT);
+         CREATE TABLE pages (id TEXT PRIMARY KEY);
+         CREATE TABLE types (id TEXT PRIMARY KEY);
+         CREATE TABLE entities (id TEXT PRIMARY KEY);
+         CREATE TABLE mentions (id TEXT PRIMARY KEY);
+         CREATE TABLE definitions (id TEXT PRIMARY KEY, owner_type_id TEXT);
+         CREATE TABLE assertions (id TEXT PRIMARY KEY, subject_id TEXT);"
+        .to_string();
+    let impostors = [
+        ("skeletal-v2.sqlite", skeletal),
+        (
+            "extra-table-v2.sqlite",
+            format!(
+                "{V2_SCHEMA}
+CREATE TABLE notes (id TEXT PRIMARY KEY);"
+            ),
+        ),
+        (
+            "missing-index-v2.sqlite",
+            format!(
+                "{V2_SCHEMA}
+DROP INDEX idx_assertions_target;"
+            ),
+        ),
+    ];
+    for (name, ddl) in impostors {
+        let scratch = support::scratch(name);
+        {
+            let conn = Connection::open(&scratch.path).expect("raw");
+            conn.execute_batch(&ddl).expect("impostor schema");
+            conn.execute(
+                "INSERT INTO metadata (singleton, universe_id) VALUES (1, ?1)",
+                [UNIVERSE],
+            )
+            .expect("metadata");
+            conn.execute_batch("PRAGMA user_version = 2")
+                .expect("version 2 header");
+        }
+        let before = bytes(&scratch.path);
+
+        let err = match Store::open(&scratch.path) {
+            Ok(_) => panic!("{name} must not open"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(
+                err,
+                Error::Validation {
+                    reason: ValidationReason::ForeignDatabase,
+                    ..
+                }
+            ),
+            "{name}: {err}"
+        );
+        assert_eq!(bytes(&scratch.path), before, "{name} changed");
+    }
 }
 
 /// Exporting the fixture, importing that export into a new file, and exporting

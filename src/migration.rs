@@ -33,6 +33,7 @@ static CANDIDATE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const LEGACY_V1_EARLY: &str = include_str!("migration/legacy_v1_early.sql");
 const LEGACY_V1_LATE: &str = include_str!("migration/legacy_v1_late.sql");
+const LEGACY_V2: &str = include_str!("migration/legacy_v2.sql");
 
 /// One observable boundary of a migration run.
 ///
@@ -2287,6 +2288,15 @@ fn detect_legacy_variant(conn: &Connection) -> Result<LegacyVariant> {
         return Ok(LegacyVariant::Early);
     }
     Err(schema_mismatch())
+}
+
+/// Whether the schema is exactly the frozen version 2 DDL.
+///
+/// Matching table names is not enough: a foreign file with the same seven
+/// names and different columns or constraints must not pass as a preserved
+/// version 2 universe.
+pub(crate) fn is_preserved_v2_schema(conn: &Connection) -> Result<bool> {
+    Ok(actual_schema_objects(conn)? == expected_schema_objects(LEGACY_V2)?)
 }
 
 fn verify_candidate_schema(conn: &Connection) -> Result<()> {

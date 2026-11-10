@@ -1069,36 +1069,6 @@ fn is_legacy_v1(conn: &Connection) -> Result<bool> {
     has_column(conn, "metadata", "format_version")
 }
 
-/// Tells a preserved version 2 database apart from a foreign file.
-///
-/// Version 2 is the current table set without `definitions.label`, and its
-/// metadata table has no `format_version` column (that column identifies
-/// version 1). A file that only carries `user_version = 2` is not one of ours.
-/// The whole inspection is read-only.
-fn is_preserved_v2(conn: &Connection) -> Result<bool> {
-    let tables = table_names(conn)?;
-    for name in [
-        "assertions",
-        "definitions",
-        "entities",
-        "mentions",
-        "metadata",
-        "pages",
-        "types",
-    ] {
-        if !has_table(&tables, name) {
-            return Ok(false);
-        }
-    }
-    if has_column(conn, "definitions", "label")? {
-        return Ok(false);
-    }
-    if has_column(conn, "metadata", "format_version")? {
-        return Ok(false);
-    }
-    Ok(true)
-}
-
 /// Decides what a historical database needs, without touching it.
 ///
 /// The file is only inspected through a read-only connection, so a version 1
@@ -1125,7 +1095,7 @@ fn legacy_outcome(path: &Path) -> Result<Error> {
 /// keeps a genuine version 2 universe distinguishable from an unrelated file.
 fn preserved_v2_outcome(path: &Path) -> Result<Error> {
     let inspected = open_read_only(path)?;
-    if is_preserved_v2(&inspected)? {
+    if crate::migration::is_preserved_v2_schema(&inspected)? {
         return Ok(Error::UnsupportedDatabase {
             found: crate::LEGACY_V2_SCHEMA_VERSION,
             supported: crate::SCHEMA_VERSION,

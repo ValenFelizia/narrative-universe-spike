@@ -49,6 +49,8 @@ All records are synthetic. The names are placeholders for exercising spread, not
 
 ## Preserved version 2 schema
 
-`v2_universe.sql` is the verbatim version 2 DDL. It differs from the version 3 schema in exactly two ways: `definitions` has no `label` column, and `metadata` has no `format_version` column. The crate can no longer create a version 2 database, so this fixture is how tests build a genuine one to prove that a version 2 file is preserved and refused rather than silently converted (DEC-002).
+The frozen version 2 DDL now lives at `src/migration/legacy_v2.sql`, next to the version 1 DDL, because the store uses it at runtime. A file is recognised as a genuine version 2 universe only when its `sqlite_master` matches those statements exactly; matching table names alone is not enough. Tests execute the same DDL and then set `PRAGMA user_version = 2` to build a genuine version 2 database, which proves that such a file is preserved and refused rather than silently converted (DEC-002).
 
-Do not edit it to follow the current schema. If the schema changes again, add a new frozen fixture instead; keeping this copy untouched is what makes "genuine version 2" testable.
+Version 2 differs from version 3 only in `definitions`, which has no `label` column. Neither version has `metadata.format_version`; that column belongs to version 1.
+
+Do not edit the frozen DDL to follow the current schema. If the schema changes again, add a new frozen file instead.

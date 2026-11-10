@@ -1,12 +1,13 @@
--- The historical version 2 schema of Narrative Universe, kept verbatim so a
--- test can build a genuine version 2 database. The crate can no longer create
--- one: version 3 added the definition label column and no in-place converter
--- exists (DEC-002), so a version 2 file is preserved as it is and refused.
+-- The historical version 2 schema of Narrative Universe, kept verbatim from
+-- `src/schema.sql` at commit 27b944b. The crate can no longer create a version
+-- 2 database: version 3 added the definition label column and no in-place
+-- converter exists (DEC-002), so a version 2 file is preserved and refused.
 --
--- It differs from the version 3 schema in exactly two ways: `definitions` has
--- no `label` column, and `metadata` has no `format_version` column. Keeping
--- this copy untouched is what makes "genuine version 2" testable, so do not
--- edit it to track the current schema.
+-- It differs from the version 3 schema only in `definitions`, which has no
+-- `label` column. Neither version has `metadata.format_version`; that column
+-- belongs to version 1. A file is recognised as a genuine version 2 universe
+-- only when its schema matches these statements exactly, so do not edit them
+-- to track the current schema.
 
 CREATE TABLE metadata (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -106,5 +107,3 @@ CREATE TABLE assertions (
 CREATE INDEX idx_assertions_subject_definition ON assertions (subject_id, definition_id);
 
 CREATE INDEX idx_assertions_target ON assertions (target_entity_id);
-
-PRAGMA user_version = 2;
