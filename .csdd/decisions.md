@@ -56,10 +56,13 @@ accepted direction from implementation alone.
      existing out-of-place, verified candidate and publish path. `verify`
      verifies the current version only. Both versions are 3.
   5. Conversion A: no in-place migration and no v2→v3 converter. A genuine
-     version 2 database is refused without being opened for writing, and the
-     refusal is distinct from a foreign or forged version header. Version 2
-     files are preserved test artifacts. Disposable synthetic universes are
-     recreated from JSON fixtures with `import-new` at a new path.
+     version 2 database is refused without being opened for writing. `Store::open`
+     distinguishes its exact frozen schema from foreign or forged v2 headers;
+     `spike migrate` and `spike verify` reject a v2 header during read-only
+     preflight without authenticating its schema, so an impostor can receive
+     the same unsupported-version diagnostic. Neither operation writes it.
+     Version 2 files are preserved test artifacts. Disposable synthetic
+     universes are recreated from JSON fixtures with `import-new` at a new path.
   6. Version 1 and version 2 JSON remain decodable with `label: None`. JSON
      exchange is the compatibility boundary, and it is not a lossless
      database migration: export is capped at 10 MiB and page revision counters
