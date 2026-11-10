@@ -813,7 +813,7 @@ fn a_version_1_import_into_a_fresh_database_exports_as_version_2() {
     let mut restored = Store::open(&destination).expect("reopen");
     let bytes = export_json(&mut restored).expect("export");
     let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    assert_eq!(json["format_version"], 2);
+    assert_eq!(json["format_version"], 3);
     assert_eq!(json["pages"].as_array().expect("pages").len(), 1);
     assert_eq!(json["pages"][0]["mentions"], serde_json::json!([]));
     assert_no_revision(&json);

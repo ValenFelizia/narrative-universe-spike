@@ -106,6 +106,7 @@ fn populated(store: &mut Store) {
             owner: Owner::Type(TypeId::parse(TYPE_ONE).expect("type")),
             value_class: ValueClass::Text,
             cardinality: Cardinality::Singular,
+            label: None,
             archived: false,
         })
         .expect("definition");
@@ -186,7 +187,7 @@ fn the_export_is_version_2_and_every_page_carries_its_occurrences() {
 
     let bytes = export_json(&mut store).expect("export");
     let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    assert_eq!(json["format_version"], 2);
+    assert_eq!(json["format_version"], 3);
     let pages = json["pages"].as_array().expect("pages");
     assert_eq!(pages.len(), 2);
     for page in pages {
@@ -420,7 +421,7 @@ fn an_unknown_version_or_field_is_refused() {
     let (_scratch, mut store) = created("unknown.sqlite");
     let before = store.counts().expect("counts");
     let unknown_version = serde_json::to_vec(&serde_json::json!({
-        "format_version": 3,
+        "format_version": 4,
         "universe_id": UNIVERSE,
         "pages": [],
         "types": [],
@@ -431,7 +432,7 @@ fn an_unknown_version_or_field_is_refused() {
     .expect("document");
     let err = import_json(&mut store, &unknown_version).expect_err("version");
     match err {
-        Error::UnsupportedVersion { found } => assert_eq!(found, 3),
+        Error::UnsupportedVersion { found } => assert_eq!(found, 4),
         other => panic!("expected unsupported version, got {other}"),
     }
 
@@ -722,7 +723,7 @@ fn a_version_1_document_still_imports_as_a_universe_without_occurrences() {
     assert_eq!(document.revision, PageRevision::ZERO);
     let exported = export_json(&mut store).expect("export");
     let json: serde_json::Value = serde_json::from_slice(&exported).expect("json");
-    assert_eq!(json["format_version"], 2);
+    assert_eq!(json["format_version"], 3);
     assert_eq!(json["pages"][0]["mentions"], serde_json::json!([]));
     drop(store);
     let _ = scratch;

@@ -92,6 +92,7 @@ fn fixture() -> Fixture {
         owner: Owner::Type(entity_type.id.clone()),
         value_class: ValueClass::Text,
         cardinality: Cardinality::Singular,
+        label: None,
         archived: true,
     };
     let boolean_definition = Definition {
@@ -99,6 +100,7 @@ fn fixture() -> Fixture {
         owner: Owner::Type(entity_type.id.clone()),
         value_class: ValueClass::Boolean,
         cardinality: Cardinality::Singular,
+        label: None,
         archived: false,
     };
     let reference_definition = Definition {
@@ -106,6 +108,7 @@ fn fixture() -> Fixture {
         owner: Owner::Entity(narrator.id.clone()),
         value_class: ValueClass::Reference,
         cardinality: Cardinality::Singular,
+        label: None,
         archived: false,
     };
     let archived_assertion = Assertion {
@@ -303,7 +306,7 @@ fn t08_roundtrip_matches_literal_fields_and_json_shape() {
     persist(&mut store, &fixture);
     let bytes = narrative_universe::export_json(&mut store).expect("export");
     let document: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    assert_eq!(document["format_version"], 2);
+    assert_eq!(document["format_version"], 3);
     assert_eq!(document["universe_id"], universe().as_str());
     assert_eq!(
         document["pages"][0]["id"],
@@ -493,12 +496,12 @@ fn t11_rejected_documents_do_not_write() {
         "assertions": []
     });
     let mut version = base.clone();
-    version["format_version"] = serde_json::json!(3);
+    version["format_version"] = serde_json::json!(4);
     expect_unchanged(
         &scratch.path,
         &before,
         &serde_json::to_vec(&version).unwrap(),
-        |err| matches!(err, Error::UnsupportedVersion { found: 3 }),
+        |err| matches!(err, Error::UnsupportedVersion { found: 4 }),
     );
     let mut other = base.clone();
     other["universe_id"] = serde_json::json!("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");

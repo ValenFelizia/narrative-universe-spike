@@ -351,12 +351,74 @@ pub struct Entity {
     pub page_id: Option<PageId>,
 }
 
+/// The one label rule for a property definition.
+///
+/// A label is human-authored display text. It is not an identity, it never
+/// implies an inverse predicate, and it is never inferred: `None` on
+/// [`Definition`] means the property is unnamed.
+///
+/// A valid label is 1 to 120 Unicode scalar values, has no leading or trailing
+/// Unicode whitespace and contains no control character. Accepted text is kept
+/// byte for byte. Nothing is trimmed, case folded or Unicode-normalized, and an
+/// invalid label is rejected rather than repaired.
+///
+/// The rule lives here so that JSON decoding, record creation, stored-row reads
+/// and logical verification cannot drift apart. The SQLite column check is only
+/// a backstop for the type and for emptiness; `length(trim(...))` would accept a
+/// tab, a non-breaking space or a BLOB.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DefinitionLabel(String);
+
+impl DefinitionLabel {
+    /// The longest accepted label, counted in Unicode scalar values.
+    pub const MAX_SCALARS: usize = 120;
+
+    pub fn parse(raw: &str) -> Result<Self> {
+        let scalars = raw.chars().count();
+        if scalars == 0 || scalars > Self::MAX_SCALARS {
+            return Err(Error::validation(
+                ValidationReason::InvalidLabel,
+                "label",
+                None,
+            ));
+        }
+        if raw.chars().any(char::is_control)
+            || raw.chars().next().is_some_and(char::is_whitespace)
+            || raw.chars().next_back().is_some_and(char::is_whitespace)
+        {
+            return Err(Error::validation(
+                ValidationReason::InvalidLabel,
+                "label",
+                None,
+            ));
+        }
+        Ok(Self(raw.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for DefinitionLabel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Definition {
     pub id: DefinitionId,
     pub owner: Owner,
     pub value_class: ValueClass,
     pub cardinality: Cardinality,
+    /// A human-authored outward predicate label.
+    ///
+    /// `None` means unnamed. It is never inferred from the owner, the value
+    /// class, the cardinality or the stable id, and there is no inverse label.
+    /// Constructing one goes through [`DefinitionLabel::parse`], which is the
+    /// only place the label rule lives.
+    pub label: Option<DefinitionLabel>,
     pub archived: bool,
 }
 

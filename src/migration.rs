@@ -20,9 +20,11 @@ use crate::store::{
 const HEADER_LEN: usize = 100;
 const MAGIC: &[u8] = b"SQLite format 3\0";
 const SOURCE_BUSY_TIMEOUT: Duration = Duration::from_millis(1000);
-const LEGACY_USER_VERSION: i32 = 1;
-const CURRENT_USER_VERSION: i32 = 2;
-const LEGACY_FORMAT_VERSION: i64 = 1;
+/// The only source version this build migrates, from `lib.rs`.
+const LEGACY_USER_VERSION: i32 = crate::LEGACY_V1_SCHEMA_VERSION;
+/// The `format_version` recorded inside the metadata table of a version 1
+/// file. It is not the JSON exchange format version.
+const LEGACY_V1_METADATA_FORMAT_VERSION: i64 = 1;
 const UTF8_ENCODING: i32 = 1;
 const SIDECARS: [&str; 3] = ["-journal", "-wal", "-shm"];
 const CANDIDATE_ATTEMPTS: u32 = 32;
@@ -31,6 +33,7 @@ static CANDIDATE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const LEGACY_V1_EARLY: &str = include_str!("migration/legacy_v1_early.sql");
 const LEGACY_V1_LATE: &str = include_str!("migration/legacy_v1_late.sql");
+const LEGACY_V2: &str = include_str!("migration/legacy_v2.sql");
 
 /// One observable boundary of a migration run.
 ///
@@ -123,7 +126,7 @@ pub struct MigrationReport {
     pub residuals: Vec<PathBuf>,
 }
 
-/// The result of a general version 2 verification.
+/// The result of a general current-version verification.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerificationReport {
     pub universe_id: UniverseId,
@@ -131,7 +134,7 @@ pub struct VerificationReport {
     pub mentions: u64,
 }
 
-/// A failed general version 2 verification.
+/// A failed general current-version verification.
 #[derive(Debug)]
 pub struct VerificationError {
     pub path: PathBuf,
@@ -330,7 +333,13 @@ impl RunState {
     }
 }
 
-/// Migrates a version 1 database into a new version 2 destination.
+/// Migrates a version 1 database into a new database at the current version.
+///
+/// The current version is [`crate::SCHEMA_VERSION`], which is 3: the candidate
+/// is built through [`Store::import_new_private`], so it is stamped with the
+/// same current schema the ordinary store writes. This is not, and does not
+/// advertise, a version 2 conversion; version 2 files are preserved as they are
+/// and are refused by [`Store::open`].
 ///
 /// The source is opened read-only with one pinned read transaction and a
 /// captured canonical snapshot. The transaction stays alive through candidate
@@ -363,7 +372,7 @@ impl RunState {
 ///
 /// Process crashes are tested cut points; Windows directory-entry durability
 /// after power loss is not claimed.
-pub fn migrate_v1_to_v2(
+pub fn migrate_v1_to_current(
     source: &Path,
     destination: &Path,
 ) -> std::result::Result<MigrationReport, MigrationError> {
@@ -395,18 +404,20 @@ fn crash_observer(point: Checkpoint, _view: CheckpointView<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Verifies a general version 2 database without migrating or upgrading it.
+/// Verifies a general database at the current version without migrating or
+/// upgrading it.
 ///
 /// The check is read-only. It accepts edited databases with nonzero page
 /// revisions and nonempty, geometrically valid, correctly referenced
 /// mentions. It rejects an unsupported version, a foreign schema, a hot
 /// sidecar, broken integrity, broken foreign keys, malformed identifiers,
-/// malformed mention geometry, and cross-record domain violations such as an
-/// assertion whose subject does not fit its definition's owner or a value that
-/// does not fit its definition's value class. It never calls `Store::open`, so
-/// verification cannot silently create or upgrade a database.
-pub fn verify_v2(path: &Path) -> std::result::Result<VerificationReport, VerificationError> {
-    let facts = inspect_v2_database(path, "database").map_err(|cause| VerificationError {
+/// malformed mention geometry, an invalid stored definition label, and
+/// cross-record domain violations such as an assertion whose subject does not
+/// fit its definition's owner or a value that does not fit its definition's
+/// value class. It never calls `Store::open`, so verification cannot silently
+/// create or upgrade a database.
+pub fn verify_current(path: &Path) -> std::result::Result<VerificationReport, VerificationError> {
+    let facts = inspect_current_database(path, "database").map_err(|cause| VerificationError {
         path: path.to_path_buf(),
         cause,
     })?;
@@ -419,7 +430,7 @@ pub fn verify_v2(path: &Path) -> std::result::Result<VerificationReport, Verific
 
 /// C1's candidate-only orchestration, retained for the migration tests.
 ///
-/// Production publication goes through [`migrate_v1_to_v2`], which uses the
+/// Production publication goes through [`migrate_v1_to_current`], which uses the
 /// same lifecycle and keeps the source pinned through the final check.
 #[cfg(test)]
 pub(crate) fn build_verified_candidate(
@@ -1334,6 +1345,12 @@ fn read_legacy_snapshot(conn: &Connection) -> Result<Snapshot> {
     let user_version: i32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|err| map_sql("user_version", err))?;
+    if user_version == crate::LEGACY_V2_SCHEMA_VERSION {
+        return Err(Error::UnsupportedDatabase {
+            found: user_version,
+            supported: crate::SCHEMA_VERSION,
+        });
+    }
     if user_version != LEGACY_USER_VERSION {
         return Err(Error::UnsupportedVersion {
             found: user_version,
@@ -1406,7 +1423,7 @@ fn read_legacy_metadata(conn: &Connection) -> Result<UniverseId> {
             None,
         ));
     }
-    if format_version != LEGACY_FORMAT_VERSION {
+    if format_version != LEGACY_V1_METADATA_FORMAT_VERSION {
         return Err(Error::validation(
             ValidationReason::ForeignDatabase,
             "format_version",
@@ -1531,6 +1548,9 @@ fn read_legacy_definitions(conn: &Connection) -> Result<Vec<Definition>> {
             owner,
             value_class: ValueClass::parse(&value_class)?,
             cardinality: Cardinality::parse(&cardinality)?,
+            // The version 1 schema has no label column, so every migrated
+            // definition is unnamed. Nothing is invented here.
+            label: None,
             archived: read_flag(archived, "archived")?,
         });
     }
@@ -1734,11 +1754,11 @@ struct DatabaseFacts {
 /// canonical page, type, entity, definition, and assertion reading, including
 /// mention geometry; page revisions are validated separately and counted in
 /// `DatabaseFacts::revised_pages`.
-fn inspect_v2_database(path: &Path, field: &'static str) -> Result<DatabaseFacts> {
+fn inspect_current_database(path: &Path, field: &'static str) -> Result<DatabaseFacts> {
     require_regular_file(path, field)?;
     require_no_sidecars(path)?;
     let (header, len) = read_observation(path)?;
-    validate_candidate_header(&header, len)?;
+    validate_current_header(&header, len)?;
     let observation = SourceObservation { header, len };
 
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -1764,7 +1784,7 @@ fn inspect_v2_database(path: &Path, field: &'static str) -> Result<DatabaseFacts
     let user_version: i32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|err| map_sql("user_version", err))?;
-    if user_version != CURRENT_USER_VERSION {
+    if user_version != crate::SCHEMA_VERSION {
         return Err(Error::UnsupportedVersion {
             found: user_version,
         });
@@ -1817,7 +1837,7 @@ fn verify_candidate(candidate: &Path, expected: &Snapshot) -> Result<()> {
 /// with zero page revisions and zero occurrences. The published destination is
 /// checked with the same function as the candidate.
 fn verify_migration_database(path: &Path, expected: &Snapshot, field: &'static str) -> Result<()> {
-    let facts = inspect_v2_database(path, field)?;
+    let facts = inspect_current_database(path, field)?;
     if facts.mentions != 0 {
         return Err(Error::Storage {
             message: format!("{field} has {} occurrences", facts.mentions),
@@ -2068,8 +2088,8 @@ fn validate_legacy_header(header: &[u8; HEADER_LEN], len: u64) -> Result<()> {
     validate_header(header, len, LEGACY_USER_VERSION)
 }
 
-fn validate_candidate_header(header: &[u8; HEADER_LEN], len: u64) -> Result<()> {
-    validate_header(header, len, CURRENT_USER_VERSION)
+fn validate_current_header(header: &[u8; HEADER_LEN], len: u64) -> Result<()> {
+    validate_header(header, len, crate::SCHEMA_VERSION)
 }
 
 fn validate_header(header: &[u8; HEADER_LEN], len: u64, expected_user: i32) -> Result<()> {
@@ -2137,6 +2157,19 @@ fn validate_header(header: &[u8; HEADER_LEN], len: u64, expected_user: i32) -> R
     }
     let user_version = i32::from_be_bytes([header[60], header[61], header[62], header[63]]);
     if user_version != expected_user {
+        // A known preserved version gets a distinct refusal instead of a bare
+        // number. A version 2 file has no in-place conversion in any mode. A
+        // version 1 file is refused as a current-version target, because it
+        // needs `spike migrate`. Any other number is simply unsupported.
+        if user_version == crate::LEGACY_V2_SCHEMA_VERSION
+            || (expected_user == crate::SCHEMA_VERSION
+                && user_version == crate::LEGACY_V1_SCHEMA_VERSION)
+        {
+            return Err(Error::UnsupportedDatabase {
+                found: user_version,
+                supported: crate::SCHEMA_VERSION,
+            });
+        }
         return Err(Error::UnsupportedVersion {
             found: user_version,
         });
@@ -2255,6 +2288,15 @@ fn detect_legacy_variant(conn: &Connection) -> Result<LegacyVariant> {
         return Ok(LegacyVariant::Early);
     }
     Err(schema_mismatch())
+}
+
+/// Whether the schema is exactly the frozen version 2 DDL.
+///
+/// Matching table names is not enough: a foreign file with the same seven
+/// names and different columns or constraints must not pass as a preserved
+/// version 2 universe.
+pub(crate) fn is_preserved_v2_schema(conn: &Connection) -> Result<bool> {
+    Ok(actual_schema_objects(conn)? == expected_schema_objects(LEGACY_V2)?)
 }
 
 fn verify_candidate_schema(conn: &Connection) -> Result<()> {

@@ -54,7 +54,10 @@ fn create_reopen_reads_empty_universe_and_schema_version() {
         }
     );
     drop(store);
-    assert_eq!(user_version(&scratch.path), 2);
+    assert_eq!(
+        user_version(&scratch.path),
+        narrative_universe::SCHEMA_VERSION
+    );
     let store = Store::open(&scratch.path).expect("open");
     assert_eq!(store.universe_id().as_str(), universe().as_str());
     let conn = Connection::open(&scratch.path).expect("raw");
@@ -364,6 +367,7 @@ fn t03_unknown_subject_persists_nothing() {
             owner: Owner::Type(entity_type.id),
             value_class: ValueClass::Text,
             cardinality: Cardinality::Singular,
+            label: None,
             archived: false,
         })
         .expect("definition");
@@ -418,6 +422,7 @@ fn t03_unknown_target_persists_nothing() {
             owner: Owner::Type(entity_type.id),
             value_class: ValueClass::Reference,
             cardinality: Cardinality::Singular,
+            label: None,
             archived: false,
         })
         .expect("definition");
@@ -474,6 +479,7 @@ fn t03_definition_owned_by_other_entity_persists_nothing() {
             owner: Owner::Entity(other.id),
             value_class: ValueClass::Boolean,
             cardinality: Cardinality::Singular,
+            label: None,
             archived: false,
         })
         .expect("definition");
@@ -514,6 +520,7 @@ fn t03_definition_owned_by_other_type_persists_nothing() {
             owner: Owner::Type(house.id),
             value_class: ValueClass::Text,
             cardinality: Cardinality::Singular,
+            label: None,
             archived: false,
         })
         .expect("definition");
@@ -600,6 +607,7 @@ fn t04_absence_unknown_and_false_stay_distinct() {
             owner: Owner::Type(entity_type.id.clone()),
             value_class: ValueClass::Boolean,
             cardinality: Cardinality::Singular,
+            label: None,
             archived: false,
         })
         .expect("absent");
@@ -609,6 +617,7 @@ fn t04_absence_unknown_and_false_stay_distinct() {
             owner: Owner::Type(entity_type.id.clone()),
             value_class: ValueClass::Boolean,
             cardinality: Cardinality::Singular,
+            label: None,
             archived: false,
         })
         .expect("unknown definition");
@@ -618,6 +627,7 @@ fn t04_absence_unknown_and_false_stay_distinct() {
             owner: Owner::Type(entity_type.id.clone()),
             value_class: ValueClass::Boolean,
             cardinality: Cardinality::Singular,
+            label: None,
             archived: false,
         })
         .expect("false definition");
@@ -724,6 +734,7 @@ fn absent_metadata_is_not_an_empty_string() {
             owner: Owner::Type(entity_type.id),
             value_class: ValueClass::Text,
             cardinality: Cardinality::Singular,
+            label: None,
             archived: false,
         })
         .expect("definition");
@@ -779,6 +790,7 @@ fn four_canon_states_roundtrip() {
             owner: Owner::Type(entity_type.id),
             value_class: ValueClass::Text,
             cardinality: Cardinality::Singular,
+            label: None,
             archived: false,
         })
         .expect("definition");
@@ -850,6 +862,7 @@ fn singular_definition_stores_two_assertions() {
             owner: Owner::Entity(subject.id.clone()),
             value_class: ValueClass::Text,
             cardinality: Cardinality::Singular,
+            label: None,
             archived: false,
         })
         .expect("definition");
@@ -912,6 +925,7 @@ fn schema_checks_reject_null_bypass_and_bad_foreign_keys() {
             owner: Owner::Type(entity_type.id.clone()),
             value_class: ValueClass::Text,
             cardinality: Cardinality::Singular,
+            label: None,
             archived: false,
         })
         .expect("definition");
@@ -1054,6 +1068,7 @@ fn archived_definition_rejects_new_assertion() {
             owner: Owner::Type(entity_type.id),
             value_class: ValueClass::Text,
             cardinality: Cardinality::Multiple,
+            label: None,
             archived: true,
         })
         .expect("definition");
@@ -1122,6 +1137,7 @@ fn null_primary_keys_are_rejected() {
             owner: Owner::Type(entity_type.id.clone()),
             value_class: ValueClass::Text,
             cardinality: Cardinality::Singular,
+            label: None,
             archived: false,
         })
         .expect("definition");

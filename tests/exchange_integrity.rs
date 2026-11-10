@@ -380,7 +380,7 @@ fn a_healthy_universe_still_exports_both_pages_after_the_checks() {
 
     let bytes = export_json(&mut store).expect("export");
     let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    assert_eq!(json["format_version"], 2);
+    assert_eq!(json["format_version"], 3);
     let pages = json["pages"].as_array().expect("pages");
     assert_eq!(pages.len(), 2);
     assert_eq!(pages[0]["id"], PAGE_ONE);

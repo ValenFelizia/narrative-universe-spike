@@ -538,7 +538,7 @@ fn a_proper_object_document_still_round_trips_after_all_of_this() {
     assert_eq!(page.body.mentions[0].end_utf16, 5);
     let bytes = export_json(&mut store).expect("export");
     let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    assert_eq!(json["format_version"], 2);
+    assert_eq!(json["format_version"], 3);
     assert_eq!(json["pages"][0]["title"], "Encuentro");
     assert_eq!(json["pages"][0]["mentions"][0]["id"], MENTION_ONE);
     assert!(!String::from_utf8(bytes).expect("utf8").contains("revision"));

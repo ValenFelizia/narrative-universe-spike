@@ -40,6 +40,7 @@ fn world(store: &mut Store) -> (Entity, Definition) {
             owner: Owner::Type(entity_type.id),
             value_class: ValueClass::Text,
             cardinality: Cardinality::Singular,
+            label: None,
             archived: false,
         })
         .expect("definition");
@@ -250,6 +251,7 @@ fn t06_multiple_cardinality_does_not_conflict() {
             owner: Owner::Type(entity_type.id),
             value_class: ValueClass::Text,
             cardinality: Cardinality::Multiple,
+            label: None,
             archived: false,
         })
         .expect("definition");

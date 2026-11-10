@@ -25,6 +25,15 @@ pub enum Error {
     MigrationRequired {
         found: i32,
     },
+    /// A preserved database version that this build will not open.
+    ///
+    /// It is reported instead of `UnsupportedVersion` so the refusal can say
+    /// which version this build reads and that only version 1 is migrated. No
+    /// in-place conversion of such a file exists.
+    UnsupportedDatabase {
+        found: i32,
+        supported: i32,
+    },
     WrongUniverse {
         expected: String,
         found: String,
@@ -70,6 +79,7 @@ pub enum ValidationReason {
     CoordinateOverflow,
     InvalidRevision,
     RevisionExhausted,
+    InvalidLabel,
 }
 
 impl Error {
@@ -111,6 +121,11 @@ impl fmt::Display for Error {
             Self::MigrationRequired { found } => {
                 write!(formatter, "schema version {found} needs a migration")
             }
+            Self::UnsupportedDatabase { found, supported } => write!(
+                formatter,
+                "database schema version {found} is not supported by this build; \
+                 it reads version {supported} and migrates version 1 only"
+            ),
             Self::WrongUniverse { expected, found } => {
                 write!(
                     formatter,

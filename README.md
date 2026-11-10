@@ -55,7 +55,9 @@ cargo run --locked --bin spike -- migrate ./legacy-universe.sqlite ./migrated-un
 cargo run --locked --bin spike -- verify ./migrated-universe.sqlite
 ```
 
-`migrate` prints the universe id, counts, destination, and any residual path on success; on failure it prints the stage, both paths, the cause, and every residual path. `verify` is a read-only general check: it accepts an edited v2 database with nonzero page revisions and valid occurrences, and it enforces the same cross-record domain rules as the store, including assertion applicability, definition value-class agreement, and reference targets. It does not upgrade or create anything.
+`migrate` prints the universe id, counts, destination, and any residual path on success; on failure it prints the stage, both paths, the cause, and every residual path. `verify` is a read-only general check of the current version 3 format only. It enforces the same cross-record domain rules as the store, including assertion applicability, definition value-class agreement, and reference targets. It does not upgrade or create anything.
+
+`migrate` converts version 1 only. A version 2 SQLite database is refused by every command, and nothing converts it in place. A version 3 database is recreated from its JSON export with `import-new` at a new path (Conversion A), so page revision counters restart at the import.
 
 The fixture is synthetic, not War Archivist canon. See [fixture notes](tests/fixtures/README.md). The Spanish text inside the fixture and the canon values are intentional test data, **not documentation left untranslated**.
 
@@ -69,7 +71,7 @@ For the read-only desktop proof's Windows prerequisites and run commands, see [u
 | `src/store.rs` | Synchronous domain checks, transactions, SQLite reads and writes |
 | `src/exchange.rs` | Versioned JSON parse, encode, and the 10 MiB input cap |
 | `src/mentions.rs` | Pure mention identity and single-edit semantics |
-| `src/migration.rs` | Version 1 snapshot reading, v2 verification, and no-overwrite publication |
+| `src/migration.rs` | Version 1 snapshot reading, current verification, and no-overwrite publication |
 | `src/schema.sql` | Persistent tables, foreign keys, and constraints |
 | `src/bin/spike.rs` | Minimal `seed` / `inspect` / exchange / `migrate` / `verify` demonstration |
 | `tests/` | Real-file tests, process replay, validation, and concurrency regressions |

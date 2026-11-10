@@ -151,7 +151,7 @@ fn cli_migrates_once_and_verifies_the_destination() {
 }
 
 #[test]
-fn cli_verifies_an_edited_v2_database_with_a_mention() {
+fn cli_verifies_an_edited_current_database_with_a_mention() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("edited.sqlite");
     success(&run(&[OsStr::new("seed"), path.as_os_str()]));

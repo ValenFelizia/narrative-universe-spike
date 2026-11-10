@@ -197,9 +197,9 @@ fn map_open_error(error: Error) -> BridgeError {
             reason: ValidationReason::NotADatabase | ValidationReason::ForeignDatabase,
             ..
         } => BridgeError::InvalidDatabase,
-        Error::UnsupportedVersion { .. } | Error::MigrationRequired { .. } => {
-            BridgeError::UnsupportedDatabase
-        }
+        Error::UnsupportedVersion { .. }
+        | Error::MigrationRequired { .. }
+        | Error::UnsupportedDatabase { .. } => BridgeError::UnsupportedDatabase,
         _ => BridgeError::ReadFailed,
     }
 }
