@@ -645,7 +645,7 @@ fn a_new_database_is_always_the_current_version() {
     drop(store);
     let raw = bytes(&scratch.path);
     let version = i32::from_be_bytes(raw[60..64].try_into().expect("header"));
-    assert_eq!(version, 2);
+    assert_eq!(version, narrative_universe::SCHEMA_VERSION);
 }
 
 #[test]
@@ -913,7 +913,7 @@ fn the_export_refuses_a_page_with_mentions() {
     // occurrence.
     let bytes = export_json(&mut store).expect("export");
     let document: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    assert_eq!(document["format_version"], 2);
+    assert_eq!(document["format_version"], 3);
     assert_eq!(document["pages"][0]["mentions"][0]["id"], MENTION_ONE);
     assert_eq!(document["pages"][0]["mentions"][0]["entity_id"], ENTITY_ONE);
     assert_eq!(document["pages"][0]["mentions"][0]["start_utf16"], 0);

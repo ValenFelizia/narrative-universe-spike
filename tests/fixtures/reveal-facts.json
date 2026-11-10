@@ -1,0 +1,277 @@
+{
+  "format_version": 3,
+  "universe_id": "00000000-0000-4000-8000-000000000039",
+  "pages": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "title": "Night at the ford",
+      "body": "Mara Vey crossed the ford with the Ashfall Order.",
+      "mentions": [
+        {
+          "id": "00000000-0000-4000-8000-000000000101",
+          "entity_id": "00000000-0000-4000-8000-000000000011",
+          "start_utf16": 0,
+          "end_utf16": 8
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000102",
+          "entity_id": "00000000-0000-4000-8000-000000000013",
+          "start_utf16": 35,
+          "end_utf16": 48
+        }
+      ]
+    }
+  ],
+  "types": [
+    {
+      "id": "00000000-0000-4000-8000-000000000021",
+      "label": "Person"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000022",
+      "label": "Faction"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000023",
+      "label": "Place"
+    }
+  ],
+  "entities": [
+    {
+      "id": "00000000-0000-4000-8000-000000000011",
+      "label": "Mara Vey",
+      "type_id": "00000000-0000-4000-8000-000000000021",
+      "page_id": "00000000-0000-4000-8000-000000000001"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000012",
+      "label": "Corin Hale",
+      "type_id": "00000000-0000-4000-8000-000000000021",
+      "page_id": null
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000013",
+      "label": "Ashfall Order",
+      "type_id": "00000000-0000-4000-8000-000000000022",
+      "page_id": null
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000014",
+      "label": "Tidewardens",
+      "type_id": "00000000-0000-4000-8000-000000000022",
+      "page_id": null
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000015",
+      "label": "Eastreach",
+      "type_id": "00000000-0000-4000-8000-000000000023",
+      "page_id": null
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000016",
+      "label": "Saltmarsh",
+      "type_id": "00000000-0000-4000-8000-000000000023",
+      "page_id": null
+    }
+  ],
+  "definitions": [
+    {
+      "id": "00000000-0000-4000-8000-000000000031",
+      "owner": {"type": "type", "id": "00000000-0000-4000-8000-000000000021"},
+      "value_class": "reference",
+      "cardinality": "multiple",
+      "archived": false,
+      "label": "member of"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000032",
+      "owner": {"type": "type", "id": "00000000-0000-4000-8000-000000000021"},
+      "value_class": "reference",
+      "cardinality": "singular",
+      "archived": false,
+      "label": "born in"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000033",
+      "owner": {"type": "type", "id": "00000000-0000-4000-8000-000000000021"},
+      "value_class": "boolean",
+      "cardinality": "singular",
+      "archived": false,
+      "label": "oath sworn"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000034",
+      "owner": {"type": "type", "id": "00000000-0000-4000-8000-000000000021"},
+      "value_class": "text",
+      "cardinality": "multiple",
+      "archived": false,
+      "label": "epithet"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000035",
+      "owner": {"type": "type", "id": "00000000-0000-4000-8000-000000000021"},
+      "value_class": "text",
+      "cardinality": "singular",
+      "archived": false,
+      "label": "true name"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000036",
+      "owner": {"type": "entity", "id": "00000000-0000-4000-8000-000000000011"},
+      "value_class": "text",
+      "cardinality": "singular",
+      "archived": true,
+      "label": "archived sigil"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000037",
+      "owner": {"type": "type", "id": "00000000-0000-4000-8000-000000000021"},
+      "value_class": "boolean",
+      "cardinality": "multiple",
+      "archived": false,
+      "label": null
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000038",
+      "owner": {"type": "type", "id": "00000000-0000-4000-8000-000000000021"},
+      "value_class": "reference",
+      "cardinality": "multiple",
+      "archived": false,
+      "label": "member of"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "00000000-0000-4000-8000-000000000041",
+      "subject_id": "00000000-0000-4000-8000-000000000011",
+      "definition_id": "00000000-0000-4000-8000-000000000031",
+      "value": {"kind": "reference", "target_id": "00000000-0000-4000-8000-000000000013"},
+      "canon": "PROVISIONAL",
+      "source_status_raw": "draft chapter 3",
+      "provenance": {"external_ref": "chronicle-a", "locator": "folio 3", "fragment": null, "source_revision": null},
+      "scope_note": null,
+      "archived": false
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000042",
+      "subject_id": "00000000-0000-4000-8000-000000000011",
+      "definition_id": "00000000-0000-4000-8000-000000000031",
+      "value": {"kind": "reference", "target_id": "00000000-0000-4000-8000-000000000014"},
+      "canon": "ABIERTO",
+      "source_status_raw": null,
+      "provenance": {"external_ref": null, "locator": "dockside rumor", "fragment": null, "source_revision": null},
+      "scope_note": null,
+      "archived": false
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000043",
+      "subject_id": "00000000-0000-4000-8000-000000000012",
+      "definition_id": "00000000-0000-4000-8000-000000000031",
+      "value": {"kind": "reference", "target_id": "00000000-0000-4000-8000-000000000013"},
+      "canon": "ACORDADO",
+      "source_status_raw": null,
+      "provenance": {"external_ref": null, "locator": null, "fragment": "oath", "source_revision": "rev-7"},
+      "scope_note": null,
+      "archived": false
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000044",
+      "subject_id": "00000000-0000-4000-8000-000000000011",
+      "definition_id": "00000000-0000-4000-8000-000000000032",
+      "value": {"kind": "reference", "target_id": "00000000-0000-4000-8000-000000000015"},
+      "canon": "ACORDADO",
+      "source_status_raw": null,
+      "provenance": {"external_ref": "atlas-east", "locator": null, "fragment": null, "source_revision": null},
+      "scope_note": null,
+      "archived": false
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000045",
+      "subject_id": "00000000-0000-4000-8000-000000000011",
+      "definition_id": "00000000-0000-4000-8000-000000000032",
+      "value": {"kind": "reference", "target_id": "00000000-0000-4000-8000-000000000016"},
+      "canon": "ACORDADO",
+      "source_status_raw": null,
+      "provenance": {"external_ref": null, "locator": null, "fragment": "salt ledger", "source_revision": null},
+      "scope_note": null,
+      "archived": false
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000046",
+      "subject_id": "00000000-0000-4000-8000-000000000011",
+      "definition_id": "00000000-0000-4000-8000-000000000034",
+      "value": {"kind": "text", "text": "the ford-walker"},
+      "canon": "PROVISIONAL",
+      "source_status_raw": null,
+      "provenance": {"external_ref": null, "locator": "tavern song", "fragment": null, "source_revision": null},
+      "scope_note": null,
+      "archived": false
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000047",
+      "subject_id": "00000000-0000-4000-8000-000000000012",
+      "definition_id": "00000000-0000-4000-8000-000000000033",
+      "value": {"kind": "boolean", "value": false},
+      "canon": "ACORDADO",
+      "source_status_raw": null,
+      "provenance": {"external_ref": null, "locator": null, "fragment": null, "source_revision": null},
+      "scope_note": null,
+      "archived": false
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000048",
+      "subject_id": "00000000-0000-4000-8000-000000000011",
+      "definition_id": "00000000-0000-4000-8000-000000000037",
+      "value": {"kind": "unknown"},
+      "canon": "PROVISIONAL",
+      "source_status_raw": null,
+      "provenance": {"external_ref": null, "locator": null, "fragment": null, "source_revision": "rev-9"},
+      "scope_note": null,
+      "archived": false
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000049",
+      "subject_id": "00000000-0000-4000-8000-000000000012",
+      "definition_id": "00000000-0000-4000-8000-000000000035",
+      "value": {"kind": "unknown"},
+      "canon": "MISTERIO_INTENCIONAL",
+      "source_status_raw": null,
+      "provenance": {"external_ref": null, "locator": null, "fragment": null, "source_revision": null},
+      "scope_note": "sealed until the second flood",
+      "archived": false
+    },
+    {
+      "id": "00000000-0000-4000-8000-00000000004a",
+      "subject_id": "00000000-0000-4000-8000-000000000011",
+      "definition_id": "00000000-0000-4000-8000-000000000036",
+      "value": {"kind": "text", "text": "ash and salt"},
+      "canon": "ACORDADO",
+      "source_status_raw": "field notes",
+      "provenance": {"external_ref": "sigil-book", "locator": null, "fragment": null, "source_revision": null},
+      "scope_note": null,
+      "archived": true
+    },
+    {
+      "id": "00000000-0000-4000-8000-00000000004b",
+      "subject_id": "00000000-0000-4000-8000-000000000012",
+      "definition_id": "00000000-0000-4000-8000-000000000038",
+      "value": {"kind": "reference", "target_id": "00000000-0000-4000-8000-000000000014"},
+      "canon": "ABIERTO",
+      "source_status_raw": null,
+      "provenance": {"external_ref": null, "locator": "harbor gossip", "fragment": null, "source_revision": null},
+      "scope_note": null,
+      "archived": false
+    },
+    {
+      "id": "00000000-0000-4000-8000-00000000004c",
+      "subject_id": "00000000-0000-4000-8000-000000000011",
+      "definition_id": "00000000-0000-4000-8000-000000000038",
+      "value": {"kind": "reference", "target_id": "00000000-0000-4000-8000-000000000013"},
+      "canon": "PROVISIONAL",
+      "source_status_raw": null,
+      "provenance": {"external_ref": "witness-2", "locator": null, "fragment": null, "source_revision": null},
+      "scope_note": null,
+      "archived": false
+    }
+  ]
+}

@@ -16,12 +16,13 @@ use crate::model::{
 use crate::store::{Counts, PageEdit, PageSnapshot, Snapshot, Store};
 
 use super::{
-    build_verified_candidate, migrate_v1_to_v2, preflight_source, run_migration, sidecar_path,
-    verify_candidate, verify_v2, Checkpoint, MigrationStage, PinnedSource, Publication,
+    build_verified_candidate, migrate_v1_to_current, preflight_source, run_migration, sidecar_path,
+    verify_candidate, verify_current, Checkpoint, MigrationStage, PinnedSource, Publication,
     LEGACY_V1_EARLY, LEGACY_V1_LATE,
 };
 
 const FIXTURE: &str = include_str!("../../tests/fixtures/v1_universe.sql");
+const V2_FIXTURE: &str = include_str!("../../tests/fixtures/v2_universe.sql");
 
 const UNIVERSE: &str = "11111111-1111-4111-8111-111111111111";
 const PAGE_ONE: &str = "22222222-2222-4222-8222-222222222222";
@@ -115,6 +116,7 @@ fn base_snapshot() -> Snapshot {
                 owner: Owner::Type(type_id(TYPE_ONE)),
                 value_class: ValueClass::Reference,
                 cardinality: Cardinality::Singular,
+                label: None,
                 archived: false,
             },
             Definition {
@@ -122,6 +124,7 @@ fn base_snapshot() -> Snapshot {
                 owner: Owner::Entity(entity_id(ENTITY_ONE)),
                 value_class: ValueClass::Text,
                 cardinality: Cardinality::Multiple,
+                label: None,
                 archived: true,
             },
             Definition {
@@ -129,6 +132,7 @@ fn base_snapshot() -> Snapshot {
                 owner: Owner::Type(type_id(TYPE_TWO)),
                 value_class: ValueClass::Boolean,
                 cardinality: Cardinality::Singular,
+                label: None,
                 archived: false,
             },
         ],
@@ -326,12 +330,12 @@ fn layout() -> (TempDir, PathBuf, PathBuf) {
     let source_dir = dir.path().join("source");
     fs::create_dir(&source_dir).expect("source dir");
     let source = source_dir.join("universe.sqlite");
-    let candidate = dir.path().join("universe.v2.sqlite");
+    let candidate = dir.path().join("universe.v3.sqlite");
     (dir, source, candidate)
 }
 
-fn write_v2(path: &Path, snapshot: &Snapshot) {
-    let (store, _) = Store::import_new(path, snapshot.clone()).expect("v2 import");
+fn write_current(path: &Path, snapshot: &Snapshot) {
+    let (store, _) = Store::import_new(path, snapshot.clone()).expect("current import");
     drop(store);
 }
 
@@ -582,6 +586,7 @@ fn preserves_special_text_and_the_empty_versus_null_distinction() {
             owner: Owner::Entity(entity_id(ENTITY_ONE)),
             value_class: ValueClass::Text,
             cardinality: Cardinality::Multiple,
+            label: None,
             archived: false,
         },
         Definition {
@@ -589,6 +594,7 @@ fn preserves_special_text_and_the_empty_versus_null_distinction() {
             owner: Owner::Type(type_id(TYPE_ONE)),
             value_class: ValueClass::Boolean,
             cardinality: Cardinality::Singular,
+            label: None,
             archived: true,
         },
     ];
@@ -822,22 +828,45 @@ fn rejects_a_source_that_is_not_schema_version_one() {
     let (stage, cause) = migrate_failure(&source, &candidate);
     assert_eq!(stage, MigrationStage::PreflightSource);
     assert!(
-        matches!(cause, Error::UnsupportedVersion { found: 2 }),
+        matches!(cause, Error::UnsupportedDatabase { found: 2, .. }),
         "{cause}"
     );
     assert_source_unchanged(&source, &before, &entries);
 }
 
 #[test]
-fn rejects_a_version_two_database_used_as_a_source() {
+fn rejects_a_preserved_v2_database_used_as_a_source() {
     let (_dir, source, candidate) = layout();
-    let store = Store::create(&source, universe_id()).expect("v2 database");
+    let conn = Connection::open(&source).expect("open v2 source");
+    conn.execute_batch(V2_FIXTURE).expect("v2 schema");
+    drop(conn);
+    let before = fs::read(&source).expect("source bytes");
+    let entries = dir_names(source.parent().expect("source parent"));
+
+    let (stage, cause) = migrate_failure(&source, &candidate);
+    assert_eq!(stage, MigrationStage::PreflightSource);
+    assert!(
+        matches!(cause, Error::UnsupportedDatabase { found: 2, .. }),
+        "{cause}"
+    );
+    assert_source_unchanged(&source, &before, &entries);
+}
+
+#[test]
+fn rejects_a_current_version_database_used_as_a_source() {
+    let (_dir, source, candidate) = layout();
+    let store = Store::create(&source, universe_id()).expect("current database");
     drop(store);
 
     let (stage, cause) = migrate_failure(&source, &candidate);
     assert_eq!(stage, MigrationStage::PreflightSource);
     assert!(
-        matches!(cause, Error::UnsupportedVersion { found: 2 }),
+        matches!(
+            cause,
+            Error::UnsupportedVersion {
+                found: crate::SCHEMA_VERSION
+            }
+        ),
         "{cause}"
     );
 }
@@ -1175,7 +1204,7 @@ fn refuses_unicode_case_sidecar_aliases_before_reserving_a_candidate() {
 
     for suffix in ["-journal", "-wal", "-shm"] {
         let destination = source_dir.join(format!("É.sqlite{suffix}"));
-        let error = migrate_v1_to_v2(&source, &destination).expect_err("must refuse");
+        let error = migrate_v1_to_current(&source, &destination).expect_err("must refuse");
         assert_eq!(
             error.stage,
             MigrationStage::PreflightDestination,
@@ -1217,8 +1246,8 @@ fn accepts_unicode_destinations_that_do_not_name_a_source_sidecar() {
     let entries = dir_names(&source_dir);
 
     let destination = dir.path().join("ñandú-v2.sqlite");
-    migrate_v1_to_v2(&source, &destination).expect("a distinct Unicode name is usable");
-    verify_v2(&destination).expect("published destination");
+    migrate_v1_to_current(&source, &destination).expect("a distinct Unicode name is usable");
+    verify_current(&destination).expect("published destination");
     assert_no_sidecars(&source);
     assert_source_unchanged(&source, &before, &entries);
 
@@ -1229,9 +1258,9 @@ fn accepts_unicode_destinations_that_do_not_name_a_source_sidecar() {
     let before = fs::read(&other_source).expect("source bytes");
     let entries = dir_names(&source_dir);
     let differently_parented = other_dir.join("É.sqlite-journal");
-    migrate_v1_to_v2(&other_source, &differently_parented)
+    migrate_v1_to_current(&other_source, &differently_parented)
         .expect("a sidecar-shaped name in another directory is a distinct file");
-    verify_v2(&differently_parented).expect("published destination");
+    verify_current(&differently_parented).expect("published destination");
     assert!(!sidecar_path(&other_source, "-journal").exists());
     assert_source_unchanged(&other_source, &before, &entries);
 }
@@ -1485,8 +1514,8 @@ fn candidate_verification_is_read_only_and_rejects_tampering() {
         ),
         (
             "user version",
-            "PRAGMA user_version = 3;",
-            "unsupported schema version 3",
+            "PRAGMA user_version = 4;",
+            "unsupported schema version 4",
         ),
         (
             "extra table",
@@ -1711,7 +1740,7 @@ fn publishes_a_complete_destination_and_removes_the_candidate() {
     let before = fs::read(&source).expect("source bytes");
     let entries = dir_names(source.parent().expect("source parent"));
 
-    let report = migrate_v1_to_v2(&source, &destination).expect("published migration");
+    let report = migrate_v1_to_current(&source, &destination).expect("published migration");
     assert_eq!(report.universe_id, expected.universe_id);
     assert_eq!(report.counts, expected_counts());
     assert_eq!(report.destination, destination);
@@ -1720,8 +1749,22 @@ fn publishes_a_complete_destination_and_removes_the_candidate() {
     assert_no_sidecars(&destination);
     assert_no_candidate_entries(dir.path());
 
+    // The destination is written at the current schema version: the candidate
+    // goes through `Store::import_new_private`, which stamps
+    // `crate::SCHEMA_VERSION`.
+    let raw = fs::read(&destination).expect("destination bytes");
+    assert_eq!(
+        i32::from_be_bytes(raw[60..64].try_into().expect("header")),
+        crate::SCHEMA_VERSION
+    );
+
     let mut store = Store::open(&destination).expect("open destination");
     assert_eq!(store.export_snapshot().expect("export"), expected);
+    // A migrated definition is unnamed: version 1 had no label to carry.
+    assert!(expected
+        .definitions
+        .iter()
+        .all(|definition| definition.label.is_none()));
     for page in &expected.pages {
         let document = store
             .page_document(&page.page.id)
@@ -1731,7 +1774,7 @@ fn publishes_a_complete_destination_and_removes_the_candidate() {
     }
     drop(store);
 
-    let verified = verify_v2(&destination).expect("general verification");
+    let verified = verify_current(&destination).expect("general verification");
     assert_eq!(verified.universe_id, expected.universe_id);
     assert_eq!(verified.counts, expected_counts());
     assert_eq!(verified.mentions, 0);
@@ -1754,7 +1797,7 @@ fn refuses_every_kind_of_existing_destination_without_touching_it() {
         };
         let before_source = fs::read(&source).expect("source bytes");
 
-        let error = migrate_v1_to_v2(&source, &destination).expect_err("must refuse");
+        let error = migrate_v1_to_current(&source, &destination).expect_err("must refuse");
         assert_eq!(error.stage, MigrationStage::PreflightDestination, "{kind}");
         assert!(
             matches!(
@@ -1809,7 +1852,7 @@ fn refuses_a_destination_symlink_where_the_platform_allows_one() {
     }
 
     let before = fs::read(&target).expect("target bytes");
-    let error = migrate_v1_to_v2(&source, &destination).expect_err("must refuse");
+    let error = migrate_v1_to_current(&source, &destination).expect_err("must refuse");
     assert_eq!(error.stage, MigrationStage::PreflightDestination);
     assert!(matches!(
         error.cause.as_ref(),
@@ -1830,7 +1873,7 @@ fn refuses_a_destination_sidecar_without_removing_it() {
         let sidecar = sidecar_path(&destination, suffix);
         fs::write(&sidecar, b"sidecar").expect("sidecar");
 
-        let error = migrate_v1_to_v2(&source, &destination).expect_err("must refuse");
+        let error = migrate_v1_to_current(&source, &destination).expect_err("must refuse");
         assert_eq!(
             error.stage,
             MigrationStage::PreflightDestination,
@@ -1863,7 +1906,7 @@ fn refuses_a_destination_that_aliases_the_source_or_its_sidecars() {
         sidecar_path(&source, "-journal"),
         sidecar_path(&source, "-wal"),
     ] {
-        let error = migrate_v1_to_v2(&source, &destination).expect_err("must refuse");
+        let error = migrate_v1_to_current(&source, &destination).expect_err("must refuse");
         assert_eq!(error.stage, MigrationStage::PreflightDestination);
         assert!(matches!(
             error.cause.as_ref(),
@@ -1966,9 +2009,9 @@ fn fails_closed_when_the_published_destination_is_tampered() {
         fs::read(&alias).expect("alias bytes"),
         fs::read(&destination).expect("destination bytes")
     );
-    // The tampered file is still a healthy general v2 database; only the
+    // The tampered file is still a healthy current-version database; only the
     // migration contract knows it differs from the pinned source.
-    verify_v2(&destination).expect("general verification accepts an edited database");
+    verify_current(&destination).expect("general verification accepts an edited database");
 }
 
 /// Rewrites one page body while keeping the observed header and length.
@@ -2237,7 +2280,7 @@ fn never_deletes_a_replaced_candidate_alias_on_success() {
         "{:?}",
         report.residuals
     );
-    verify_v2(&destination).expect("published destination");
+    verify_current(&destination).expect("published destination");
 }
 
 #[test]
@@ -2362,7 +2405,7 @@ fn concurrent_migrations_publish_exactly_once() {
             let barrier = std::sync::Arc::clone(&barrier);
             std::thread::spawn(move || {
                 barrier.wait();
-                migrate_v1_to_v2(&source, &destination)
+                migrate_v1_to_current(&source, &destination)
             })
         })
         .collect();
@@ -2397,11 +2440,11 @@ fn concurrent_migrations_publish_exactly_once() {
     }
     assert_eq!(fs::read(&source).expect("source bytes"), source_before);
     assert_no_candidate_entries(destination.parent().expect("destination parent"));
-    verify_v2(&destination).expect("published destination");
+    verify_current(&destination).expect("published destination");
 }
 
 #[test]
-fn general_verification_accepts_edited_v2_and_valid_mentions() {
+fn general_verification_accepts_edited_current_and_valid_mentions() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("edited.sqlite");
     let mut store = Store::create(&path, universe_id()).expect("create");
@@ -2442,7 +2485,7 @@ fn general_verification_accepts_edited_v2_and_valid_mentions() {
     drop(store);
 
     let before = fs::read(&path).expect("database bytes");
-    let report = verify_v2(&path).expect("general verification");
+    let report = verify_current(&path).expect("general verification");
     assert_eq!(report.universe_id, universe_id());
     assert_eq!(report.mentions, 1);
     assert_eq!(report.counts.pages, 1);
@@ -2495,7 +2538,7 @@ fn general_verification_rejects_invalid_mentions_and_corruption() {
     )
     .expect("tamper mention");
     drop(conn);
-    let error = verify_v2(&path).expect_err("invalid mention must fail");
+    let error = verify_current(&path).expect_err("invalid mention must fail");
     assert!(
         error.to_string().contains("mentions") || error.to_string().contains("invalid"),
         "{error}"
@@ -2503,7 +2546,7 @@ fn general_verification_rejects_invalid_mentions_and_corruption() {
 
     let corrupt = dir.path().join("corrupt.sqlite");
     fs::write(&corrupt, b"not a database").expect("corrupt file");
-    let error = verify_v2(&corrupt).expect_err("corruption must fail");
+    let error = verify_current(&corrupt).expect_err("corruption must fail");
     assert!(
         matches!(
             error.cause,
@@ -2537,7 +2580,7 @@ fn assert_sqlite_structural_validity(path: &Path) {
 fn assert_inapplicable_assertion_is_rejected_by_verification() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("edited.sqlite");
-    write_v2(&path, &base_snapshot());
+    write_current(&path, &base_snapshot());
 
     let conn = Connection::open(&path).expect("open for edits");
     conn.execute("UPDATE pages SET revision = 7 WHERE id = ?1", [PAGE_ONE])
@@ -2545,7 +2588,7 @@ fn assert_inapplicable_assertion_is_rejected_by_verification() {
     drop(conn);
 
     assert_sqlite_structural_validity(&path);
-    verify_v2(&path).expect("a nonzero revision must stay acceptable");
+    verify_current(&path).expect("a nonzero revision must stay acceptable");
 
     let conn = Connection::open(&path).expect("open for edits");
     conn.execute(
@@ -2557,7 +2600,7 @@ fn assert_inapplicable_assertion_is_rejected_by_verification() {
 
     assert_sqlite_structural_validity(&path);
     let before = fs::read(&path).expect("database bytes");
-    let error = verify_v2(&path).expect_err("an inapplicable assertion must be rejected");
+    let error = verify_current(&path).expect_err("an inapplicable assertion must be rejected");
     assert!(
         matches!(
             error.cause,
@@ -2577,7 +2620,7 @@ fn assert_inapplicable_assertion_is_rejected_by_verification() {
 fn assert_value_class_mismatch_is_rejected_by_verification() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("edited.sqlite");
-    write_v2(&path, &base_snapshot());
+    write_current(&path, &base_snapshot());
 
     let conn = Connection::open(&path).expect("open for edits");
     conn.execute("UPDATE pages SET revision = 3 WHERE id = ?1", [PAGE_TWO])
@@ -2585,7 +2628,7 @@ fn assert_value_class_mismatch_is_rejected_by_verification() {
     drop(conn);
 
     assert_sqlite_structural_validity(&path);
-    verify_v2(&path).expect("a nonzero revision must stay acceptable");
+    verify_current(&path).expect("a nonzero revision must stay acceptable");
 
     let conn = Connection::open(&path).expect("open for edits");
     conn.execute(
@@ -2597,7 +2640,7 @@ fn assert_value_class_mismatch_is_rejected_by_verification() {
 
     assert_sqlite_structural_validity(&path);
     let before = fs::read(&path).expect("database bytes");
-    let error = verify_v2(&path).expect_err("a value-class mismatch must be rejected");
+    let error = verify_current(&path).expect_err("a value-class mismatch must be rejected");
     assert!(
         matches!(
             error.cause,
@@ -2631,14 +2674,14 @@ fn general_verification_does_not_echo_an_invalid_stored_universe_id() {
     const MARKER: &str = "SECRET_LORE_123456789012345678901234";
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("tampered.sqlite");
-    write_v2(&path, &base_snapshot());
+    write_current(&path, &base_snapshot());
     modify(
         &path,
         &format!("UPDATE metadata SET universe_id = '{MARKER}'"),
     );
     let before = fs::read(&path).expect("tampered bytes");
 
-    let error = verify_v2(&path).expect_err("an invalid stored UniverseId must be rejected");
+    let error = verify_current(&path).expect_err("an invalid stored UniverseId must be rejected");
     let rendered = format!("{error} // {error:?}");
     assert!(!rendered.contains("SECRET_LORE"), "{rendered}");
     assert!(
@@ -2666,7 +2709,7 @@ fn general_verification_does_not_echo_an_invalid_stored_definition_id() {
     const MARKER: &str = "SECRET_LORE_123456789012345678901234";
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("tampered.sqlite");
-    write_v2(&path, &base_snapshot());
+    write_current(&path, &base_snapshot());
     {
         let conn = Connection::open(&path).expect("open for tampering");
         conn.execute_batch("PRAGMA ignore_check_constraints = ON")
@@ -2681,7 +2724,8 @@ fn general_verification_does_not_echo_an_invalid_stored_definition_id() {
     }
     let before = fs::read(&path).expect("tampered bytes");
 
-    let error = verify_v2(&path).expect_err("an invalid stored definition id must be rejected");
+    let error =
+        verify_current(&path).expect_err("an invalid stored definition id must be rejected");
     let rendered = format!("{error} // {error:?}");
     assert!(!rendered.contains("SECRET_LORE"), "{rendered}");
     assert!(
@@ -2736,7 +2780,7 @@ fn never_deletes_a_byte_identical_candidate_alias_on_success() {
         "{:?}",
         report.residuals
     );
-    verify_v2(&destination).expect("published destination");
+    verify_current(&destination).expect("published destination");
 }
 
 #[test]

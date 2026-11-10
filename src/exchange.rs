@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result, ValidationReason};
 use crate::mentions::Mention;
 use crate::model::{
-    Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId, Entity, EntityId,
-    EntityType, MentionId, Owner, Page, PageId, Provenance, TypeId, UniverseId, Value, ValueClass,
+    Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId, DefinitionLabel, Entity,
+    EntityId, EntityType, MentionId, Owner, Page, PageId, Provenance, TypeId, UniverseId, Value,
+    ValueClass,
 };
 use crate::store::{ImportOutcome, PageSnapshot, Snapshot, Store};
 
@@ -101,8 +102,8 @@ pub fn import_new_json(path: &std::path::Path, bytes: &[u8]) -> Result<(Store, I
 }
 
 fn encode(snapshot: &Snapshot) -> Result<Vec<u8>> {
-    let envelope = EnvelopeV2 {
-        format_version: crate::FORMAT_VERSION,
+    let envelope = EnvelopeV3 {
+        format_version: EnvelopeV3::FORMAT_VERSION,
         universe_id: snapshot.universe_id.as_str().to_string(),
         pages: snapshot
             .pages
@@ -118,7 +119,7 @@ fn encode(snapshot: &Snapshot) -> Result<Vec<u8>> {
         definitions: snapshot
             .definitions
             .iter()
-            .map(DefinitionDto::from_definition)
+            .map(DefinitionDtoV3::from_definition)
             .collect(),
         assertions: snapshot
             .assertions
@@ -135,12 +136,15 @@ fn encode(snapshot: &Snapshot) -> Result<Vec<u8>> {
 ///
 /// A version 1 document has no occurrences, because the field did not exist
 /// then. A version 1 page that carries the field anyway is malformed, never
-/// an empty occurrence set.
+/// an empty occurrence set. A version 1 or version 2 definition has no `label`,
+/// because that field did not exist then; a legacy document that carries it is
+/// malformed, never an unnamed version 3 definition.
 ///
 /// The version is probed through a generic value, but the document itself is
 /// always decoded straight from the original bytes. A generic value collapses
 /// duplicate object keys, so decoding from it would read a page that carries
-/// two `mentions` members as if one of them did not exist.
+/// two `mentions` members as if one of them did not exist. The typed decode
+/// rejects a duplicated member.
 ///
 /// The generic value also carries the shape gate: a derived struct
 /// deserializer accepts a JSON array and matches its members by position, so
@@ -171,6 +175,7 @@ fn decode(bytes: &[u8]) -> Result<Snapshot> {
     match version {
         1 => decode_v1(bytes),
         2 => decode_v2(bytes),
+        3 => decode_v3(bytes),
         other => Err(Error::UnsupportedVersion {
             found: i32::try_from(other).unwrap_or(i32::MAX),
         }),
@@ -179,10 +184,10 @@ fn decode(bytes: &[u8]) -> Result<Snapshot> {
 
 /// Rejects a record that is sent as a positional JSON array.
 ///
-/// The version 1 and version 2 formats define the document, the pages, the
-/// occurrences and every other record as JSON objects. A derived struct
-/// deserializer would also accept `["id", "title", "body"]` and bind it by
-/// position, so the shape is refused before the typed decode.
+/// The version 1, version 2 and version 3 formats define the document, the
+/// pages, the occurrences and every other record as JSON objects. A derived
+/// struct deserializer would also accept `["id", "title", "body"]` and bind it
+/// by position, so the shape is refused before the typed decode.
 fn require_no_positional_records(document: &serde_json::Value) -> Result<()> {
     require_object(document, "the document")?;
     for field in ["pages", "types", "entities", "definitions", "assertions"] {
@@ -317,11 +322,76 @@ fn decode_v2(bytes: &[u8]) -> Result<Snapshot> {
     })
 }
 
-/// The version 2 envelope. Every page carries its occurrences, even when
-/// there are none, and no local revision is ever written.
+fn decode_v3(bytes: &[u8]) -> Result<Snapshot> {
+    let envelope: EnvelopeV3 =
+        serde_json::from_slice(bytes).map_err(|err| Error::InvalidDocument {
+            message: err.to_string(),
+        })?;
+    Ok(Snapshot {
+        universe_id: UniverseId::parse(&envelope.universe_id)?,
+        pages: envelope
+            .pages
+            .into_iter()
+            .map(PageDtoV2::into_snapshot)
+            .collect::<Result<Vec<_>>>()?,
+        types: envelope
+            .types
+            .into_iter()
+            .map(TypeDto::into_type)
+            .collect::<Result<Vec<_>>>()?,
+        entities: envelope
+            .entities
+            .into_iter()
+            .map(EntityDto::into_entity)
+            .collect::<Result<Vec<_>>>()?,
+        definitions: envelope
+            .definitions
+            .into_iter()
+            .map(DefinitionDtoV3::into_definition)
+            .collect::<Result<Vec<_>>>()?,
+        assertions: envelope
+            .assertions
+            .into_iter()
+            .map(AssertionDto::into_assertion)
+            .collect::<Result<Vec<_>>>()?,
+    })
+}
+
+/// The version 3 envelope: version 2 plus a label on every definition.
+///
+/// Only the definition record changed shape. Pages, occurrences, types,
+/// entities and assertions keep their version 2 wire shape, so they share one
+/// set of DTOs instead of being copied into a third near-identical family.
+///
+/// The written version number is a constant of this type. It is deliberately
+/// not read from a free `FORMAT_VERSION`, so a bumped constant cannot relabel
+/// a version 2 shape as version 3.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+struct EnvelopeV3 {
+    format_version: i32,
+    universe_id: String,
+    pages: Vec<PageDtoV2>,
+    types: Vec<TypeDto>,
+    entities: Vec<EntityDto>,
+    definitions: Vec<DefinitionDtoV3>,
+    assertions: Vec<AssertionDto>,
+}
+
+impl EnvelopeV3 {
+    const FORMAT_VERSION: i32 = 3;
+}
+
+const _: () = assert!(EnvelopeV3::FORMAT_VERSION == crate::FORMAT_VERSION);
+
+/// The version 2 envelope. Decode-only: the writer always emits version 3.
+///
+/// Every page carries its occurrences, even when there are none, and no local
+/// revision is ever written.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EnvelopeV2 {
+    #[allow(dead_code)]
     format_version: i32,
     universe_id: String,
     pages: Vec<PageDtoV2>,
@@ -332,9 +402,12 @@ struct EnvelopeV2 {
 }
 
 /// The historical version 1 envelope. Its pages have no occurrence field.
-#[derive(Debug, Deserialize, Serialize)]
+///
+/// Decode-only, for the same reason as [`EnvelopeV2`].
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EnvelopeV1 {
+    #[allow(dead_code)]
     format_version: i32,
     universe_id: String,
     pages: Vec<PageDtoV1>,
@@ -344,7 +417,8 @@ struct EnvelopeV1 {
     assertions: Vec<AssertionDto>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+/// A historical version 1 page. Decode-only.
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PageDtoV1 {
     id: String,
@@ -524,7 +598,12 @@ impl OwnerDto {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+/// The frozen version 1 and version 2 definition record.
+///
+/// Decode-only, and deliberately without a `label` member: a legacy document
+/// that carries one is malformed, not an unnamed version 3 definition. Adding
+/// the field here would widen two frozen formats at once.
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DefinitionDto {
     id: String,
@@ -535,6 +614,37 @@ struct DefinitionDto {
 }
 
 impl DefinitionDto {
+    fn into_definition(self) -> Result<Definition> {
+        Ok(Definition {
+            id: DefinitionId::parse(&self.id)?,
+            owner: self.owner.into_owner()?,
+            value_class: parse_class(&self.value_class)?,
+            cardinality: parse_cardinality(&self.cardinality)?,
+            label: None,
+            archived: self.archived,
+        })
+    }
+}
+
+/// The version 3 definition record.
+///
+/// `label` is optional on the wire: an absent key and `null` both mean
+/// unnamed. The writer always emits the key, including `null`, so a version 3
+/// document never depends on an omission to express "unnamed". An empty string
+/// is not another spelling of `null`; it fails the label rule.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DefinitionDtoV3 {
+    id: String,
+    owner: OwnerDto,
+    value_class: String,
+    cardinality: String,
+    archived: bool,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+impl DefinitionDtoV3 {
     fn from_definition(definition: &Definition) -> Self {
         Self {
             id: definition.id.as_str().to_string(),
@@ -542,6 +652,10 @@ impl DefinitionDto {
             value_class: definition.value_class.as_str().to_string(),
             cardinality: definition.cardinality.as_str().to_string(),
             archived: definition.archived,
+            label: definition
+                .label
+                .as_ref()
+                .map(|label| label.as_str().to_string()),
         }
     }
 
@@ -551,6 +665,10 @@ impl DefinitionDto {
             owner: self.owner.into_owner()?,
             value_class: parse_class(&self.value_class)?,
             cardinality: parse_cardinality(&self.cardinality)?,
+            label: self
+                .label
+                .map(|raw| DefinitionLabel::parse(&raw))
+                .transpose()?,
             archived: self.archived,
         })
     }

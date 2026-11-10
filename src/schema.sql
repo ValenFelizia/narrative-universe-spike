@@ -48,6 +48,14 @@ CREATE TABLE definitions (
     value_class TEXT NOT NULL CHECK (value_class IN ('text', 'boolean', 'reference')),
     cardinality TEXT NOT NULL CHECK (cardinality IN ('singular', 'multiple')),
     archived INTEGER NOT NULL CHECK (archived IN (0, 1)),
+    -- A human-authored display label. NULL means unnamed and is never inferred.
+    -- SQLite backstops the type and the emptiness only. The Unicode rule
+    -- (1-120 scalar values, no leading or trailing whitespace, no control
+    -- character) lives in DefinitionLabel, because `length(trim(label)) > 0`
+    -- would accept a tab, a non-breaking space, a newline or a BLOB.
+    label TEXT NULL CHECK (
+        label IS NULL OR (typeof(label) = 'text' AND length(label) > 0)
+    ),
     -- IS NOT NULL is 0 or 1. A NULL owner cannot make the CHECK itself NULL.
     CHECK ((owner_type_id IS NOT NULL) + (owner_entity_id IS NOT NULL) = 1)
 );

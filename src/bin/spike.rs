@@ -2,10 +2,10 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use narrative_universe::{
-    export_json, import_json, import_new_json, migrate_v1_to_v2, read_limited, verify_v2,
-    write_exclusive, Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId, Entity,
-    EntityId, EntityType, Error, MigrationError, Owner, Page, PageId, Provenance, Store, TypeId,
-    UniverseId, Value, ValueClass, VerificationError,
+    export_json, import_json, import_new_json, migrate_v1_to_current, read_limited, verify_current,
+    write_exclusive, Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId,
+    DefinitionLabel, Entity, EntityId, EntityType, Error, MigrationError, Owner, Page, PageId,
+    Provenance, Store, TypeId, UniverseId, Value, ValueClass, VerificationError,
 };
 
 const UNIVERSE: &str = "11111111-1111-4111-8111-111111111111";
@@ -109,12 +109,12 @@ fn usage() {
     eprintln!("usage: spike export <database> <json>");
     eprintln!("usage: spike import <database> <json>");
     eprintln!("usage: spike import-new <database> <json>");
-    eprintln!("usage: spike migrate <source-v1> <destination-v2>");
+    eprintln!("usage: spike migrate <source-v1> <destination-v3>");
     eprintln!("usage: spike verify <database>");
 }
 
 fn migrate(source: &Path, destination: &Path) -> Result<(), MigrationError> {
-    let report = migrate_v1_to_v2(source, destination)?;
+    let report = migrate_v1_to_current(source, destination)?;
     print!("{}", migration_report(&report));
     Ok(())
 }
@@ -135,7 +135,7 @@ fn migration_report(report: &narrative_universe::MigrationReport) -> String {
 }
 
 fn verify(database: &Path) -> Result<(), VerificationError> {
-    let report = verify_v2(database)?;
+    let report = verify_current(database)?;
     let mut out = String::new();
     push(&mut out, "verified", "true");
     push(&mut out, "universe_id", report.universe_id.as_str());
@@ -185,6 +185,7 @@ fn seed(path: &Path) -> Result<(), Error> {
         owner: Owner::Type(TypeId::parse(TYPE_CHARACTER)?),
         value_class: ValueClass::Reference,
         cardinality: Cardinality::Singular,
+        label: Some(DefinitionLabel::parse("casa")?),
         archived: false,
     })?;
     store.create_assertion(Assertion {
@@ -288,6 +289,14 @@ fn report(store: &Store) -> Result<String, Error> {
     push(&mut out, "target_label", &target.label);
     push(&mut out, "owner_type_id", &owner_type);
     push(&mut out, "cardinality", definition.cardinality.as_str());
+    push(
+        &mut out,
+        "label",
+        &definition
+            .label
+            .as_ref()
+            .map_or_else(|| "<absent>".to_string(), |label| label.to_string()),
+    );
     push(&mut out, "assertion_id", assertion.id.as_str());
     push(&mut out, "from_subject", &from_id);
     push(&mut out, "to_target", &to_id);

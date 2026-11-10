@@ -150,3 +150,43 @@ Sources: #31 approval comment `6592317042`, merged PR #34, and authorized #33.
 - #33's editor integration has automated UI regressions. Native evidence and
   remaining human acceptance are recorded in `docs/connect-acceptance.md`.
   Independent review and Valen/Ari's Windows acceptance are still merge gates.
+
+## PA-I5/R1-A property label and version contract
+
+Sources: #38 R0 closeout comment `6777496032`, Fable's architecture challenge
+`6776351471`, and authorized issue #39. Decisions: DEC-002. This contract is
+data-only; it adds no Reveal read path, bridge fact command or authoring UI.
+
+- `Definition.label` is `Option<DefinitionLabel>`. `DefinitionLabel` is the
+  only place the label rule lives, so JSON decoding, creation, stored-row
+  reads and logical verification cannot disagree. A label is 1 to 120 Unicode
+  scalar values with no leading or trailing Unicode whitespace and no control
+  character. The bytes are preserved exactly: no trimming, case folding or
+  Unicode normalization. Invalid input is rejected, never repaired.
+- `None` is "unnamed" and is never inferred from a type, entity, UUID or
+  assertion. An empty string is invalid and is not another spelling of `None`.
+  Labels are outward only; there is no inverse predicate. Duplicate labels are
+  legal, including two definitions with the same owner and the same label, so
+  a reader must disambiguate by stable ID, not by label.
+- Two definitions may carry the same label. Nothing orders, ranks or merges
+  two claims by label.
+- Storage schema version is 3 and JSON format version is 3. A version 3
+  document always writes `label`, including `null`. An absent or `null` label
+  in a version 3 document reads as `None`.
+- Version 1 and version 2 documents remain decodable and read as `label:None`.
+  Their wire shapes are frozen: a legacy document that carries a `label` member
+  is invalid, not a version 3 document in disguise.
+- Version 2 databases are preserved, not upgraded. Opening one is refused
+  without any write, with a refusal distinct from a foreign or forged version
+  header. `spike migrate` converts version 1 to the current version only, and
+  `spike verify` verifies the current version only. No command advertises a
+  version 2 database conversion.
+- JSON exchange is the supported compatibility boundary and is not a lossless
+  database migration: export is capped at 10 MiB and page revision counters are
+  not part of the format.
+- Labels are write-once. There is no update API, and importing a differing
+  label over an existing definition fails as `ImportConflict` with the whole
+  batch rolled back.
+- SQL enforces only that a stored label is text and nonempty. The Rust rule is
+  authoritative, so a row written with checks disabled is still refused on
+  read, export and verify, and is never echoed into a diagnostic.

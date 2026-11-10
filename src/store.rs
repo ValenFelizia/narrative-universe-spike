@@ -10,9 +10,9 @@ use rusqlite::{
 use crate::error::{Error, Result, ValidationReason};
 use crate::mentions::{apply_mention_edit, validate_mentions, AnnotatedBody, Mention, MentionEdit};
 use crate::model::{
-    value_fits, Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId, Entity,
-    EntityId, EntityType, MentionId, Owner, Page, PageId, PageRevision, Provenance, TypeId,
-    UniverseId, Value, ValueClass,
+    value_fits, Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId,
+    DefinitionLabel, Entity, EntityId, EntityType, MentionId, Owner, Page, PageId, PageRevision,
+    Provenance, TypeId, UniverseId, Value, ValueClass,
 };
 
 pub(crate) const SCHEMA: &str = include_str!("schema.sql");
@@ -20,7 +20,6 @@ const HEADER_LEN: usize = 100;
 const MAGIC: &[u8] = b"SQLite format 3\0";
 const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
 const SQLITE_CONSTRAINT_PRIMARYKEY: i32 = 1555;
-const LEGACY_SCHEMA_VERSION: i32 = 1;
 
 pub(crate) const ASSERTION_COLUMNS: &str = "id, subject_id, definition_id, value_kind, text_value, bool_value, target_entity_id, canon, source_status_raw, provenance_external_ref, provenance_locator, provenance_fragment, provenance_source_revision, scope_note, archived";
 
@@ -176,8 +175,11 @@ impl Store {
         }
         let header = read_header(path)?;
         if header.user_version != crate::SCHEMA_VERSION {
-            if header.user_version == LEGACY_SCHEMA_VERSION {
+            if header.user_version == crate::LEGACY_V1_SCHEMA_VERSION {
                 return Err(legacy_outcome(path)?);
+            }
+            if header.user_version == crate::LEGACY_V2_SCHEMA_VERSION {
+                return Err(preserved_v2_outcome(path)?);
             }
             return Err(Error::UnsupportedVersion {
                 found: header.user_version,
@@ -527,8 +529,8 @@ impl Store {
             };
             tx.execute(
                 "INSERT INTO definitions (
-                    id, owner_type_id, owner_entity_id, value_class, cardinality, archived
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    id, owner_type_id, owner_entity_id, value_class, cardinality, archived, label
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     definition.id.as_str(),
                     owner_type,
@@ -536,6 +538,7 @@ impl Store {
                     definition.value_class.as_str(),
                     definition.cardinality.as_str(),
                     i64::from(definition.archived),
+                    definition.label.as_ref().map(DefinitionLabel::as_str),
                 ],
             )
             .map_err(|err| map_write("id", id.as_str(), err))?;
@@ -759,7 +762,7 @@ impl Store {
         Self::import_new_with_mode(path, snapshot, false)
     }
 
-    /// Creates a private version 2 candidate and closes it before returning.
+    /// Creates a private current-version candidate and closes it before returning.
     ///
     /// On Unix the file is created with mode `0600`, so its contents are never
     /// group- or world-readable while the migration is filling it. On Windows
@@ -1007,11 +1010,8 @@ fn read_universe(conn: &Connection) -> Result<UniverseId> {
     })
 }
 
-/// Tells a historical version 1 database apart from a foreign file.
-///
-/// A version 1 database keeps its format version inside the metadata table.
-/// A file that only claims the version number is not one of ours.
-fn is_legacy_v1(conn: &Connection) -> Result<bool> {
+/// Lists the non-internal table names of a connection.
+fn table_names(conn: &Connection) -> Result<Vec<String>> {
     let mut statement = conn
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
         .map_err(|err| map_sql("schema", err))?;
@@ -1022,6 +1022,38 @@ fn is_legacy_v1(conn: &Connection) -> Result<bool> {
     for row in rows {
         tables.push(row.map_err(|err| map_sql("schema", err))?);
     }
+    Ok(tables)
+}
+
+fn has_table(tables: &[String], name: &str) -> bool {
+    tables.iter().any(|table| table == name)
+}
+
+/// Tells whether a table carries a column with this name.
+///
+/// The table name is a compile-time constant at every call site; `PRAGMA
+/// table_info` cannot take a bound parameter, so it is interpolated.
+fn has_column(conn: &Connection, table: &'static str, column: &str) -> Result<bool> {
+    let mut statement = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|err| map_sql("schema", err))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| map_sql("schema", err))?;
+    for row in rows {
+        if row.map_err(|err| map_sql("schema", err))? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Tells a historical version 1 database apart from a foreign file.
+///
+/// A version 1 database keeps its format version inside the metadata table.
+/// A file that only claims the version number is not one of ours.
+fn is_legacy_v1(conn: &Connection) -> Result<bool> {
+    let tables = table_names(conn)?;
     for name in [
         "assertions",
         "definitions",
@@ -1030,22 +1062,41 @@ fn is_legacy_v1(conn: &Connection) -> Result<bool> {
         "pages",
         "types",
     ] {
-        if !tables.iter().any(|table| table == name) {
+        if !has_table(&tables, name) {
             return Ok(false);
         }
     }
-    let mut statement = conn
-        .prepare("PRAGMA table_info(metadata)")
-        .map_err(|err| map_sql("schema", err))?;
-    let rows = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|err| map_sql("schema", err))?;
-    for row in rows {
-        if row.map_err(|err| map_sql("schema", err))? == "format_version" {
-            return Ok(true);
+    has_column(conn, "metadata", "format_version")
+}
+
+/// Tells a preserved version 2 database apart from a foreign file.
+///
+/// Version 2 is the current table set without `definitions.label`, and its
+/// metadata table has no `format_version` column (that column identifies
+/// version 1). A file that only carries `user_version = 2` is not one of ours.
+/// The whole inspection is read-only.
+fn is_preserved_v2(conn: &Connection) -> Result<bool> {
+    let tables = table_names(conn)?;
+    for name in [
+        "assertions",
+        "definitions",
+        "entities",
+        "mentions",
+        "metadata",
+        "pages",
+        "types",
+    ] {
+        if !has_table(&tables, name) {
+            return Ok(false);
         }
     }
-    Ok(false)
+    if has_column(conn, "definitions", "label")? {
+        return Ok(false);
+    }
+    if has_column(conn, "metadata", "format_version")? {
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 /// Decides what a historical database needs, without touching it.
@@ -1056,7 +1107,28 @@ fn legacy_outcome(path: &Path) -> Result<Error> {
     let inspected = open_read_only(path)?;
     if is_legacy_v1(&inspected)? {
         return Ok(Error::MigrationRequired {
-            found: LEGACY_SCHEMA_VERSION,
+            found: crate::LEGACY_V1_SCHEMA_VERSION,
+        });
+    }
+    Ok(Error::validation(
+        ValidationReason::ForeignDatabase,
+        "schema",
+        None,
+    ))
+}
+
+/// Refuses a preserved version 2 database without opening it for writing.
+///
+/// Version 2 has no in-place conversion in this build (DEC-002). The file is
+/// inspected through a read-only connection only, so this is never an upgrade.
+/// A file that merely claims the version number is reported as foreign, which
+/// keeps a genuine version 2 universe distinguishable from an unrelated file.
+fn preserved_v2_outcome(path: &Path) -> Result<Error> {
+    let inspected = open_read_only(path)?;
+    if is_preserved_v2(&inspected)? {
+        return Ok(Error::UnsupportedDatabase {
+            found: crate::LEGACY_V2_SCHEMA_VERSION,
+            supported: crate::SCHEMA_VERSION,
         });
     }
     Ok(Error::validation(
@@ -1473,8 +1545,8 @@ fn insert_definition(tx: &Transaction, definition: &Definition) -> Result<()> {
     };
     tx.execute(
         "INSERT INTO definitions (
-            id, owner_type_id, owner_entity_id, value_class, cardinality, archived
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            id, owner_type_id, owner_entity_id, value_class, cardinality, archived, label
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             definition.id.as_str(),
             owner_type,
@@ -1482,6 +1554,7 @@ fn insert_definition(tx: &Transaction, definition: &Definition) -> Result<()> {
             definition.value_class.as_str(),
             definition.cardinality.as_str(),
             i64::from(definition.archived),
+            definition.label.as_ref().map(DefinitionLabel::as_str),
         ],
     )
     .map(|_| ())
@@ -1646,49 +1719,78 @@ fn list_entities(conn: &Connection) -> Result<Vec<Entity>> {
 fn list_definitions(conn: &Connection) -> Result<Vec<Definition>> {
     let mut statement = conn
         .prepare(
-            "SELECT id, owner_type_id, owner_entity_id, value_class, cardinality, archived
+            "SELECT id, owner_type_id, owner_entity_id, value_class, cardinality, archived, label
              FROM definitions ORDER BY id",
         )
         .map_err(|err| map_sql("prepare", err))?;
     let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, i64>(5)?,
-            ))
-        })
+        .query_map([], read_definition_parts)
         .map_err(|err| map_sql("query", err))?;
     let mut definitions = Vec::new();
     for row in rows {
-        let (raw_id, owner_type, owner_entity, value_class, cardinality, archived) =
-            row.map_err(|err| map_sql("row", err))?;
-        // Validate the id first: it is stored database content, so an invalid
-        // value must never be formatted into a diagnostic.
-        let id = parse_stored_id("definition", &raw_id, DefinitionId::parse)?;
-        let owner = match (owner_type, owner_entity) {
-            (Some(raw), None) => Owner::Type(parse_stored_id("owner type", &raw, TypeId::parse)?),
-            (None, Some(raw)) => {
-                Owner::Entity(parse_stored_id("owner entity", &raw, EntityId::parse)?)
-            }
-            _ => {
-                return Err(Error::Storage {
-                    message: format!("invalid definition owner {}", id.as_str()),
-                });
-            }
-        };
-        definitions.push(Definition {
-            id,
-            owner,
-            value_class: ValueClass::parse(&value_class)?,
-            cardinality: Cardinality::parse(&cardinality)?,
-            archived: read_flag(archived, "archived")?,
-        });
+        definitions.push(definition_from_parts(
+            row.map_err(|err| map_sql("row", err))?,
+        )?);
     }
     Ok(definitions)
+}
+
+/// The stored columns of one definition, in selection order.
+type DefinitionParts = (
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    i64,
+    Option<String>,
+);
+
+fn read_definition_parts(row: &rusqlite::Row<'_>) -> rusqlite::Result<DefinitionParts> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+    ))
+}
+
+/// Builds a typed definition, enforcing the label rule on stored content.
+///
+/// The id is validated before anything else so a malformed row can never be
+/// formatted into a diagnostic. The label is parsed through
+/// [`DefinitionLabel::parse`], the same owner the JSON decoder and
+/// `create_definition` use, and a rejected label is never echoed: it is
+/// untrusted database content.
+fn definition_from_parts(parts: DefinitionParts) -> Result<Definition> {
+    let (raw_id, owner_type, owner_entity, value_class, cardinality, archived, label) = parts;
+    let id = parse_stored_id("definition", &raw_id, DefinitionId::parse)?;
+    let owner = match (owner_type, owner_entity) {
+        (Some(raw), None) => Owner::Type(parse_stored_id("owner type", &raw, TypeId::parse)?),
+        (None, Some(raw)) => Owner::Entity(parse_stored_id("owner entity", &raw, EntityId::parse)?),
+        _ => {
+            return Err(Error::Storage {
+                message: format!("invalid definition owner {}", id.as_str()),
+            });
+        }
+    };
+    let label = match label {
+        Some(raw) => Some(DefinitionLabel::parse(&raw).map_err(|_| Error::Storage {
+            message: format!("invalid stored definition label on {}", id.as_str()),
+        })?),
+        None => None,
+    };
+    Ok(Definition {
+        id,
+        owner,
+        value_class: ValueClass::parse(&value_class)?,
+        cardinality: Cardinality::parse(&cardinality)?,
+        label,
+        archived: read_flag(archived, "archived")?,
+    })
 }
 
 fn count(conn: &Connection, sql: &str) -> Result<u64> {
@@ -2214,47 +2316,14 @@ fn required_entity(conn: &Connection, id: &EntityId) -> Result<Entity> {
 
 fn lookup_definition(conn: &Connection, id: &DefinitionId) -> Result<Option<Definition>> {
     conn.query_row(
-        "SELECT id, owner_type_id, owner_entity_id, value_class, cardinality, archived
+        "SELECT id, owner_type_id, owner_entity_id, value_class, cardinality, archived, label
          FROM definitions WHERE id = ?1",
         [id.as_str()],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, i64>(5)?,
-            ))
-        },
+        read_definition_parts,
     )
     .optional()
     .map_err(|err| map_sql("definition", err))?
-    .map(
-        |(raw_id, owner_type, owner_entity, value_class, cardinality, archived)| {
-            let id = parse_stored_id("definition", &raw_id, DefinitionId::parse)?;
-            let owner = match (owner_type, owner_entity) {
-                (Some(raw), None) => {
-                    Owner::Type(parse_stored_id("owner type", &raw, TypeId::parse)?)
-                }
-                (None, Some(raw)) => {
-                    Owner::Entity(parse_stored_id("owner entity", &raw, EntityId::parse)?)
-                }
-                _ => {
-                    return Err(Error::Storage {
-                        message: format!("invalid definition owner {}", id.as_str()),
-                    });
-                }
-            };
-            Ok(Definition {
-                id,
-                owner,
-                value_class: ValueClass::parse(&value_class)?,
-                cardinality: Cardinality::parse(&cardinality)?,
-                archived: read_flag(archived, "archived")?,
-            })
-        },
-    )
+    .map(definition_from_parts)
     .transpose()
 }
 

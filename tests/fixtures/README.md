@@ -32,3 +32,23 @@ Entity labels are `Narrador sintético` and `Casa sintética`. The assertion is 
 Expected record counts: **1 page, 2 types, 2 entities, 1 definition, 1 assertion**.
 
 Keep these Spanish literals and the fixed identifiers unchanged unless the fixture contract and its tests are deliberately updated together.
+
+## Version 3 interchange fixture
+
+`reveal-facts.json` is a synthetic `format_version: 3` universe used by `tests/exchange_v3.rs`. It is deliberately independent of `spike seed` and of `connect-smoke.json`, which is left unchanged. The fixture exercises the label contract and the documented version 3 wire shape:
+
+- **1 page**, `Night at the ford`, with two mentions.
+- **3 types**: `Person`, `Faction`, `Place`.
+- **6 entities** across a faction, two people, and three places.
+- **8 definitions**, including a bool value class, a `null` label, and two definitions named `member of` with different IDs. Duplicate labels are legal because labels are not identifiers; the stable definition ID decides ties.
+- **12 assertions**, covering text, boolean `false`, entity reference, and `Unknown` values, archived and unarchived claims, and varied provenance members.
+
+Mention and provenance members are always written, so the fixture spells out `null` for an absent provenance member rather than omitting it. `tests/exchange_v3.rs` compares the decoded and re-encoded document to the fixture as JSON values, not as bytes; the pretty-printed form exists only so the fixture stays reviewable.
+
+All records are synthetic. The names are placeholders for exercising spread, not War Archivist canon.
+
+## Preserved version 2 schema
+
+`v2_universe.sql` is the verbatim version 2 DDL. It differs from the version 3 schema in exactly two ways: `definitions` has no `label` column, and `metadata` has no `format_version` column. The crate can no longer create a version 2 database, so this fixture is how tests build a genuine one to prove that a version 2 file is preserved and refused rather than silently converted (DEC-002).
+
+Do not edit it to follow the current schema. If the schema changes again, add a new frozen fixture instead; keeping this copy untouched is what makes "genuine version 2" testable.
