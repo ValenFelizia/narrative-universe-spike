@@ -5,9 +5,18 @@ import { mentionField, linkSpec, unlinkSpec } from "../src/mention-history.ts";
 import { MentionError, sameMentions, validateMentions, type Mention } from "../src/mentions.ts";
 import { pendingDrops, type SaveState } from "../src/save-session.ts";
 export type EntitySummary = { id: string; label: string; typeLabel: string | null; primaryPageTitle: string | null };
+export type RevealIdentity = {id: string; label: string};
+export type RevealClaim = {
+  id: string; definitionId: string; propertyLabel: string | null; valueClass: string; cardinality: string;
+  subject: RevealIdentity; value: {kind: "text"; text: string} | {kind: "boolean"; value: boolean} | {kind: "unknown"} | {kind: "reference"; target: RevealIdentity};
+  canon: "ACORDADO" | "PROVISIONAL" | "ABIERTO" | "MISTERIO_INTENCIONAL";
+  sourceStatusRaw: string | null; scopeNote: string | null;
+  provenance: {externalRef: string | null; locator: string | null; fragment: string | null; sourceRevision: string | null};
+};
+export type EntityReveal = {entity: RevealIdentity; typeLabel: string | null; outgoing: RevealClaim[]; incoming: RevealClaim[]};
 type EntityOption = { id: string; caption: string; searchText: string; label: string; suffix: string };
-type Capture = { view: EditorView; doc: Text; selection: EditorSelection; mentions: readonly Mention[]; sessionId: string; pageId: string; token: string };
-type Picker = { kind: "closed" } | (Capture & ({ kind: "search"; entities: EntityOption[]; activeId: string | null } | { kind: "inspect"; mention: Mention } | { kind: "loading" }));
+type Capture = { view: EditorView; doc: Text; selection: EditorSelection; mentions: readonly Mention[]; sessionId: string; pageId: string; token: string; scroll: {element: HTMLElement; top: number; left: number}[] };
+type Picker = { kind: "closed" } | (Capture & ({ kind: "search"; entities: EntityOption[]; activeId: string | null } | { kind: "inspect"; mention: Mention } | { kind: "facts" } | { kind: "loading" }));
 export function selectionRefusal(view: EditorView): string | null {
   const ranges = view.state.selection.ranges;
   if (ranges.length !== 1) return "Select one phrase to link.";
@@ -60,6 +69,7 @@ export function prepareEntityIndex(entities: readonly EntitySummary[]): EntityOp
 }
 export function connectEditor(options: {
   session: () => SaveState | null; view: () => EditorView | null; token: () => string;
+  reveal?: (token: string, entityId: string) => Promise<EntityReveal>;
   allowed: () => boolean; entities: (token: string) => Promise<EntitySummary[]>;
   message: (text: string) => void; host: HTMLElement;
 }): { extensions: Extension; refresh: () => void; destroy: () => void } {
@@ -74,8 +84,8 @@ export function connectEditor(options: {
     return options.allowed() && v === c.view && v.state.doc === c.doc && v.state.selection.eq(c.selection) && sameMentions(v.state.field(mentionField), c.mentions) && s?.sessionId === c.sessionId && s.pageId === c.pageId && options.token() === c.token;
   }
   function close(focus = false): void {
-    const held = picker; picker = {kind: "closed"}; popup.hidden = true; popup.replaceChildren();
-    if (focus && held.kind !== "closed" && valid(held)) held.view.focus();
+    const held = picker; picker = {kind: "closed"}; popup.hidden = true; popup.replaceChildren(); popup.classList.remove("facts");
+    if (focus && held.kind !== "closed" && valid(held)) { held.view.contentDOM.focus({preventScroll: true}); for (const s of held.scroll) { s.element.scrollTop = s.top; s.element.scrollLeft = s.left; } }
   }
   function position(element: HTMLElement, view: EditorView): void {
     let rect;
@@ -89,10 +99,85 @@ export function connectEditor(options: {
     const {from, to} = c.selection.main;
     close(); c.view.dispatch(linkSpec({id: crypto.randomUUID(), entityId, startUtf16: from, endUtf16: to})); c.view.focus();
   }
+  async function showFacts(capture: Capture, mention: Mention, savedLink: boolean, index: readonly EntitySummary[], caption: string): Promise<void> {
+    if (picker.kind !== "inspect" || !valid(capture) || !options.reveal) return;
+    picker = {...capture, kind: "facts"}; const pending = picker;
+    popup.setAttribute("aria-label", "Entity facts"); popup.replaceChildren(); popup.classList.add("facts");
+    const closeButton = document.createElement("button"); closeButton.type = "button"; closeButton.textContent = "Close facts · Esc"; closeButton.onclick = () => close(true);
+    const heading = document.createElement("h2"); heading.textContent = caption;
+    const content = document.createElement("div"); content.setAttribute("role", "status"); content.textContent = "Loading persisted facts…";
+    popup.append(heading, closeButton, content); closeButton.focus(); position(popup, capture.view);
+    try {
+      const data = await options.reveal(capture.token, mention.entityId);
+      if (picker !== pending) return;
+      if (!valid(capture)) { close(); return; }
+      if (data.entity.id !== mention.entityId) throw new Error("Identity mismatch");
+
+      content.replaceChildren(); content.removeAttribute("role");
+      const note = document.createElement("p"); note.textContent = "Persisted knowledge · point-in-time read"; content.append(note);
+      const labels = new Map<string, Set<string>>();
+      for (const identity of [...index, data.entity, ...[...data.outgoing, ...data.incoming].flatMap(c => [c.subject, ...(c.value.kind === "reference" ? [c.value.target] : [])])]) {
+        const ids = labels.get(identity.label) ?? new Set<string>(); ids.add(identity.id); labels.set(identity.label, ids);
+      }
+      // Same-label identities get the shortest distinguishing ID suffix (at least 4 characters).
+      const suffixed = (label: string, id: string, ids: readonly string[]) => {
+        if (ids.length < 2) return label;
+        let length = 4;
+        while (length < id.length && ids.some(other => other !== id && other.slice(-length) === id.slice(-length))) length++;
+        return `${label} · …${id.slice(-length)}`;
+      };
+      const name = (identity: RevealIdentity) => suffixed(identity.label, identity.id, [...(labels.get(identity.label) ?? [])]);
+      // Separate definitions may share a label (or all be unnamed); never let them read as one property.
+      const properties = new Map<string, Set<string>>();
+      for (const claim of [...data.outgoing, ...data.incoming]) {
+        const label = claim.propertyLabel ?? "Unnamed property", ids = properties.get(label) ?? new Set<string>(); ids.add(claim.definitionId); properties.set(label, ids);
+      }
+      const property = (claim: RevealClaim) => { const label = claim.propertyLabel ?? "Unnamed property"; return suffixed(label, claim.definitionId, [...(properties.get(label) ?? [])]); };
+      heading.textContent = `${name(data.entity)}${data.typeLabel ? " · " + data.typeLabel : ""} · ${savedLink ? "Saved link" : "Unsaved link"}`;
+      const PAGE = 2; // Rows per section; keeps the peek compact while Next claims reaches every claim deterministically.
+      const gloss = {ACORDADO: "Agreed", PROVISIONAL: "Provisional", ABIERTO: "Open", MISTERIO_INTENCIONAL: "Intentional mystery"};
+      function section(title: string, claims: RevealClaim[]): void {
+        const region = document.createElement("section"), heading = document.createElement("h3"), rows = document.createElement("div");
+        region.append(heading); content.append(region);
+        // Empty sections collapse to their heading line to keep the peek compact.
+        if (!claims.length) { heading.textContent = title === "Outgoing facts" ? "Outgoing facts · No recorded facts" : "Incoming references · No incoming references"; return; }
+        heading.textContent = `${title} · ${claims.length} recorded claims`; region.append(rows);
+        let offset = 0;
+        function render(): void {
+          rows.replaceChildren();
+          for (const claim of claims.slice(offset, offset + PAGE)) {
+            const row = document.createElement("article"); row.className = "fact-row"; row.dataset.assertionId = claim.id; row.dataset.definitionId = claim.definitionId;
+            const value = claim.value.kind === "reference" ? name(claim.value.target) : claim.value.kind === "text" ? claim.value.text : claim.value.kind === "boolean" ? (claim.value.value ? "Yes" : "No") : "Unknown (recorded)";
+            const text = document.createElement("p"); text.textContent = `${name(claim.subject)} · ${property(claim)} → ${value}`;
+            const state = document.createElement("p"); state.textContent = `${claim.canon} · ${gloss[claim.canon]}`;
+            const source = document.createElement("details"), summary = document.createElement("summary"), metadata = document.createElement("p");
+            const entries = Object.entries(claim.provenance).filter(([,value]) => value !== null);
+            summary.textContent = entries.length ? (claim.provenance.locator ?? entries[0]![1]!) : "No source recorded";
+            metadata.textContent = [...entries.map(([key,value]) => `${({externalRef: "Source", locator: "Locator", fragment: "Fragment", sourceRevision: "Source revision"} as Record<string, string>)[key]}: ${value}`), ...(claim.sourceStatusRaw !== null ? [`Source status: ${claim.sourceStatusRaw}`] : []), ...(claim.scopeNote !== null ? [`Scope: ${claim.scopeNote}`] : [])].join(" · ");
+            source.addEventListener("toggle", () => { if (picker === pending && valid(capture)) position(popup, capture.view); });
+            source.append(summary, metadata); row.append(text, state, source); rows.append(row);
+          }
+          if (claims.length > PAGE) {
+            const count = document.createElement("p"); count.textContent = `Showing ${Math.min(PAGE, claims.length - offset)} of ${claims.length} recorded claims · ${offset + 1}–${Math.min(offset + PAGE, claims.length)}`;
+            const next = document.createElement("button"); next.type = "button"; next.textContent = "Next claims";
+            next.onclick = () => { if (picker !== pending || !valid(capture)) { close(); return; } offset = offset + PAGE < claims.length ? offset + PAGE : 0; render(); rows.querySelector("button")?.focus(); position(popup, capture.view); };
+            rows.append(count, next);
+          }
+        }
+        render();
+      }
+      section("Outgoing facts", data.outgoing); section("Incoming references", data.incoming);
+    } catch {
+      if (picker !== pending) return;
+      if (!valid(capture)) { close(); return; }
+      content.textContent = "Facts unavailable. The entity may be unavailable or the database could not be read. Your draft is preserved.";
+    }
+    if (picker === pending) position(popup, capture.view);
+  }
   async function open(view: EditorView): Promise<void> {
     if (!options.allowed()) { options.message("Linking is unavailable while this document is read-only or its save is unresolved."); return; }
     const s = options.session()!;
-    const capture: Capture = {view, doc: view.state.doc, selection: view.state.selection, mentions: view.state.field(mentionField), sessionId: s.sessionId, pageId: s.pageId, token: options.token()};
+    const capture: Capture = {view, doc: view.state.doc, selection: view.state.selection, mentions: view.state.field(mentionField), sessionId: s.sessionId, pageId: s.pageId, token: options.token(), scroll: [options.host, view.scrollDOM].map(element => ({element, top: element.scrollTop, left: element.scrollLeft}))};
     const range = view.state.selection.main;
     const context = selectionContext(view);
     if (context.kind === "refused") { options.message(context.reason); return; }
@@ -111,10 +196,13 @@ export function connectEditor(options: {
       popup.setAttribute("aria-label", "Inspect link");
       picker = {...capture, kind: "inspect", mention};
       const label = document.createElement("p"), entity = entities.find(e => e.id === mention.entityId);
-      label.textContent = (entity ? entity.caption : `Unavailable entity · ${mention.entityId}`) + (s.baseMentions.some(m => sameMentions([m], [mention])) ? " · Saved link" : " · Unsaved link");
+      label.textContent = (entity ? entity.caption : "Unavailable entity") + (s.baseMentions.some(m => sameMentions([m], [mention])) ? " · Saved link" : " · Unsaved link");
       const unlink = document.createElement("button"); unlink.type = "button"; unlink.textContent = "Unlink";
       unlink.onclick = () => { if (picker.kind !== "inspect" || !valid(capture)) { close(); return; } close(); view.dispatch(unlinkSpec(mention.id)); view.focus(); };
-      popup.append(label, unlink, cancel); unlink.focus();
+      const facts = document.createElement("button"); facts.type = "button"; facts.textContent = "Show facts";
+      facts.disabled = !entity || !options.reveal;
+      facts.onclick = () => void showFacts(capture, mention, s.baseMentions.some(m => sameMentions([m], [mention])), index, label.textContent ?? "");
+      popup.append(label, facts, unlink, cancel); facts.disabled ? unlink.focus() : facts.focus();
     } else {
       popup.setAttribute("aria-label", "Link entity");
       const search = document.createElement("input"), results = document.createElement("div");

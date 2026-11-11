@@ -101,6 +101,23 @@ pub struct EntitySummary {
     pub primary_page_title: Option<String>,
 }
 
+/// A point-in-time, read-only projection. Claims keep their original orientation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntityReveal {
+    pub entity: Entity,
+    pub type_label: Option<String>,
+    pub outgoing: Vec<RevealClaim>,
+    pub incoming: Vec<RevealClaim>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RevealClaim {
+    pub assertion: Assertion,
+    pub definition: Definition,
+    pub subject: Entity,
+    pub target: Option<Entity>,
+}
+
 /// One transient editing command for a page.
 ///
 /// The operations are applied in order, each one in the coordinates of the
@@ -295,6 +312,60 @@ impl Store {
             });
         }
         Ok(entities)
+    }
+
+    /// Reads identity and all active claims from a single SQLite snapshot.
+    /// Missing identities fail closed, including dangling stored references.
+    pub fn entity_reveal(&self, id: &EntityId) -> Result<EntityReveal> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| map_sql("begin reveal", err))?;
+        let entity = required_entity(&tx, id)?;
+        let type_label = entity
+            .type_id
+            .as_ref()
+            .map(|id| required_entity_type(&tx, id).map(|t| t.label))
+            .transpose()?;
+        let claims = list_assertions(&tx, &format!(
+            "SELECT {ASSERTION_COLUMNS} FROM assertions WHERE subject_id = ?1 OR target_entity_id = ?1 ORDER BY definition_id, id"
+        ), params![id.as_str()])?;
+        let mut outgoing = Vec::new();
+        let mut incoming = Vec::new();
+        for assertion in claims {
+            let definition = required_definition(&tx, &assertion.definition_id)?;
+            if assertion.archived || definition.archived {
+                continue;
+            }
+            let subject = required_entity(&tx, &assertion.subject_id)?;
+            let target = match &assertion.value {
+                Value::Reference(id) => Some(required_entity(&tx, id)?),
+                _ => None,
+            };
+            require_definition_owner(&tx, &definition)?;
+            validate_assertion(&tx, &assertion)?;
+            let is_outgoing = assertion.subject_id == *id;
+            let is_incoming = matches!(&assertion.value, Value::Reference(target) if target == id);
+            let claim = RevealClaim {
+                assertion,
+                definition,
+                subject,
+                target,
+            };
+            if is_outgoing {
+                outgoing.push(claim.clone());
+            }
+            if is_incoming {
+                incoming.push(claim);
+            }
+        }
+        tx.commit().map_err(|err| map_sql("commit reveal", err))?;
+        Ok(EntityReveal {
+            entity,
+            type_label,
+            outgoing,
+            incoming,
+        })
     }
 
     /// Reads a page as one aggregate: title, body with its mentions, and the

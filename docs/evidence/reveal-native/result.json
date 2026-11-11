@@ -1,0 +1,55 @@
+{
+  "synthetic": true,
+  "native": true,
+  "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36 Edg/157.0.0.0",
+  "database": "<fresh temp dir>/synthetic.sqlite",
+  "fixture": "tests/fixtures/reveal-facts.json",
+  "windows": [
+    {
+      "width": 1120,
+      "height": 780,
+      "dpr": 1,
+      "proseWidth": 640,
+      "popup": {
+        "left": 372.84375,
+        "top": 207.390625,
+        "right": 752.84375,
+        "bottom": 547.390625,
+        "height": 340,
+        "viewportShare": 0.44
+      }
+    },
+    {
+      "width": 800,
+      "height": 600,
+      "dpr": 1,
+      "proseWidth": 640,
+      "popup": {
+        "left": 97.84375,
+        "top": 207.390625,
+        "right": 477.84375,
+        "bottom": 547.390625,
+        "height": 340,
+        "viewportShare": 0.57
+      }
+    }
+  ],
+  "long": {
+    "scrollTop": 3429
+  },
+  "checks": [
+    "actual Tauri invoke against fresh v3 fixture",
+    "stored outgoing alternative/canon/provenance",
+    "incoming subject-first",
+    "1120x780 and 800x600 viewport fit and no column reflow",
+    "dirty draft, selection and mentions preserved",
+    "Escape focus",
+    "both edits saved and reopened with same mention id",
+    "long-page scroll stable"
+  ],
+  "manualRemaining": [
+    "physical keyboard and IME",
+    "human readability/focus traversal",
+    "Undo/Redo physical smoke"
+  ]
+}

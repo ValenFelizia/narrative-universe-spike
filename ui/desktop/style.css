@@ -123,3 +123,14 @@ dialog::backdrop { background: rgba(0,0,0,.6); }
 .link-drop-notice { position:sticky; bottom:0; margin-top:20px; padding:8px; background:#282b2a; color:#dfcba5; font:13px/1.5 "Instrument Sans",sans-serif; }
 .entity-mention.mismatch { text-decoration-color:#dfb47d; background:#51432c; }
 .entity-id { color:#aba9a5; font-family:ui-monospace,monospace; font-size:12px; }
+
+/* On-demand R1-B overlay; never participates in the prose layout. */
+.entity-picker { max-height:calc(100vh - 24px); overflow-y:auto; overflow-wrap:anywhere; }
+/* Facts stay a compact peek: well below the viewport, scrolling internally (expanded sources included). */
+.entity-picker.facts { max-height:min(340px, calc(100vh - 220px)); overscroll-behavior:contain; }
+.entity-picker h2 { font-size:15px; margin:4px 0 8px; }
+.entity-picker h3 { font-size:13px; margin:8px 0 4px; }
+.fact-row { border-top:1px solid #454a47; padding:4px 0; }
+.fact-row p { margin:2px 0; }
+.fact-row details { color:#c6c6bc; }
+.fact-row summary { cursor:pointer; }

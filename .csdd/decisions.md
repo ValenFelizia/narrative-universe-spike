@@ -88,3 +88,35 @@ accepted direction from implementation alone.
   converted through JSON loses page revision counters and cannot exceed the
   10 MiB export cap. A later in-place converter, or a real lore data-safety
   gate, must revisit this decision rather than extend it silently.
+
+## DEC-003 - R1-B persisted facts projection and capture lifetime
+
+- Status: implementation decision within approved issue #41; awaiting PR review.
+- Date: 2026-11-11
+- Context: R1-A main baseline d2e2523 supplies validated Definition labels and
+  the synthetic v3 reveal-facts fixture. R1-B authorizes persisted knowledge
+  inspection, not an applicable-property enumeration or expanded R2 panel.
+- Decision: `Store::entity_reveal` uses one deferred SQLite read transaction
+  for identity and active outgoing/incoming claims. Reuse validated stored-row
+  readers and applicability checks. Missing entities return NotFound; dangling
+  or malformed records fail closed. The token-scoped bridge preserves typed
+  values, assertion/definition IDs, property metadata, literal canon, source
+  status, full provenance and scope. No schema/exchange changes.
+- Decision: Next claims cycles deterministic groups of two within each
+  section without ranking canon (reduced from four after PR #42 review: the
+  peek must stay compact, capped at min(340px, 100vh - 220px) with internal
+  scrolling). Empty sections collapse to one heading line. Null label, recorded Unknown, boolean false,
+  no outgoing claims and absent provenance have distinct UI language. Sources
+  are plain text, never invented navigation. Same-name identities receive the
+  shortest distinguishing suffix (minimum four characters). Separate
+  definitions sharing a property label, including several unnamed ones, get
+  the same definition-ID suffix so they never read as alternatives of one
+  property.
+- Decision: an unsaved occurrence may read persisted entity knowledge. A new
+  request has its own identity; closure or any captured editor/session drift
+  invalidates it, including a same-entity reopen. Errors stay inside the peek
+  and never replace save-state status. No automatic retry or write occurs.
+- Consequences: one point-in-time projection, no live-update promise. Full
+  definition ownership remains core data; the desktop DTO carries only display
+  metadata needed here. No inferred inverse, canon resolution, authoring,
+  applicability enumeration, or R2 context surface is added.

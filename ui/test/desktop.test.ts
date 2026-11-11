@@ -615,3 +615,100 @@ test('link-only navigation supports explicit Discard and Save then proceed', asy
     ui.open('a');await tick();await picker(ui);choose(ui);ui.doc.querySelectorAll('.page-link')[1].click();await tick();assert.equal(ui.doc.querySelector('#guard').open,true);ui.doc.querySelector('#'+choice).click();await tick();assert.equal(ui.doc.querySelector('#context-name').textContent,'Page');assert.equal(ui.view().state.field(mentionField).length,0);assert.equal(!!sent,choice==='save-proceed');ui.close();
   }
 });
+
+const revealFact = {id:'claim1',definitionId:'def1',propertyLabel:'member of',valueClass:'reference',cardinality:'multiple',subject:{id:'house-0002',label:'Mara Vey'},value:{kind:'reference',target:{id:'ashfall',label:'Ashfall Order'}},canon:'PROVISIONAL',sourceStatusRaw:'draft chapter 3',scopeNote:null,provenance:{externalRef:'chronicle-a',locator:'folio 3',fragment:null,sourceRevision:null}};
+const revealData = {entity:{id:'house-0002',label:'Mara Vey'},typeLabel:'Person',outgoing:[revealFact,{...revealFact,id:'claim2',propertyLabel:null,value:{kind:'unknown'},canon:'MISTERIO_INTENCIONAL'},{...revealFact,id:'claim3',value:{kind:'boolean',value:false},provenance:{externalRef:null,locator:null,fragment:null,sourceRevision:null}}],incoming:[revealFact]};
+const heldReveal = {id:'saved-link',entityId:'house-0002',startUtf16:0,endUtf16:8};
+const factButton = (ui,text) => [...ui.doc.querySelectorAll('.entity-picker button')].find(b=>b.textContent===text);
+async function showFacts(ui) { key(ui,ui.view().contentDOM,'k',true);await tick();factButton(ui,'Show facts').click();await tick(); }
+
+test('facts use returned persisted values on clean and dirty links, preserve editor/history and never save', async()=>{
+  for(const dirty of [false,true]) {
+    const calls=[];const ui=connectSetup(async(cmd,args)=>{calls.push([cmd,args]);if(cmd==='entity_reveal') return revealData;}, {...page,body:'Valdoria at dawn.',mentions:[heldReveal]});
+    ui.open('a');await tick();const view=ui.view();
+    if(dirty) view.dispatch({changes:{from:view.state.doc.length,insert:' unsaved'},annotations:isolateHistory.of('full')});
+    view.dispatch({selection:{anchor:2}});view.focus();const state=view.state;view.scrollDOM.scrollTop=70;
+    await showFacts(ui);const popup=ui.doc.querySelector('.entity-picker');
+    assert.match(popup.textContent,/Mara Vey.*member of.*Ashfall Order/);assert.match(popup.textContent,/PROVISIONAL.*Provisional/);assert.match(popup.textContent,/folio 3/);
+    assert.match(popup.textContent,/Unnamed property.*Unknown \(recorded\)/);assert.match(popup.textContent,/MISTERIO_INTENCIONAL/);
+    assert.match(popup.textContent,/Showing 2 of 3 recorded claims/);factButton(ui,'Next claims').click();assert.match(popup.textContent,/No source recorded/);assert.ok(popup.classList.contains('facts'));
+    assert.equal(popup.querySelector('a'),null);assert.equal(calls.find(([cmd])=>cmd==='entity_reveal')[1].universeToken,'test-token');assert.equal(calls.find(([cmd])=>cmd==='entity_reveal')[1].entityId,'house-0002');
+    key(ui,popup,'Escape');assert.equal(view.hasFocus,true);assert.equal(view.state,state);assert.equal(view.scrollDOM.scrollTop,70);assert.deepEqual(view.state.field(mentionField),[heldReveal]);
+    assert.equal(calls.some(([cmd])=>cmd==='save_page'),false);assert.equal(ui.doc.querySelector('#save-status').textContent,dirty?'Unsaved':'Saved');
+    if(dirty) { assert.ok(undo(view));assert.equal(view.state.doc.toString(),'Valdoria at dawn.');assert.ok(redo(view)); }
+    ui.close();
+  }
+});
+
+test('facts handle error and empty without overwriting save status; unsaved mention is explicit', async()=>{
+  for(const error of [false,true]) {
+    const ui=connectSetup(async cmd=>{if(cmd==='entity_reveal'){if(error)throw {kind:'busy'};return {...revealData,outgoing:[],incoming:[]};}});
+    ui.open('a');await tick();await picker(ui);choose(ui,'house-0002');await showFacts(ui);
+    const popup=ui.doc.querySelector('.entity-picker');assert.match(popup.textContent,error?/Facts unavailable/:/No recorded facts/);assert.match(popup.textContent,/Unsaved link/);
+    assert.equal(ui.doc.querySelector('#save-status').textContent,'Unsaved');key(ui,popup,'Escape');assert.equal(ui.view().state.field(mentionField).length,1);ui.close();
+  }
+});
+
+test('late facts cannot revive closed, reopened, changed-selection, edited, page-switched or universe-switched captures', async()=>{
+  for(const change of ['close','reopen','selection','edit','page','universe']) {
+    const pending=deferred();let reads=0;
+    const ui=connectSetup(async cmd=>{if(cmd==='entity_reveal')return ++reads===1?pending.promise:{...revealData,outgoing:[],incoming:[]};}, {...page,body:'Valdoria at dawn.',mentions:[heldReveal]});
+    ui.open('a');await tick();const view=ui.view();view.dispatch({selection:{anchor:2}});await showFacts(ui);
+    const popup=ui.doc.querySelector('.entity-picker');
+    if(['close','reopen'].includes(change))key(ui,popup,'Escape');
+    if(change==='reopen')await showFacts(ui);
+    if(change==='selection')view.dispatch({selection:{anchor:10}});
+    if(change==='edit')view.dispatch({changes:{from:16,insert:'x'}});
+    if(change==='page')ui.doc.querySelectorAll('.page-link')[1].click();
+    if(change==='universe')ui.open('other');
+    await tick();pending.resolve(revealData);await tick();
+    if(change==='reopen') {assert.match(popup.textContent,/No recorded facts/);assert.doesNotMatch(popup.textContent,/folio 3/);}
+    else assert.equal(popup.hidden,true);
+    ui.close();
+  }
+});
+
+test('facts preserve unrelated same-name disambiguation and never parse saved state from user text', async()=>{
+  const ids=['first-10001','second-10001'];
+  const ui=setup(async(cmd,args)=>{
+    if(cmd==='page_index')return [{id:'a',title:'Page'}];
+    if(cmd==='read_page')return {...page,body:'Valdoria at dawn.',mentions:[{...heldReveal,entityId:ids[0]}]};
+    if(cmd==='entity_index')return ids.map(id=>({id,label:'Unsaved link',typeLabel:'Person',primaryPageTitle:null}));
+    if(cmd==='entity_reveal')return {...revealData,entity:{id:ids[0],label:'Unsaved link'},outgoing:[],incoming:[]};
+  });
+  ui.open('a');await tick();await showFacts(ui);
+  const text=ui.doc.querySelector('.entity-picker h2').textContent;
+  assert.match(text,/Unsaved link.*t-10001.*Saved link$/);assert.doesNotMatch(text,/first-10001/);
+  ui.close();
+});
+
+test('facts paginate stable ids, render source as text and reposition expanded provenance', async()=>{
+  const claims=Array.from({length:7},(_,n)=>({...revealFact,id:`claim-${n}`,definitionId:`def-${n}`,provenance:{...revealFact.provenance,locator:'<script>long source</script>'.repeat(20)}}));
+  const ui=connectSetup(async cmd=>cmd==='entity_reveal'?{...revealData,outgoing:claims,incoming:[]}:undefined,{...page,body:'Valdoria at dawn.',mentions:[heldReveal]});
+  ui.open('a');await tick();const view=ui.view();view.coordsAtPos=()=>({left:20,right:20,top:650,bottom:670});await showFacts(ui);
+  const popup=ui.doc.querySelector('.entity-picker');assert.equal(popup.querySelectorAll('article').length,2);assert.match(popup.textContent,/Showing 2 of 7 recorded claims/);assert.equal(popup.querySelector('script'),null);
+  const detail=popup.querySelector('details');Object.defineProperty(popup,'offsetHeight',{get:()=>detail.open?600:100});detail.open=true;detail.dispatchEvent(new ui.doc.defaultView.Event('toggle'));
+  assert.ok(parseFloat(popup.style.top)+600<=ui.doc.defaultView.innerHeight);
+  factButton(ui,'Next claims').click();assert.equal(popup.querySelectorAll('article').length,2);assert.equal(popup.querySelector('article').dataset.assertionId,'claim-2');assert.match(popup.textContent,/Showing 2 of 7 recorded claims · 3–4/);
+  for(let n=0;n<2;n++)factButton(ui,'Next claims').click();assert.equal(popup.querySelectorAll('article').length,1);assert.equal(popup.querySelector('article').dataset.assertionId,'claim-6');
+  factButton(ui,'Next claims').click();assert.equal(popup.querySelector('article').dataset.assertionId,'claim-0');
+  ui.close();
+});
+
+test('facts distinguish separate definitions sharing a label, including several unnamed ones', async()=>{
+  const def=(id,definitionId,propertyLabel)=>({...revealFact,id,definitionId,propertyLabel});
+  const outgoing=[def('a','00000000-0000-4000-8000-000000000031','member of'),def('b','00000000-0000-4000-8000-000000000038','member of'),def('c','00000000-0000-4000-8000-000000000037',null),def('d','00000000-0000-4000-8000-000000000039',null),def('e','00000000-0000-4000-8000-000000000032','born in')];
+  const ui=connectSetup(async cmd=>cmd==='entity_reveal'?{...revealData,outgoing,incoming:[]}:undefined,{...page,body:'Valdoria at dawn.',mentions:[heldReveal]});
+  ui.open('a');await tick();await showFacts(ui);const popup=ui.doc.querySelector('.entity-picker');
+  const rows=()=>[...popup.querySelectorAll('article p:first-child')].map(p=>p.textContent);
+  assert.deepEqual(rows(),['Mara Vey · member of · …0031 → Ashfall Order','Mara Vey · member of · …0038 → Ashfall Order']);
+  factButton(ui,'Next claims').click();assert.deepEqual(rows(),['Mara Vey · Unnamed property · …0037 → Ashfall Order','Mara Vey · Unnamed property · …0039 → Ashfall Order']);
+  factButton(ui,'Next claims').click();assert.deepEqual(rows(),['Mara Vey · born in → Ashfall Order']);
+  key(ui,popup,'Escape');assert.equal(popup.classList.contains('facts'),false);ui.close();
+});
+
+test('empty facts sections collapse to a single heading line', async()=>{
+  const ui=connectSetup(async cmd=>cmd==='entity_reveal'?{...revealData,outgoing:[],incoming:[]}:undefined,{...page,body:'Valdoria at dawn.',mentions:[heldReveal]});
+  ui.open('a');await tick();await showFacts(ui);const popup=ui.doc.querySelector('.entity-picker');
+  assert.deepEqual([...popup.querySelectorAll('section')].map(s=>[s.children.length,s.textContent]),[[1,'Outgoing facts · No recorded facts'],[1,'Incoming references · No incoming references']]);ui.close();
+});
