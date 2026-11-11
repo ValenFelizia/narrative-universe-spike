@@ -190,3 +190,19 @@ data-only; it adds no Reveal read path, bridge fact command or authoring UI.
 - SQL enforces only that a stored label is text and nonempty. The Rust rule is
   authoritative, so a row written with checks disabled is still refused on
   read, export and verify, and is never echoed into a diagnostic.
+
+## PA-I5/R1-B facts-first Reveal (issue #41)
+
+Approved scope: inspect persisted active assertions and definitions from a
+linked mention, including unsaved mentions, without changing the draft or
+canon. The core read is one transaction; the bridge is universe-token-scoped.
+Outgoing facts and incoming references retain their original orientation,
+stable identities, literal canon and recorded provenance/scope. Missing entity
+is unavailable, missing label is Unnamed property, false is No, stored Unknown
+is Unknown (recorded), and no active outgoing claims is No recorded facts.
+The UI makes no property-specific absence claim or automatic truth selection.
+An intentional Show facts action opens a compact overlay; Link/Unlink and
+Ctrl+K remain. Async responses require the original valid capture. No schema,
+exchange, dependency, authoring, permanent panel or R2 change is authorized.
+See DEC-003 and DESIGN.md for presentation and capture decisions; native
+acceptance evidence is in docs/reveal-acceptance.md.

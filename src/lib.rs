@@ -20,8 +20,8 @@ pub use model::{
     UniverseId, Value, ValueClass,
 };
 pub use store::{
-    Counts, EntitySummary, ImportOutcome, MentionOccurrence, PageDocument, PageEdit, PageSnapshot,
-    PageSummary, PossibleIncompatibility, Snapshot, Store,
+    Counts, EntityReveal, EntitySummary, ImportOutcome, MentionOccurrence, PageDocument, PageEdit,
+    PageSnapshot, PageSummary, PossibleIncompatibility, RevealClaim, Snapshot, Store,
 };
 
 /// The storage schema this build creates, reads and verifies.

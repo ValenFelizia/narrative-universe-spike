@@ -234,3 +234,22 @@ These are **questions to settle by implementation evidence**, not prerequisites 
 An implementing agent may create **comparable experiments** but may not approve its own visual direction. Review each consequential change with Valen and Ari. The initial technical A2 proof (Tauri/IPC) and the later working editor are separately scoped gates; **this design file alone authorizes neither**.
 
 **Reference format:** Google Labs' DESIGN.md specification (YAML design tokens + human-readable sections). Project decisions and safety constraints remain authoritative even if tooling supports additional tokens or components.
+
+## R1-B on-demand Reveal exception (issue #41)
+
+The A2 ban on fake entity-peek controls remains in force. R1-B explicitly
+allows one genuine read-only facts peek, opened through Inspect link > Show
+facts or Ctrl+K > Show facts. It is a fixed overlay anchored to the mention;
+it never changes the prose column, sidebar, wrapping, or document layout.
+No automatic hover, permanent right panel, source navigation, or authoring is
+introduced. R2 expanded context remains deferred.
+
+The peek shows persisted identity and outgoing claims first, followed by
+incoming references in their stored subject > predicate > target orientation.
+Canon literals and human glosses remain attached to every claim; no claim is
+ranked as truth. Four rows per section are shown at a time in definition-ID,
+assertion-ID order with explicit counts and a keyboard-accessible Next claims
+button cycling through the remaining rows. Provenance expands as plain text.
+The overlay scrolls within the viewport and repositions when source details
+expand. Escape returns focus and captured scroll only while the editor,
+document, selection, mentions, session, page and universe capture remain valid.

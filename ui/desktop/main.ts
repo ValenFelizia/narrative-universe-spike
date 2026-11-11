@@ -7,7 +7,7 @@ import type { Mention } from "../src/mentions.ts";
 import { applyReply, beginSave, isDirty, openSession, reconcileBusy, recordTitleEdit, MAX_SUPPORTED_REVISION, type SaveState } from "../src/save-session.ts";
 
 import { mentionHistory, mentionEffects, recordTransaction } from "../src/mention-history.ts";
-import { connectEditor, type EntitySummary } from "./connect.ts";
+import { connectEditor, type EntityReveal, type EntitySummary } from "./connect.ts";
 
 type PageIndexEntry = { id: string; title: string };
 type OpenedUniverse = { token: string; pages: PageIndexEntry[] };
@@ -71,6 +71,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
 
   const connect = connectEditor({session: () => session, view: () => editor, token: () => universeToken,
     allowed: () => !(narrow() && !library.hidden) && !!session && !loading && !deciding && !transitioning && !verifying && !uncertain && !session.inFlight && session.baseRevision < MAX_SUPPORTED_REVISION && ["clean", "dirty"].includes(session.status),
+    reveal: (token, entityId) => invokeCommand<EntityReveal>("entity_reveal", {universeToken: token, entityId}),
     entities: token => invokeCommand<EntitySummary[]>("entity_index", {universeToken: token}),
     message: text => { saveStatus.textContent = text; }, host: pane});
 

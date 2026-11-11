@@ -36,6 +36,7 @@ enum BridgeError {
     UniverseNotOpen,
     UniverseChanged,
     PageMissing,
+    EntityMissing,
     ReadFailed,
     StateUnavailable,
     Stale,
@@ -330,6 +331,139 @@ fn entity_entries(store: &Store) -> Result<Vec<EntityIndexEntry>, BridgeError> {
             primary_page_title: entity.primary_page_title,
         })
         .collect())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RevealIdentity {
+    id: String,
+    label: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum RevealValue {
+    Text { text: String },
+    Boolean { value: bool },
+    Reference { target: RevealIdentity },
+    Unknown,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RevealSource {
+    external_ref: Option<String>,
+    locator: Option<String>,
+    fragment: Option<String>,
+    source_revision: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RevealClaim {
+    id: String,
+    definition_id: String,
+    property_label: Option<String>,
+    value_class: String,
+    cardinality: String,
+    subject: RevealIdentity,
+    value: RevealValue,
+    canon: String,
+    source_status_raw: Option<String>,
+    provenance: RevealSource,
+    scope_note: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EntityReveal {
+    entity: RevealIdentity,
+    type_label: Option<String>,
+    outgoing: Vec<RevealClaim>,
+    incoming: Vec<RevealClaim>,
+}
+
+fn reveal_identity(entity: narrative_universe::Entity) -> RevealIdentity {
+    RevealIdentity {
+        id: entity.id.as_str().to_owned(),
+        label: entity.label,
+    }
+}
+
+fn reveal_claim(claim: narrative_universe::RevealClaim) -> Result<RevealClaim, BridgeError> {
+    use narrative_universe::Value;
+    let a = claim.assertion;
+    let value = match a.value {
+        Value::Text(text) => RevealValue::Text { text },
+        Value::Boolean(value) => RevealValue::Boolean { value },
+        Value::Unknown => RevealValue::Unknown,
+        Value::Reference(_) => RevealValue::Reference {
+            target: reveal_identity(claim.target.ok_or(BridgeError::ReadFailed)?),
+        },
+    };
+    Ok(RevealClaim {
+        id: a.id.as_str().to_owned(),
+        definition_id: claim.definition.id.as_str().to_owned(),
+        property_label: claim.definition.label.map(|l| l.as_str().to_owned()),
+        value_class: claim.definition.value_class.as_str().to_owned(),
+        cardinality: claim.definition.cardinality.as_str().to_owned(),
+        subject: reveal_identity(claim.subject),
+        value,
+        canon: a.canon.as_str().to_owned(),
+        source_status_raw: a.source_status_raw,
+        scope_note: a.scope_note,
+        provenance: RevealSource {
+            external_ref: a.provenance.external_ref,
+            locator: a.provenance.locator,
+            fragment: a.provenance.fragment,
+            source_revision: a.provenance.source_revision,
+        },
+    })
+}
+
+fn reveal_active(
+    active: &Option<ActiveUniverse>,
+    token: &str,
+    entity_id: &str,
+) -> Result<EntityReveal, BridgeError> {
+    let store = active_store(active, token)?;
+    let id = EntityId::parse(entity_id).map_err(|_| BridgeError::EntityMissing)?;
+    let reveal = store.entity_reveal(&id).map_err(|error| match error {
+        Error::Validation {
+            reason: ValidationReason::NotFound,
+            ..
+        } => BridgeError::EntityMissing,
+        Error::Busy => BridgeError::Busy,
+        Error::Io { .. } => BridgeError::Io,
+        other => map_read_error(other, false),
+    })?;
+    Ok(EntityReveal {
+        entity: reveal_identity(reveal.entity),
+        type_label: reveal.type_label,
+        outgoing: reveal
+            .outgoing
+            .into_iter()
+            .map(reveal_claim)
+            .collect::<Result<_, _>>()?,
+        incoming: reveal
+            .incoming
+            .into_iter()
+            .map(reveal_claim)
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+#[tauri::command(async)]
+fn entity_reveal(
+    universe_token: String,
+    entity_id: String,
+    state: State<'_, DesktopState>,
+) -> Result<EntityReveal, BridgeError> {
+    let active = state
+        .store
+        .lock()
+        .map_err(|_| BridgeError::StateUnavailable)?;
+    reveal_active(&active, &universe_token, &entity_id)
 }
 
 #[tauri::command(async)]
@@ -630,6 +764,7 @@ pub fn run() {
             page_index,
             read_page,
             entity_index,
+            entity_reveal,
             save_page,
             create_page,
             request_window_close,
@@ -1516,6 +1651,79 @@ mod tests {
                 {"id": PLACE, "label": "Valdoria", "typeLabel": null, "primaryPageTitle": null},
                 {"id": HOUSE, "label": "Valdoria", "typeLabel": null, "primaryPageTitle": null}
             ])
+        );
+    }
+
+    #[test]
+    fn reveal_is_token_scoped_typed_read_only_and_sanitizes_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reveal.sqlite");
+        let (store, _) = narrative_universe::import_new_json(
+            &path,
+            include_bytes!("../../../tests/fixtures/reveal-facts.json"),
+        )
+        .unwrap();
+        let active = Some(super::ActiveUniverse {
+            token: "reveal-token".into(),
+            store,
+        });
+        let id = "00000000-0000-4000-8000-000000000011";
+        assert!(matches!(
+            super::reveal_active(&active, "old-token", id),
+            Err(BridgeError::UniverseChanged)
+        ));
+        assert!(matches!(
+            super::reveal_active(&None, "reveal-token", id),
+            Err(BridgeError::UniverseNotOpen)
+        ));
+        for missing in ["invalid", "00000000-0000-4000-8000-000000000099"] {
+            assert!(matches!(
+                super::reveal_active(&active, "reveal-token", missing),
+                Err(BridgeError::EntityMissing)
+            ));
+        }
+        let before = std::fs::read(&path).unwrap();
+        let json = serde_json::to_value(super::reveal_active(&active, "reveal-token", id).unwrap())
+            .unwrap();
+        assert_eq!(json["entity"]["label"], "Mara Vey");
+        assert_eq!(
+            json["outgoing"][0]["value"],
+            serde_json::json!({"kind":"reference", "target":{"id":"00000000-0000-4000-8000-000000000013","label":"Ashfall Order"}})
+        );
+        assert_eq!(json["outgoing"][0]["canon"], "PROVISIONAL");
+        assert_eq!(
+            json["outgoing"][0]["provenance"],
+            serde_json::json!({"externalRef":"chronicle-a","locator":"folio 3","fragment":null,"sourceRevision":null})
+        );
+        assert!(json["outgoing"][0]["scopeNote"].is_null());
+        assert_eq!(json["outgoing"][0]["sourceStatusRaw"], "draft chapter 3");
+        assert_eq!(json["outgoing"][5]["value"]["kind"], "unknown");
+        assert!(json["outgoing"][5]["propertyLabel"].is_null());
+        let corin = serde_json::to_value(
+            super::reveal_active(
+                &active,
+                "reveal-token",
+                "00000000-0000-4000-8000-000000000012",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            corin["outgoing"][1]["value"],
+            serde_json::json!({"kind":"boolean", "value":false})
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        assert!(matches!(
+            super::reveal_active(&active, "reveal-token", id),
+            Err(BridgeError::Busy)
+        ));
+        conn.execute_batch("ROLLBACK; PRAGMA ignore_check_constraints=ON; UPDATE assertions SET canon='private invalid content' WHERE id='00000000-0000-4000-8000-000000000041'").unwrap();
+        let error = super::reveal_active(&active, "reveal-token", id).unwrap_err();
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            serde_json::json!({"kind":"read_failed"})
         );
     }
 
