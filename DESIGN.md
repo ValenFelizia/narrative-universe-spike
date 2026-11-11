@@ -247,9 +247,10 @@ introduced. R2 expanded context remains deferred.
 The peek shows persisted identity and outgoing claims first, followed by
 incoming references in their stored subject > predicate > target orientation.
 Canon literals and human glosses remain attached to every claim; no claim is
-ranked as truth. Four rows per section are shown at a time in definition-ID,
+ranked as truth. Two rows per section are shown at a time in definition-ID,
 assertion-ID order with explicit counts and a keyboard-accessible Next claims
 button cycling through the remaining rows. Provenance expands as plain text.
-The overlay scrolls within the viewport and repositions when source details
-expand. Escape returns focus and captured scroll only while the editor,
+The overlay is capped at min(340px, 100vh - 220px), scrolls internally and
+repositions when source details expand. Empty sections collapse to one line.
+Distinct definitions sharing a label show a short definition-ID suffix. Escape returns focus and captured scroll only while the editor,
 document, selection, mentions, session, page and universe capture remain valid.

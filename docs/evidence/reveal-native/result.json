@@ -2,7 +2,8 @@
   "synthetic": true,
   "native": true,
   "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36 Edg/157.0.0.0",
-  "database": "C:\\Users\\Valen\\AppData\\Local\\Temp\\reveal-native-bga2Do\\synthetic.sqlite",
+  "database": "<fresh temp dir>/synthetic.sqlite",
+  "fixture": "tests/fixtures/reveal-facts.json",
   "windows": [
     {
       "width": 1120,
@@ -11,9 +12,11 @@
       "proseWidth": 640,
       "popup": {
         "left": 372.84375,
-        "top": 153,
+        "top": 207.390625,
         "right": 752.84375,
-        "bottom": 768
+        "bottom": 547.390625,
+        "height": 340,
+        "viewportShare": 0.44
       }
     },
     {
@@ -23,9 +26,11 @@
       "proseWidth": 640,
       "popup": {
         "left": 97.84375,
-        "top": 12,
+        "top": 207.390625,
         "right": 477.84375,
-        "bottom": 588
+        "bottom": 547.390625,
+        "height": 340,
+        "viewportShare": 0.57
       }
     }
   ],

@@ -40,14 +40,21 @@ prototype or a mocked invoke. Screenshots are WebView2 viewport captures from
 that process. See [machine results](evidence/reveal-native/result.json).
 
 - Actual inner viewports: 1120 x 780 and 800 x 600, DPR 1. Prose column stayed
-  640 CSS pixels in both. The compact popup fits and scrolls inside the viewport.
+  640 CSS pixels in both. The facts peek is 340 px tall: 44% of 1120 x 780 and
+  57% of 800 x 600 (previously 615 px and 576 px, 96%). The script asserts it
+  stays at or under 60% of the viewport, including with source expanded, and
+  scrolls internally. Title and linked prose stay visible.
+- Mara's two distinct `member of` definitions render as `member of · …0031`
+  and `member of · …0038`, so neither reads as an alternative of the other.
 - Mara: genuine member of -> Ashfall Order, PROVISIONAL, folio 3; alternative
   Tidewardens ABIERTO remains visible. Recorded source expansion also fits.
 - Ashfall: incoming references retain Mara/Corin as subjects and member of as
   the predicate. No invented inverse.
 - Before/after text edits persist through Save and reopen, retaining original
   mention IDs. Reads leave doc identity, selection, mentions and dirty state
-  unchanged; Escape restores editor focus. Long-scene scrollTop 3429 remains
+  unchanged; Escape returns DOM focus (`activeElement`) to the editor. The
+  script does not use `view.hasFocus`, which also requires the native window to
+  be OS-foreground and therefore flakes when capture runs in the background. Long-scene scrollTop 3429 remains
   stable while inspecting and closing.
 
 Evidence: [Mara 800](evidence/reveal-native/mara-800.png),
@@ -89,5 +96,5 @@ Run `npm run desktop:dev` in ui, open that synthetic database, and:
 
 This is a point-in-time read, not live canon synchronization. Large entity
 claim sets are fully projected in memory, while presentation is bounded to
-four rows per section. R2 and source navigation remain deferred. Stop at the
+two rows per section. R2 and source navigation remain deferred. Stop at the
 single PR; no merge is authorized.

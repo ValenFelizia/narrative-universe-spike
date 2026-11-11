@@ -102,11 +102,16 @@ accepted direction from implementation alone.
   or malformed records fail closed. The token-scoped bridge preserves typed
   values, assertion/definition IDs, property metadata, literal canon, source
   status, full provenance and scope. No schema/exchange changes.
-- Decision: Next claims cycles deterministic groups of four within each
-  section without ranking canon. Null label, recorded Unknown, boolean false,
+- Decision: Next claims cycles deterministic groups of two within each
+  section without ranking canon (reduced from four after PR #42 review: the
+  peek must stay compact, capped at min(340px, 100vh - 220px) with internal
+  scrolling). Empty sections collapse to one heading line. Null label, recorded Unknown, boolean false,
   no outgoing claims and absent provenance have distinct UI language. Sources
   are plain text, never invented navigation. Same-name identities receive the
-  shortest distinguishing suffix (minimum four characters).
+  shortest distinguishing suffix (minimum four characters). Separate
+  definitions sharing a property label, including several unnamed ones, get
+  the same definition-ID suffix so they never read as alternatives of one
+  property.
 - Decision: an unsaved occurrence may read persisted entity knowledge. A new
   request has its own identity; closure or any captured editor/session drift
   invalidates it, including a same-entity reopen. Errors stay inside the peek

@@ -84,7 +84,7 @@ export function connectEditor(options: {
     return options.allowed() && v === c.view && v.state.doc === c.doc && v.state.selection.eq(c.selection) && sameMentions(v.state.field(mentionField), c.mentions) && s?.sessionId === c.sessionId && s.pageId === c.pageId && options.token() === c.token;
   }
   function close(focus = false): void {
-    const held = picker; picker = {kind: "closed"}; popup.hidden = true; popup.replaceChildren();
+    const held = picker; picker = {kind: "closed"}; popup.hidden = true; popup.replaceChildren(); popup.classList.remove("facts");
     if (focus && held.kind !== "closed" && valid(held)) { held.view.contentDOM.focus({preventScroll: true}); for (const s of held.scroll) { s.element.scrollTop = s.top; s.element.scrollLeft = s.left; } }
   }
   function position(element: HTMLElement, view: EditorView): void {
@@ -102,7 +102,7 @@ export function connectEditor(options: {
   async function showFacts(capture: Capture, mention: Mention, savedLink: boolean, index: readonly EntitySummary[], caption: string): Promise<void> {
     if (picker.kind !== "inspect" || !valid(capture) || !options.reveal) return;
     picker = {...capture, kind: "facts"}; const pending = picker;
-    popup.setAttribute("aria-label", "Entity facts"); popup.replaceChildren();
+    popup.setAttribute("aria-label", "Entity facts"); popup.replaceChildren(); popup.classList.add("facts");
     const closeButton = document.createElement("button"); closeButton.type = "button"; closeButton.textContent = "Close facts · Esc"; closeButton.onclick = () => close(true);
     const heading = document.createElement("h2"); heading.textContent = caption;
     const content = document.createElement("div"); content.setAttribute("role", "status"); content.textContent = "Loading persisted facts…";
@@ -119,26 +119,36 @@ export function connectEditor(options: {
       for (const identity of [...index, data.entity, ...[...data.outgoing, ...data.incoming].flatMap(c => [c.subject, ...(c.value.kind === "reference" ? [c.value.target] : [])])]) {
         const ids = labels.get(identity.label) ?? new Set<string>(); ids.add(identity.id); labels.set(identity.label, ids);
       }
-      const name = (identity: RevealIdentity) => {
-        const ids = [...(labels.get(identity.label) ?? [])];
-        if (ids.length < 2) return identity.label;
+      // Same-label identities get the shortest distinguishing ID suffix (at least 4 characters).
+      const suffixed = (label: string, id: string, ids: readonly string[]) => {
+        if (ids.length < 2) return label;
         let length = 4;
-        while (length < identity.id.length && ids.some(id => id !== identity.id && id.slice(-length) === identity.id.slice(-length))) length++;
-        return `${identity.label} · …${identity.id.slice(-length)}`;
+        while (length < id.length && ids.some(other => other !== id && other.slice(-length) === id.slice(-length))) length++;
+        return `${label} · …${id.slice(-length)}`;
       };
+      const name = (identity: RevealIdentity) => suffixed(identity.label, identity.id, [...(labels.get(identity.label) ?? [])]);
+      // Separate definitions may share a label (or all be unnamed); never let them read as one property.
+      const properties = new Map<string, Set<string>>();
+      for (const claim of [...data.outgoing, ...data.incoming]) {
+        const label = claim.propertyLabel ?? "Unnamed property", ids = properties.get(label) ?? new Set<string>(); ids.add(claim.definitionId); properties.set(label, ids);
+      }
+      const property = (claim: RevealClaim) => { const label = claim.propertyLabel ?? "Unnamed property"; return suffixed(label, claim.definitionId, [...(properties.get(label) ?? [])]); };
       heading.textContent = `${name(data.entity)}${data.typeLabel ? " · " + data.typeLabel : ""} · ${savedLink ? "Saved link" : "Unsaved link"}`;
+      const PAGE = 2; // Rows per section; keeps the peek compact while Next claims reaches every claim deterministically.
       const gloss = {ACORDADO: "Agreed", PROVISIONAL: "Provisional", ABIERTO: "Open", MISTERIO_INTENCIONAL: "Intentional mystery"};
       function section(title: string, claims: RevealClaim[]): void {
         const region = document.createElement("section"), heading = document.createElement("h3"), rows = document.createElement("div");
-        heading.textContent = `${title} · ${claims.length} recorded claims`; region.append(heading, rows); content.append(region);
+        region.append(heading); content.append(region);
+        // Empty sections collapse to their heading line to keep the peek compact.
+        if (!claims.length) { heading.textContent = title === "Outgoing facts" ? "Outgoing facts · No recorded facts" : "Incoming references · No incoming references"; return; }
+        heading.textContent = `${title} · ${claims.length} recorded claims`; region.append(rows);
         let offset = 0;
         function render(): void {
           rows.replaceChildren();
-          if (!claims.length) { rows.textContent = title === "Outgoing facts" ? "No recorded facts" : "No incoming references"; return; }
-          for (const claim of claims.slice(offset, offset + 4)) {
+          for (const claim of claims.slice(offset, offset + PAGE)) {
             const row = document.createElement("article"); row.className = "fact-row"; row.dataset.assertionId = claim.id; row.dataset.definitionId = claim.definitionId;
             const value = claim.value.kind === "reference" ? name(claim.value.target) : claim.value.kind === "text" ? claim.value.text : claim.value.kind === "boolean" ? (claim.value.value ? "Yes" : "No") : "Unknown (recorded)";
-            const text = document.createElement("p"); text.textContent = `${name(claim.subject)} · ${claim.propertyLabel ?? "Unnamed property"} → ${value}`;
+            const text = document.createElement("p"); text.textContent = `${name(claim.subject)} · ${property(claim)} → ${value}`;
             const state = document.createElement("p"); state.textContent = `${claim.canon} · ${gloss[claim.canon]}`;
             const source = document.createElement("details"), summary = document.createElement("summary"), metadata = document.createElement("p");
             const entries = Object.entries(claim.provenance).filter(([,value]) => value !== null);
@@ -147,10 +157,10 @@ export function connectEditor(options: {
             source.addEventListener("toggle", () => { if (picker === pending && valid(capture)) position(popup, capture.view); });
             source.append(summary, metadata); row.append(text, state, source); rows.append(row);
           }
-          if (claims.length > 4) {
-            const count = document.createElement("p"); count.textContent = `Showing ${Math.min(4, claims.length - offset)} of ${claims.length} recorded claims · ${offset + 1}–${Math.min(offset + 4, claims.length)}`;
+          if (claims.length > PAGE) {
+            const count = document.createElement("p"); count.textContent = `Showing ${Math.min(PAGE, claims.length - offset)} of ${claims.length} recorded claims · ${offset + 1}–${Math.min(offset + PAGE, claims.length)}`;
             const next = document.createElement("button"); next.type = "button"; next.textContent = "Next claims";
-            next.onclick = () => { if (picker !== pending || !valid(capture)) { close(); return; } offset = offset + 4 < claims.length ? offset + 4 : 0; render(); rows.querySelector("button")?.focus(); position(popup, capture.view); };
+            next.onclick = () => { if (picker !== pending || !valid(capture)) { close(); return; } offset = offset + PAGE < claims.length ? offset + PAGE : 0; render(); rows.querySelector("button")?.focus(); position(popup, capture.view); };
             rows.append(count, next);
           }
         }

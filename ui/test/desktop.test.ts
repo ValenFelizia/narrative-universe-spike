@@ -630,7 +630,8 @@ test('facts use returned persisted values on clean and dirty links, preserve edi
     view.dispatch({selection:{anchor:2}});view.focus();const state=view.state;view.scrollDOM.scrollTop=70;
     await showFacts(ui);const popup=ui.doc.querySelector('.entity-picker');
     assert.match(popup.textContent,/Mara Vey.*member of.*Ashfall Order/);assert.match(popup.textContent,/PROVISIONAL.*Provisional/);assert.match(popup.textContent,/folio 3/);
-    assert.match(popup.textContent,/Unnamed property.*Unknown \(recorded\)/);assert.match(popup.textContent,/MISTERIO_INTENCIONAL/);assert.match(popup.textContent,/No source recorded/);
+    assert.match(popup.textContent,/Unnamed property.*Unknown \(recorded\)/);assert.match(popup.textContent,/MISTERIO_INTENCIONAL/);
+    assert.match(popup.textContent,/Showing 2 of 3 recorded claims/);factButton(ui,'Next claims').click();assert.match(popup.textContent,/No source recorded/);assert.ok(popup.classList.contains('facts'));
     assert.equal(popup.querySelector('a'),null);assert.equal(calls.find(([cmd])=>cmd==='entity_reveal')[1].universeToken,'test-token');assert.equal(calls.find(([cmd])=>cmd==='entity_reveal')[1].entityId,'house-0002');
     key(ui,popup,'Escape');assert.equal(view.hasFocus,true);assert.equal(view.state,state);assert.equal(view.scrollDOM.scrollTop,70);assert.deepEqual(view.state.field(mentionField),[heldReveal]);
     assert.equal(calls.some(([cmd])=>cmd==='save_page'),false);assert.equal(ui.doc.querySelector('#save-status').textContent,dirty?'Unsaved':'Saved');
@@ -685,9 +686,29 @@ test('facts paginate stable ids, render source as text and reposition expanded p
   const claims=Array.from({length:7},(_,n)=>({...revealFact,id:`claim-${n}`,definitionId:`def-${n}`,provenance:{...revealFact.provenance,locator:'<script>long source</script>'.repeat(20)}}));
   const ui=connectSetup(async cmd=>cmd==='entity_reveal'?{...revealData,outgoing:claims,incoming:[]}:undefined,{...page,body:'Valdoria at dawn.',mentions:[heldReveal]});
   ui.open('a');await tick();const view=ui.view();view.coordsAtPos=()=>({left:20,right:20,top:650,bottom:670});await showFacts(ui);
-  const popup=ui.doc.querySelector('.entity-picker');assert.equal(popup.querySelectorAll('article').length,4);assert.match(popup.textContent,/Showing 4 of 7 recorded claims/);assert.equal(popup.querySelector('script'),null);
+  const popup=ui.doc.querySelector('.entity-picker');assert.equal(popup.querySelectorAll('article').length,2);assert.match(popup.textContent,/Showing 2 of 7 recorded claims/);assert.equal(popup.querySelector('script'),null);
   const detail=popup.querySelector('details');Object.defineProperty(popup,'offsetHeight',{get:()=>detail.open?600:100});detail.open=true;detail.dispatchEvent(new ui.doc.defaultView.Event('toggle'));
   assert.ok(parseFloat(popup.style.top)+600<=ui.doc.defaultView.innerHeight);
-  factButton(ui,'Next claims').click();assert.equal(popup.querySelectorAll('article').length,3);assert.equal(popup.querySelector('article').dataset.assertionId,'claim-4');assert.match(popup.textContent,/Showing 3 of 7 recorded claims/);
+  factButton(ui,'Next claims').click();assert.equal(popup.querySelectorAll('article').length,2);assert.equal(popup.querySelector('article').dataset.assertionId,'claim-2');assert.match(popup.textContent,/Showing 2 of 7 recorded claims · 3–4/);
+  for(let n=0;n<2;n++)factButton(ui,'Next claims').click();assert.equal(popup.querySelectorAll('article').length,1);assert.equal(popup.querySelector('article').dataset.assertionId,'claim-6');
+  factButton(ui,'Next claims').click();assert.equal(popup.querySelector('article').dataset.assertionId,'claim-0');
   ui.close();
+});
+
+test('facts distinguish separate definitions sharing a label, including several unnamed ones', async()=>{
+  const def=(id,definitionId,propertyLabel)=>({...revealFact,id,definitionId,propertyLabel});
+  const outgoing=[def('a','00000000-0000-4000-8000-000000000031','member of'),def('b','00000000-0000-4000-8000-000000000038','member of'),def('c','00000000-0000-4000-8000-000000000037',null),def('d','00000000-0000-4000-8000-000000000039',null),def('e','00000000-0000-4000-8000-000000000032','born in')];
+  const ui=connectSetup(async cmd=>cmd==='entity_reveal'?{...revealData,outgoing,incoming:[]}:undefined,{...page,body:'Valdoria at dawn.',mentions:[heldReveal]});
+  ui.open('a');await tick();await showFacts(ui);const popup=ui.doc.querySelector('.entity-picker');
+  const rows=()=>[...popup.querySelectorAll('article p:first-child')].map(p=>p.textContent);
+  assert.deepEqual(rows(),['Mara Vey · member of · …0031 → Ashfall Order','Mara Vey · member of · …0038 → Ashfall Order']);
+  factButton(ui,'Next claims').click();assert.deepEqual(rows(),['Mara Vey · Unnamed property · …0037 → Ashfall Order','Mara Vey · Unnamed property · …0039 → Ashfall Order']);
+  factButton(ui,'Next claims').click();assert.deepEqual(rows(),['Mara Vey · born in → Ashfall Order']);
+  key(ui,popup,'Escape');assert.equal(popup.classList.contains('facts'),false);ui.close();
+});
+
+test('empty facts sections collapse to a single heading line', async()=>{
+  const ui=connectSetup(async cmd=>cmd==='entity_reveal'?{...revealData,outgoing:[],incoming:[]}:undefined,{...page,body:'Valdoria at dawn.',mentions:[heldReveal]});
+  ui.open('a');await tick();await showFacts(ui);const popup=ui.doc.querySelector('.entity-picker');
+  assert.deepEqual([...popup.querySelectorAll('section')].map(s=>[s.children.length,s.textContent]),[[1,'Outgoing facts · No recorded facts'],[1,'Incoming references · No incoming references']]);ui.close();
 });
