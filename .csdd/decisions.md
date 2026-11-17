@@ -120,3 +120,49 @@ accepted direction from implementation alone.
   definition ownership remains core data; the desktop DTO carries only display
   metadata needed here. No inferred inverse, canon resolution, authoring,
   applicability enumeration, or R2 context surface is added.
+
+## DEC-004 — PA-I5/R2-A Explore Context read path, bounds, and responsive edge/anchored presentation
+
+- Status: accepted within authorized issue #44 (R2-C0 decision memo on #43);
+  awaiting PR review and Windows human acceptance.
+- Date: 2026-11-17
+- Context: R1-B (`DEC-003`) kept compact facts strictly bounded to active
+  assertions and a small anchored overlay. Issue #44 authorizes the next step
+  from R2-C0 (#43): a deliberate deeper read showing applicable zero-claim
+  definitions, grouped active outgoing/incoming claims, and archived history
+  without interrupting Write or altering schema/JSON contracts.
+- Decision:
+  1. Separate core read (`Store::entity_context`) rather than expanding
+     `Store::entity_reveal`: keeps `entity_reveal` compact and unchanged while
+     executing `entity_context` in one deferred SQLite read transaction. Reuses
+     validated row readers (`read_entity`, `read_definition`, `read_assertion`)
+     with history-aware applicability checks (archived definitions remain
+     readable in archived context while `Store::create_assertion` still rejects
+     new assertions against archived definitions).
+  2. Fail-closed bounds with escaping-aware byte accounting: enforce
+     `MAX_CONTEXT_GROUPS = 128`, `MAX_CONTEXT_UNIQUE_ASSERTIONS = 500`, and
+     `MAX_CONTEXT_BYTES = 2 MiB` before copying oversized payloads, accounting
+     for worst-case JSON string escaping so serialized Tauri DTOs never silently
+     overflow the wire limit (`Error::ContextTooLarge` ->
+     `BridgeError::ContextTooLarge`).
+  3. Shared frontend context renderer with measured V2-edge / V1-anchored
+     layout: render on demand inside `.entity-picker.context` rather than as a
+     persistent right-hand split pane. Measure `proseRect` against
+     `window.innerWidth`; use the right edge (`300..360 px`) only when `>= 300 px`
+     of clear margin remains beside the writing column (zero prose reflow or
+     recentering), otherwise fall back to anchored positioning (flipping above
+     near-bottom carets so the active line remains visible).
+  4. Zero-refetch `Back to facts`: preserve a `FactsSnapshot` (reveal payload,
+     error text, section pagination offsets, expanded provenance set, and popup
+     scrollTop) across `Explore context -> Back to facts` so writers can move
+     between peek and context without extra IPC calls or lost state.
+- Rationale: Keeping `entity_reveal` untouched protects R1-B's minimal path and
+  latency; separating `entity_context` lets bounds and archive grouping evolve
+  cleanly without schema bumps (`SCHEMA_VERSION` stays `3`). Measuring
+  available viewport margin dynamically preserves `DESIGN.md`'s stationary prose
+  column at 1600x900 (whether library is open or closed) while guaranteeing clean
+  usability at 1120x780 and 800x600.
+- Consequences: Context reads stay point-in-time and bounded; entities exceeding
+  group, assertion, or 2 MiB byte limits advise the writer to use compact facts.
+  Incompatibility warnings, backlinks/occurrence lists, clickable provenance
+  navigation, and authoring remain out of scope for R2-A.

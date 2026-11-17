@@ -1,0 +1,127 @@
+{
+  "synthetic": true,
+  "native": true,
+  "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36 Edg/157.0.0.0",
+  "database": "<fresh temp dir>/reveal-fixture.sqlite & synthetic-context.sqlite",
+  "fixture": "tests/fixtures/reveal-facts.json + temp synthetic archive/self-ref fixture",
+  "captures": [
+    {
+      "width": 1600,
+      "height": 900,
+      "dpr": 1,
+      "viewport": 1600,
+      "library": "open",
+      "layout": "edge",
+      "proseWidth": 640,
+      "docLeftBefore": 587.5,
+      "docLeftAfter": 587.5,
+      "popup": {
+        "left": 1252,
+        "top": 92,
+        "right": 1584,
+        "bottom": 844,
+        "width": 332,
+        "height": 752
+      }
+    },
+    {
+      "width": 1600,
+      "height": 900,
+      "dpr": 1,
+      "viewport": 1600,
+      "library": "closed",
+      "layout": "edge",
+      "proseWidth": 640,
+      "popup": {
+        "left": 1252,
+        "top": 92,
+        "right": 1584,
+        "bottom": 844,
+        "width": 332,
+        "height": 752
+      }
+    },
+    {
+      "width": 1120,
+      "height": 780,
+      "dpr": 1,
+      "viewport": 1120,
+      "library": "closed",
+      "layout": "anchored",
+      "proseWidth": 640,
+      "popup": {
+        "left": 373,
+        "top": 207,
+        "right": 813,
+        "bottom": 723.609375,
+        "width": 440,
+        "height": 516.609375
+      }
+    },
+    {
+      "width": 1120,
+      "height": 780,
+      "dpr": 1,
+      "viewport": 1120,
+      "library": "open",
+      "layout": "anchored",
+      "proseWidth": 640,
+      "popup": {
+        "left": 373,
+        "top": 207,
+        "right": 813,
+        "bottom": 723.609375,
+        "width": 440,
+        "height": 516.609375
+      }
+    },
+    {
+      "width": 800,
+      "height": 600,
+      "dpr": 1,
+      "viewport": 800,
+      "library": "closed",
+      "layout": "anchored",
+      "proseWidth": 640,
+      "popup": {
+        "left": 98,
+        "top": 207,
+        "right": 538,
+        "bottom": 543.609375,
+        "width": 440,
+        "height": 336.609375
+      }
+    },
+    {
+      "width": 800,
+      "height": 600,
+      "dpr": 1,
+      "viewport": 800,
+      "scenario": "long-near-bottom",
+      "scrollTop": 3504,
+      "caretTop": 526.078125,
+      "caretBottom": 551.078125,
+      "popup": {
+        "left": 348,
+        "top": 84,
+        "right": 788,
+        "bottom": 520.078125,
+        "height": 436.078125
+      }
+    }
+  ],
+  "checks": [
+    "actual Tauri invoke against fresh v3 databases",
+    "V2 edge layout at 1600x900 (library open & closed) with zero prose reflow/recentering",
+    "live resize transition edge <-> anchored between 1600x900 and 1120x780 / 800x600",
+    "V1 anchored fallback at 1120x780 and 800x600 including near-bottom caret flipping above caret",
+    "Back to facts state restoration without refetching",
+    "Escape focus, selection, scroll and dirty draft preservation",
+    "archived history closed by default, independent archive bits, zero-claim archived defs, and self-references"
+  ],
+  "manualRemaining": [
+    "physical keyboard and IME traversal (Tab/Shift+Tab/Escape)",
+    "human readability and contrast check on real display scaling (100% and 125%+ DPI)",
+    "physical outside pointer click without stealing focus from clicked target"
+  ]
+}

@@ -37,6 +37,7 @@ enum BridgeError {
     UniverseChanged,
     PageMissing,
     EntityMissing,
+    ContextTooLarge,
     ReadFailed,
     StateUnavailable,
     Stale,
@@ -466,6 +467,187 @@ fn entity_reveal(
     reveal_active(&active, &universe_token, &entity_id)
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextDefinition {
+    id: String,
+    owner_kind: &'static str,
+    owner_id: String,
+    property_label: Option<String>,
+    value_class: String,
+    cardinality: String,
+    archived: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextClaim {
+    id: String,
+    value: RevealValue,
+    canon: String,
+    source_status_raw: Option<String>,
+    provenance: RevealSource,
+    scope_note: Option<String>,
+    archived: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextOutgoingGroup {
+    definition: ContextDefinition,
+    claims: Vec<ContextClaim>,
+    has_archived_claims: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextIncomingGroup {
+    subject: RevealIdentity,
+    definition: ContextDefinition,
+    claims: Vec<ContextClaim>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EntityContext {
+    entity: RevealIdentity,
+    type_label: Option<String>,
+    outgoing_groups: Vec<ContextOutgoingGroup>,
+    incoming_groups: Vec<ContextIncomingGroup>,
+    archived_outgoing_groups: Vec<ContextOutgoingGroup>,
+    archived_incoming_groups: Vec<ContextIncomingGroup>,
+}
+
+fn context_definition(definition: narrative_universe::Definition) -> ContextDefinition {
+    let (owner_kind, owner_id) = match definition.owner {
+        narrative_universe::Owner::Type(type_id) => ("type", type_id.as_str().to_owned()),
+        narrative_universe::Owner::Entity(entity_id) => ("entity", entity_id.as_str().to_owned()),
+    };
+    ContextDefinition {
+        id: definition.id.as_str().to_owned(),
+        owner_kind,
+        owner_id,
+        property_label: definition.label.map(|l| l.as_str().to_owned()),
+        value_class: definition.value_class.as_str().to_owned(),
+        cardinality: definition.cardinality.as_str().to_owned(),
+        archived: definition.archived,
+    }
+}
+
+fn context_claim(claim: narrative_universe::ContextClaim) -> Result<ContextClaim, BridgeError> {
+    use narrative_universe::Value;
+    let a = claim.assertion;
+    let value = match a.value {
+        Value::Text(text) => RevealValue::Text { text },
+        Value::Boolean(value) => RevealValue::Boolean { value },
+        Value::Unknown => RevealValue::Unknown,
+        Value::Reference(_) => RevealValue::Reference {
+            target: reveal_identity(claim.target.ok_or(BridgeError::ReadFailed)?),
+        },
+    };
+    Ok(ContextClaim {
+        id: a.id.as_str().to_owned(),
+        value,
+        canon: a.canon.as_str().to_owned(),
+        source_status_raw: a.source_status_raw,
+        provenance: RevealSource {
+            external_ref: a.provenance.external_ref,
+            locator: a.provenance.locator,
+            fragment: a.provenance.fragment,
+            source_revision: a.provenance.source_revision,
+        },
+        scope_note: a.scope_note,
+        archived: a.archived,
+    })
+}
+
+fn context_outgoing_group(
+    group: narrative_universe::ContextOutgoingGroup,
+) -> Result<ContextOutgoingGroup, BridgeError> {
+    Ok(ContextOutgoingGroup {
+        definition: context_definition(group.definition),
+        claims: group
+            .claims
+            .into_iter()
+            .map(context_claim)
+            .collect::<Result<_, _>>()?,
+        has_archived_claims: group.has_archived_claims,
+    })
+}
+
+fn context_incoming_group(
+    group: narrative_universe::ContextIncomingGroup,
+) -> Result<ContextIncomingGroup, BridgeError> {
+    Ok(ContextIncomingGroup {
+        subject: reveal_identity(group.subject),
+        definition: context_definition(group.definition),
+        claims: group
+            .claims
+            .into_iter()
+            .map(context_claim)
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+fn context_active(
+    active: &Option<ActiveUniverse>,
+    token: &str,
+    entity_id: &str,
+) -> Result<EntityContext, BridgeError> {
+    let store = active_store(active, token)?;
+    let id = EntityId::parse(entity_id).map_err(|_| BridgeError::EntityMissing)?;
+    let context = store.entity_context(&id).map_err(|error| match error {
+        Error::Validation {
+            reason: ValidationReason::NotFound,
+            ..
+        } => BridgeError::EntityMissing,
+        Error::Validation {
+            reason: ValidationReason::ContextTooLarge,
+            ..
+        } => BridgeError::ContextTooLarge,
+        Error::Busy => BridgeError::Busy,
+        Error::Io { .. } => BridgeError::Io,
+        other => map_read_error(other, false),
+    })?;
+    Ok(EntityContext {
+        entity: reveal_identity(context.entity),
+        type_label: context.type_label,
+        outgoing_groups: context
+            .outgoing_groups
+            .into_iter()
+            .map(context_outgoing_group)
+            .collect::<Result<_, _>>()?,
+        incoming_groups: context
+            .incoming_groups
+            .into_iter()
+            .map(context_incoming_group)
+            .collect::<Result<_, _>>()?,
+        archived_outgoing_groups: context
+            .archived_outgoing_groups
+            .into_iter()
+            .map(context_outgoing_group)
+            .collect::<Result<_, _>>()?,
+        archived_incoming_groups: context
+            .archived_incoming_groups
+            .into_iter()
+            .map(context_incoming_group)
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+#[tauri::command(async)]
+fn entity_context(
+    universe_token: String,
+    entity_id: String,
+    state: State<'_, DesktopState>,
+) -> Result<EntityContext, BridgeError> {
+    let active = state
+        .store
+        .lock()
+        .map_err(|_| BridgeError::StateUnavailable)?;
+    context_active(&active, &universe_token, &entity_id)
+}
+
 #[tauri::command(async)]
 fn save_page(
     request: SaveRequest,
@@ -765,6 +947,7 @@ pub fn run() {
             read_page,
             entity_index,
             entity_reveal,
+            entity_context,
             save_page,
             create_page,
             request_window_close,
@@ -1721,6 +1904,243 @@ mod tests {
         ));
         conn.execute_batch("ROLLBACK; PRAGMA ignore_check_constraints=ON; UPDATE assertions SET canon='private invalid content' WHERE id='00000000-0000-4000-8000-000000000041'").unwrap();
         let error = super::reveal_active(&active, "reveal-token", id).unwrap_err();
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            serde_json::json!({"kind":"read_failed"})
+        );
+    }
+
+    #[test]
+    fn context_is_token_scoped_grouped_archive_preserving_bounded_and_sanitizes_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("context.sqlite");
+        let (store, _) = narrative_universe::import_new_json(
+            &path,
+            include_bytes!("../../../tests/fixtures/reveal-facts.json"),
+        )
+        .unwrap();
+        let active = Some(super::ActiveUniverse {
+            token: "context-token".into(),
+            store,
+        });
+        let mara_id = "00000000-0000-4000-8000-000000000011";
+        assert!(matches!(
+            super::context_active(&active, "old-token", mara_id),
+            Err(BridgeError::UniverseChanged)
+        ));
+        assert!(matches!(
+            super::context_active(&None, "context-token", mara_id),
+            Err(BridgeError::UniverseNotOpen)
+        ));
+        for missing in ["invalid", "00000000-0000-4000-8000-000000000099"] {
+            assert!(matches!(
+                super::context_active(&active, "context-token", missing),
+                Err(BridgeError::EntityMissing)
+            ));
+        }
+
+        let before = std::fs::read(&path).unwrap();
+        let mara_dto = super::context_active(&active, "context-token", mara_id).unwrap();
+        let mara_bytes = serde_json::to_vec(&mara_dto).unwrap();
+        assert!(mara_bytes.len() <= narrative_universe::MAX_CONTEXT_BYTES);
+        let mara = serde_json::to_value(&mara_dto).unwrap();
+        assert_eq!(mara["entity"]["label"], "Mara Vey");
+        assert_eq!(mara["typeLabel"], "Person");
+        let outgoing = mara["outgoingGroups"].as_array().unwrap();
+        assert_eq!(outgoing.len(), 7);
+        assert_eq!(
+            outgoing[0]["definition"],
+            serde_json::json!({
+                "id": "00000000-0000-4000-8000-000000000031",
+                "ownerKind": "type",
+                "ownerId": "00000000-0000-4000-8000-000000000021",
+                "propertyLabel": "member of",
+                "valueClass": "reference",
+                "cardinality": "multiple",
+                "archived": false
+            })
+        );
+        // Active zero-claim applicable definitions remain present.
+        assert_eq!(
+            outgoing[2]["definition"]["id"],
+            "00000000-0000-4000-8000-000000000033"
+        );
+        assert_eq!(outgoing[2]["claims"], serde_json::json!([]));
+        assert_eq!(outgoing[2]["hasArchivedClaims"], false);
+        assert_eq!(
+            outgoing[6]["definition"]["id"],
+            "00000000-0000-4000-8000-000000000038"
+        );
+        assert_eq!(
+            outgoing[6]["claims"][0]["value"],
+            serde_json::json!({"kind":"reference","target":{"id":"00000000-0000-4000-8000-000000000013","label":"Ashfall Order"}})
+        );
+        assert_eq!(outgoing[6]["claims"][0]["archived"], false);
+
+        let archived_out = mara["archivedOutgoingGroups"].as_array().unwrap();
+        assert_eq!(archived_out.len(), 1);
+        assert_eq!(
+            archived_out[0]["definition"],
+            serde_json::json!({
+                "id": "00000000-0000-4000-8000-000000000036",
+                "ownerKind": "entity",
+                "ownerId": mara_id,
+                "propertyLabel": "archived sigil",
+                "valueClass": "text",
+                "cardinality": "singular",
+                "archived": true
+            })
+        );
+        assert_eq!(archived_out[0]["claims"][0]["archived"], true);
+
+        let corin_dto = super::context_active(
+            &active,
+            "context-token",
+            "00000000-0000-4000-8000-000000000012",
+        )
+        .unwrap();
+        let corin = serde_json::to_value(&corin_dto).unwrap();
+        assert_eq!(
+            corin["outgoingGroups"][2]["claims"][0]["value"],
+            serde_json::json!({"kind":"boolean","value":false})
+        );
+        assert_eq!(
+            corin["outgoingGroups"][4]["claims"][0]["value"],
+            serde_json::json!({"kind":"unknown"})
+        );
+        assert_eq!(corin["outgoingGroups"][3]["hasArchivedClaims"], false);
+        assert_eq!(corin["archivedOutgoingGroups"], serde_json::json!([]));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        // Synthetic wire-budget, independent archive bits, zero-claim archived def, and ContextTooLarge checks.
+        let large_path = dir.path().join("large.sqlite");
+        let mut large_store =
+            Store::create(&large_path, UniverseId::parse(UNIVERSE).unwrap()).unwrap();
+        large_store
+            .create_entity(Entity {
+                id: EntityId::parse(PLACE).unwrap(),
+                label: "Quoted".repeat(10),
+                type_id: None,
+                page_id: None,
+            })
+            .unwrap();
+        let def_id =
+            narrative_universe::DefinitionId::parse("44444444-4444-4444-8444-444444444441")
+                .unwrap();
+        large_store
+            .create_definition(narrative_universe::Definition {
+                id: def_id.clone(),
+                owner: narrative_universe::Owner::Entity(EntityId::parse(PLACE).unwrap()),
+                label: Some(narrative_universe::DefinitionLabel::parse("notes").unwrap()),
+                value_class: narrative_universe::ValueClass::Text,
+                cardinality: narrative_universe::Cardinality::Multiple,
+                archived: false,
+            })
+            .unwrap();
+        let empty_archived_def =
+            narrative_universe::DefinitionId::parse("44444444-4444-4444-8444-444444444442")
+                .unwrap();
+        large_store
+            .create_definition(narrative_universe::Definition {
+                id: empty_archived_def,
+                owner: narrative_universe::Owner::Entity(EntityId::parse(PLACE).unwrap()),
+                label: Some(narrative_universe::DefinitionLabel::parse("old rule").unwrap()),
+                value_class: narrative_universe::ValueClass::Boolean,
+                cardinality: narrative_universe::Cardinality::Singular,
+                archived: true,
+            })
+            .unwrap();
+        let quotes_ok = "\"".repeat(900_000);
+        large_store
+            .create_assertion(narrative_universe::Assertion {
+                id: narrative_universe::AssertionId::parse("55555555-5555-4555-8555-555555555551")
+                    .unwrap(),
+                subject_id: EntityId::parse(PLACE).unwrap(),
+                definition_id: def_id.clone(),
+                value: narrative_universe::Value::Text(quotes_ok),
+                canon: narrative_universe::Canon::Acordado,
+                source_status_raw: None,
+                provenance: narrative_universe::Provenance::absent(),
+                scope_note: None,
+                archived: false,
+            })
+            .unwrap();
+        large_store
+            .create_assertion(narrative_universe::Assertion {
+                id: narrative_universe::AssertionId::parse("55555555-5555-4555-8555-555555555550")
+                    .unwrap(),
+                subject_id: EntityId::parse(PLACE).unwrap(),
+                definition_id: def_id.clone(),
+                value: narrative_universe::Value::Text("archived note".into()),
+                canon: narrative_universe::Canon::Provisional,
+                source_status_raw: None,
+                provenance: narrative_universe::Provenance::absent(),
+                scope_note: None,
+                archived: true,
+            })
+            .unwrap();
+        let large_active = Some(super::ActiveUniverse {
+            token: "large".into(),
+            store: large_store,
+        });
+        let ok_dto = super::context_active(&large_active, "large", PLACE).unwrap();
+        assert!(
+            serde_json::to_vec(&ok_dto).unwrap().len() <= narrative_universe::MAX_CONTEXT_BYTES
+        );
+        let ok_json = serde_json::to_value(&ok_dto).unwrap();
+        assert_eq!(ok_json["outgoingGroups"][0]["hasArchivedClaims"], true);
+        assert_eq!(
+            ok_json["archivedOutgoingGroups"][0]["definition"]["archived"],
+            false
+        );
+        assert_eq!(
+            ok_json["archivedOutgoingGroups"][0]["claims"][0]["archived"],
+            true
+        );
+        assert_eq!(
+            ok_json["archivedOutgoingGroups"][1]["definition"]["archived"],
+            true
+        );
+        assert_eq!(
+            ok_json["archivedOutgoingGroups"][1]["claims"],
+            serde_json::json!([])
+        );
+        drop(large_active);
+
+        let mut large_store = Store::open(&large_path).unwrap();
+        large_store
+            .create_assertion(narrative_universe::Assertion {
+                id: narrative_universe::AssertionId::parse("55555555-5555-4555-8555-555555555552")
+                    .unwrap(),
+                subject_id: EntityId::parse(PLACE).unwrap(),
+                definition_id: def_id,
+                value: narrative_universe::Value::Text("\"".repeat(300_000)),
+                canon: narrative_universe::Canon::Acordado,
+                source_status_raw: None,
+                provenance: narrative_universe::Provenance::absent(),
+                scope_note: None,
+                archived: false,
+            })
+            .unwrap();
+        let too_large_active = Some(super::ActiveUniverse {
+            token: "large".into(),
+            store: large_store,
+        });
+        let too_large = super::context_active(&too_large_active, "large", PLACE).unwrap_err();
+        assert!(matches!(too_large, BridgeError::ContextTooLarge));
+        assert_eq!(
+            serde_json::to_value(too_large).unwrap(),
+            serde_json::json!({"kind":"context_too_large"})
+        );
+
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        assert!(matches!(
+            super::context_active(&active, "context-token", mara_id),
+            Err(BridgeError::Busy)
+        ));
+        conn.execute_batch("ROLLBACK; PRAGMA ignore_check_constraints=ON; UPDATE assertions SET canon='private invalid content' WHERE id='00000000-0000-4000-8000-000000000041'").unwrap();
+        let error = super::context_active(&active, "context-token", mara_id).unwrap_err();
         assert_eq!(
             serde_json::to_value(error).unwrap(),
             serde_json::json!({"kind":"read_failed"})

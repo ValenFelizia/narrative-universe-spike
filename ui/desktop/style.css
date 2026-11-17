@@ -124,13 +124,31 @@ dialog::backdrop { background: rgba(0,0,0,.6); }
 .entity-mention.mismatch { text-decoration-color:#dfb47d; background:#51432c; }
 .entity-id { color:#aba9a5; font-family:ui-monospace,monospace; font-size:12px; }
 
-/* On-demand R1-B overlay; never participates in the prose layout. */
+/* On-demand R1-B/R2-A overlays; never participate in the prose layout. */
 .entity-picker { max-height:calc(100vh - 24px); overflow-y:auto; overflow-wrap:anywhere; }
 /* Facts stay a compact peek: well below the viewport, scrolling internally (expanded sources included). */
 .entity-picker.facts { max-height:min(340px, calc(100vh - 220px)); overscroll-behavior:contain; }
+.facts-actions, .context-actions { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px; }
 .entity-picker h2 { font-size:15px; margin:4px 0 8px; }
-.entity-picker h3 { font-size:13px; margin:8px 0 4px; }
+.entity-picker h3 { font-size:13px; margin:10px 0 4px; color:#ece7de; }
 .fact-row { border-top:1px solid #454a47; padding:4px 0; }
 .fact-row p { margin:2px 0; }
 .fact-row details { color:#c6c6bc; }
 .fact-row summary { cursor:pointer; }
+
+.entity-picker.context { background:#1f2226; border:1px solid #59605d; padding:12px 14px; overscroll-behavior:contain; }
+.entity-picker.context.context-edge { box-shadow:0 2px 10px #0004; }
+.entity-picker.context.context-anchored { width:min(440px, calc(100vw - 24px)); box-shadow:0 4px 16px #0006; }
+.context-header { display:flex; flex-direction:column; gap:6px; padding-bottom:8px; border-bottom:1px solid #393b40; margin-bottom:8px; }
+.context-header h2 { margin:0; }
+.context-actions { margin-bottom:0; }
+.context-note { color:#aba9a5; font-size:12px; margin:0 0 8px; }
+.context-group { border-top:1px solid #393b40; padding:8px 0; }
+.context-group-title { margin:0 0 2px; font-size:13px; font-weight:600; color:#ece7de; }
+.context-meta { margin:0 0 6px; font-size:12px; color:#aba9a5; }
+.context-empty { margin:2px 0; font-size:12px; color:#aba9a5; font-style:italic; }
+.context-canon { color:#9db7ad; font-size:12px; }
+.context-archive-state { color:#c6b697; font-size:12px; }
+.context-archived { margin-top:10px; border-top:1px solid #393b40; padding-top:8px; }
+.context-archived > summary { cursor:pointer; font-weight:500; color:#aba9a5; }
+.context-archived[open] > summary { color:#ece7de; margin-bottom:6px; }

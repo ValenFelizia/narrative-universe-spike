@@ -206,3 +206,43 @@ Ctrl+K remain. Async responses require the original valid capture. No schema,
 exchange, dependency, authoring, permanent panel or R2 change is authorized.
 See DEC-003 and DESIGN.md for presentation and capture decisions; native
 acceptance evidence is in docs/reveal-acceptance.md.
+
+## PA-I5/R2-A Explore Context (issue #44)
+
+Approved scope: follow-on deeper read-only knowledge view opened deliberately
+from facts peek (`Explore context`) without modifying `entity_reveal`, Write,
+page drafts, schema/exchange, or canon. Sources: R2-C0 decision memo on issue
+#43, authorized issue #44, and `DEC-004`.
+
+- Core read: `Store::entity_context(&EntityId)` runs inside one deferred
+  SQLite read transaction (`ReadOnly` check via `Store::open`, `NotFound` for
+  missing entities, fail-closed on dangling/malformed stored rows). It enumerates
+  all applicable definitions for the entity (type-owned when `entity.type_id` is
+  present, plus entity-owned), active outgoing claims grouped by definition ID
+  (preserving zero-claim active definitions with `has_archived_claims`), active
+  incoming references grouped by `(subject_id, definition_id)` keeping original
+  `subject -> predicate -> target` orientation, and closed-by-default archived
+  history grouped separately for outgoing and incoming while keeping
+  `definition.archived` and `assertion.archived` independent.
+- Hard bounds: `Store::entity_context` enforces `MAX_CONTEXT_GROUPS = 128`,
+  `MAX_CONTEXT_UNIQUE_ASSERTIONS = 500`, and `MAX_CONTEXT_BYTES = 2 MiB` using
+  an escaping-aware JSON wire size projection before finalizing large payloads,
+  returning `Error::ContextTooLarge` (mapped to `BridgeError::ContextTooLarge`
+  / `"context_too_large"`). `Store::create_assertion` remains strict on archived
+  definitions; existing history-aware validation reads remain unchanged.
+- Bridge: `entity_context` command (`#[tauri::command(async)]`) is scoped by
+  `universe_token`, maps `UniverseNotOpen`, `UniverseChanged`, `EntityMissing`,
+  `ContextTooLarge`, `Busy`, and sanitized `ReadFailed`, and emits camelCase
+  DTOs with complete identity, definition metadata, literal canon states, full
+  provenance, `sourceStatusRaw`, `scopeNote`, and independent archive flags.
+- UI & layout: `Explore context` transitions from compact facts peek while
+  capturing a `FactsSnapshot` (`Back to facts` restores pagination, expanded
+  provenance, and scrollTop without refetching `entity_reveal`). The shared
+  context renderer places the view in the right margin (`width = min(360,
+  freeRight)`) when `proseRect.width > 0` and `window.innerWidth - proseRect.right
+  - 24 - 16 >= 300`, with zero prose reflow/recentering, and falls back to an
+  anchored overlay (preferring below caret, flipping above when near bottom)
+  otherwise. `Escape` restores editor focus (`preventScroll: true`), selection,
+  and scroll while valid; outside `pointerdown` closes without stealing the
+  clicked control's focus. No incompatibility flags, occurrence lists,
+  clickable provenance links, authoring, AI, or permanent right panel are added.

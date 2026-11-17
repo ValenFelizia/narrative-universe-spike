@@ -712,3 +712,273 @@ test('empty facts sections collapse to a single heading line', async()=>{
   ui.open('a');await tick();await showFacts(ui);const popup=ui.doc.querySelector('.entity-picker');
   assert.deepEqual([...popup.querySelectorAll('section')].map(s=>[s.children.length,s.textContent]),[[1,'Outgoing facts · No recorded facts'],[1,'Incoming references · No incoming references']]);ui.close();
 });
+
+const contextDef = (id, propertyLabel, overrides = {}) => ({
+  id, ownerKind: 'type', ownerId: 'type-person', propertyLabel, valueClass: 'reference', cardinality: 'multiple', archived: false, ...overrides,
+});
+const contextClaim = (id, value, overrides = {}) => ({
+  id, value, canon: 'PROVISIONAL', sourceStatusRaw: 'draft chapter 3',
+  provenance: { externalRef: 'chronicle-a', locator: 'folio 3', fragment: null, sourceRevision: null },
+  scopeNote: null, archived: false, ...overrides,
+});
+const contextData = {
+  entity: { id: 'house-0002', label: 'Mara Vey' },
+  typeLabel: 'Person',
+  outgoingGroups: [
+    {
+      definition: contextDef('00000000-0000-4000-8000-000000000031', 'member of'),
+      claims: [contextClaim('c1', { kind: 'reference', target: { id: 'ashfall', label: 'Ashfall Order' } })],
+      hasArchivedClaims: false,
+    },
+    {
+      definition: contextDef('00000000-0000-4000-8000-000000000033', 'oath sworn', { valueClass: 'boolean', cardinality: 'singular' }),
+      claims: [],
+      hasArchivedClaims: true,
+    },
+    {
+      definition: contextDef('00000000-0000-4000-8000-000000000035', 'true name', { valueClass: 'text', cardinality: 'singular' }),
+      claims: [],
+      hasArchivedClaims: false,
+    },
+    {
+      definition: contextDef('00000000-0000-4000-8000-000000000037', null, { valueClass: 'boolean' }),
+      claims: [
+        contextClaim('c2', { kind: 'boolean', value: false }, { canon: 'ACORDADO', provenance: { externalRef: null, locator: null, fragment: null, sourceRevision: null }, scopeNote: '<script>alert(1)</script>' }),
+        contextClaim('c3', { kind: 'unknown' }, { canon: 'MISTERIO_INTENCIONAL' }),
+      ],
+      hasArchivedClaims: false,
+    },
+    {
+      definition: contextDef('00000000-0000-4000-8000-000000000038', 'member of'),
+      claims: [contextClaim('c4', { kind: 'reference', target: { id: 'ashfall', label: 'Ashfall Order' } })],
+      hasArchivedClaims: false,
+    },
+  ],
+  incomingGroups: [
+    {
+      subject: { id: 'house-0002', label: 'Mara Vey' },
+      definition: contextDef('00000000-0000-4000-8000-000000000039', null),
+      claims: [contextClaim('c5', { kind: 'reference', target: { id: 'house-0002', label: 'Mara Vey' } }, { canon: 'ABIERTO' })],
+    },
+    {
+      subject: { id: 'corin', label: 'Corin Hale' },
+      definition: contextDef('00000000-0000-4000-8000-000000000031', 'member of'),
+      claims: [contextClaim('c6', { kind: 'reference', target: { id: 'house-0002', label: 'Mara Vey' } })],
+    },
+  ],
+  archivedOutgoingGroups: [
+    {
+      definition: contextDef('00000000-0000-4000-8000-000000000036', 'archived sigil', { ownerKind: 'entity', ownerId: 'house-0002', valueClass: 'text', cardinality: 'singular', archived: true }),
+      claims: [contextClaim('c7', { kind: 'text', text: 'ash and salt' }, { canon: 'ACORDADO', archived: false })],
+      hasArchivedClaims: false,
+    },
+    {
+      definition: contextDef('00000000-0000-4000-8000-000000000040', 'retired seal', { ownerKind: 'entity', ownerId: 'house-0002', valueClass: 'text', cardinality: 'singular', archived: true }),
+      claims: [],
+      hasArchivedClaims: false,
+    },
+    {
+      definition: contextDef('00000000-0000-4000-8000-000000000033', 'oath sworn', { valueClass: 'boolean', cardinality: 'singular', archived: false }),
+      claims: [contextClaim('c8', { kind: 'boolean', value: true }, { canon: 'PROVISIONAL', archived: true })],
+      hasArchivedClaims: true,
+    },
+  ],
+  archivedIncomingGroups: [
+    {
+      subject: { id: 'corin', label: 'Corin Hale' },
+      definition: contextDef('00000000-0000-4000-8000-000000000041', 'former ally', { archived: true }),
+      claims: [contextClaim('c9', { kind: 'reference', target: { id: 'house-0002', label: 'Mara Vey' } }, { canon: 'ABIERTO', archived: true })],
+    },
+  ],
+};
+
+async function openContext(ui) {
+  await showFacts(ui);
+  factButton(ui, 'Explore context').click();
+  await tick();
+}
+
+test('explore context groups applicable definitions, incoming orientation, closed archives, disambiguation and preserves draft', async()=>{
+  for (const dirty of [false, true]) {
+    const calls = [];
+    const ui = connectSetup(async (cmd, args) => {
+      calls.push([cmd, args]);
+      if (cmd === 'entity_reveal') return revealData;
+      if (cmd === 'entity_context') return contextData;
+    }, { ...page, body: 'Valdoria at dawn.', mentions: [heldReveal] });
+    ui.open('a'); await tick(); const view = ui.view();
+    if (dirty) view.dispatch({ changes: { from: view.state.doc.length, insert: ' unsaved' }, annotations: isolateHistory.of('full') });
+    view.dispatch({ selection: { anchor: 2 } }); view.focus();
+    const state = view.state; view.scrollDOM.scrollTop = 64;
+    await openContext(ui);
+    const popup = ui.doc.querySelector('.entity-picker');
+    assert.ok(popup.classList.contains('context'));
+    assert.equal(popup.getAttribute('aria-label'), 'Entity context');
+    assert.equal(calls.find(([cmd]) => cmd === 'entity_context')[1].universeToken, 'test-token');
+    assert.equal(calls.find(([cmd]) => cmd === 'entity_context')[1].entityId, 'house-0002');
+    assert.equal(popup.querySelector('a'), null);
+    assert.equal(popup.querySelector('script'), null);
+
+    // Outgoing grouping, zero-claim differentiation, disambiguation, canon + gloss, false vs unknown.
+    const text = popup.textContent;
+    assert.match(text, /member of · …0031/);
+    assert.match(text, /member of · …0038/);
+    assert.match(text, /Unnamed property · …0037/);
+    assert.match(text, /Unnamed property · …0039/);
+    assert.match(text, /oath sworn[\s\S]*Not recorded · Archived history available/);
+    assert.match(text, /true name[\s\S]*Not recorded/);
+    assert.match(text, /→ No[\s\S]*ACORDADO · Agreed/);
+    assert.match(text, /→ Unknown \(recorded\)[\s\S]*MISTERIO_INTENCIONAL · Intentional mystery/);
+    assert.match(text, /<script>alert\(1\)<\/script>/);
+    assert.match(text, /Corin Hale · member of · …0031 → Mara Vey/);
+    assert.match(text, /Mara Vey · Unnamed property · …0039 → Mara Vey/);
+
+    // Archived history is closed by default and distinguishes archive bits + zero-claim archived definitions.
+    const archived = popup.querySelector('.context-archived');
+    assert.equal(archived.open, false);
+    assert.match(archived.querySelector('summary').textContent, /Archived history \(4\)/);
+    archived.open = true; archived.dispatchEvent(new ui.doc.defaultView.Event('toggle'));
+    const archivedText = archived.textContent;
+    assert.match(archivedText, /Stored archive state only/);
+    assert.match(archivedText, /Definition archived[\s\S]*ash and salt[\s\S]*Claim unarchived \(under archived definition\)/);
+    assert.match(archivedText, /retired seal[\s\S]*Archived · No assertions recorded/);
+    assert.match(archivedText, /Active definition · Archived assertions[\s\S]*Claim archived/);
+    assert.match(archivedText, /Corin Hale · former ally → Mara Vey/);
+
+    // Direct Escape closes and restores focus, selection, scroll, and draft without writing.
+    key(ui, popup, 'Escape');
+    assert.equal(popup.hidden, true);
+    assert.equal(popup.classList.contains('context'), false);
+    assert.equal(view.hasFocus, true);
+    assert.equal(view.state, state);
+    assert.equal(view.scrollDOM.scrollTop, 64);
+    assert.equal(calls.some(([cmd]) => cmd === 'save_page'), false);
+    assert.equal(ui.doc.querySelector('#save-status').textContent, dirty ? 'Unsaved' : 'Saved');
+    if (dirty) { assert.ok(undo(view)); assert.equal(view.state.doc.toString(), 'Valdoria at dawn.'); assert.ok(redo(view)); }
+    ui.close();
+  }
+});
+
+test('back to facts restores compact peek pagination, expanded provenance and scroll without refetching', async()=>{
+  let revealCalls = 0, contextCalls = 0;
+  const pagedReveal = {
+    ...revealData,
+    outgoing: Array.from({ length: 5 }, (_, n) => ({ ...revealFact, id: `claim-${n}`, definitionId: `def-${n}` })),
+    incoming: [],
+  };
+  const ui = connectSetup(async cmd => {
+    if (cmd === 'entity_reveal') { revealCalls++; return pagedReveal; }
+    if (cmd === 'entity_context') { contextCalls++; return contextData; }
+  }, { ...page, body: 'Valdoria at dawn.', mentions: [heldReveal] });
+  ui.open('a'); await tick();
+  await showFacts(ui);
+  const popup = ui.doc.querySelector('.entity-picker');
+  factButton(ui, 'Next claims').click();
+  assert.equal(popup.querySelector('article').dataset.assertionId, 'claim-2');
+  const detail = popup.querySelector('details'); detail.open = true; detail.dispatchEvent(new ui.doc.defaultView.Event('toggle'));
+  popup.scrollTop = 48;
+  factButton(ui, 'Explore context').click(); await tick();
+  assert.equal(contextCalls, 1); assert.equal(revealCalls, 1);
+  assert.ok(popup.classList.contains('context'));
+  factButton(ui, 'Back to facts').click();
+  assert.equal(revealCalls, 1, 'Back to facts must not refetch entity_reveal');
+  assert.ok(popup.classList.contains('facts'));
+  assert.equal(popup.classList.contains('context'), false);
+  assert.equal(popup.querySelector('article').dataset.assertionId, 'claim-2');
+  assert.equal(popup.querySelector('details').open, true);
+  assert.equal(popup.scrollTop, 48);
+  assert.equal(ui.doc.activeElement, factButton(ui, 'Explore context'));
+  ui.close();
+});
+
+test('context handles context_too_large and generic errors without altering save status', async()=>{
+  for (const kind of ['context_too_large', 'busy']) {
+    const ui = connectSetup(async cmd => {
+      if (cmd === 'entity_reveal') return revealData;
+      if (cmd === 'entity_context') throw { kind };
+    }, { ...page, body: 'Valdoria at dawn.', mentions: [heldReveal] });
+    ui.open('a'); await tick();
+    await openContext(ui);
+    const popup = ui.doc.querySelector('.entity-picker');
+    assert.match(popup.textContent, kind === 'context_too_large' ? /Context too large/ : /Context unavailable/);
+    assert.equal(ui.doc.querySelector('#save-status').textContent, 'Saved');
+    factButton(ui, 'Back to facts').click();
+    assert.ok(popup.classList.contains('facts'));
+    assert.match(popup.textContent, /Ashfall Order/);
+    ui.close();
+  }
+});
+
+test('late context responses cannot revive closed, backed-out, selection-changed, edited, page-switched or universe-switched captures', async()=>{
+  for (const change of ['close', 'back', 'selection', 'edit', 'page', 'universe']) {
+    const pending = deferred();
+    const ui = connectSetup(async cmd => {
+      if (cmd === 'entity_reveal') return revealData;
+      if (cmd === 'entity_context') return pending.promise;
+    }, { ...page, body: 'Valdoria at dawn.', mentions: [heldReveal] });
+    ui.open('a'); await tick(); const view = ui.view(); view.dispatch({ selection: { anchor: 2 } });
+    await showFacts(ui);
+    const popup = ui.doc.querySelector('.entity-picker');
+    factButton(ui, 'Explore context').click();
+    if (change === 'close') key(ui, popup, 'Escape');
+    if (change === 'back') factButton(ui, 'Back to facts').click();
+    if (change === 'selection') view.dispatch({ selection: { anchor: 10 } });
+    if (change === 'edit') view.dispatch({ changes: { from: 16, insert: 'x' } });
+    if (change === 'page') ui.doc.querySelectorAll('.page-link')[1].click();
+    if (change === 'universe') ui.open('other');
+    await tick(); pending.resolve(contextData); await tick();
+    if (change === 'back') {
+      assert.ok(popup.classList.contains('facts'));
+      assert.equal(popup.classList.contains('context'), false);
+    } else {
+      assert.equal(popup.hidden, true);
+    }
+    ui.close();
+  }
+});
+
+test('outside pointerdown closes context without stealing focus from newly clicked control or selection', async()=>{
+  const ui = connectSetup(async cmd => cmd === 'entity_reveal' ? revealData : cmd === 'entity_context' ? contextData : undefined, { ...page, body: 'Valdoria at dawn.', mentions: [heldReveal] });
+  ui.open('a'); await tick(); const view = ui.view();
+  await openContext(ui);
+  const popup = ui.doc.querySelector('.entity-picker'), titleInput = ui.doc.querySelector('#title-input');
+  assert.equal(popup.hidden, false);
+  titleInput.dispatchEvent(new ui.doc.defaultView.Event('pointerdown', { bubbles: true }));
+  titleInput.focus();
+  assert.equal(popup.hidden, true);
+  assert.equal(ui.doc.activeElement, titleInput);
+  assert.equal(view.hasFocus, false);
+  ui.close();
+});
+
+test('context switches smoothly between V2 edge and V1 anchored layout on resize and near-bottom carets', async()=>{
+  const ui = connectSetup(async cmd => cmd === 'entity_reveal' ? revealData : cmd === 'entity_context' ? contextData : undefined, { ...page, body: 'Valdoria at dawn.', mentions: [heldReveal] });
+  ui.open('a'); await tick(); const view = ui.view();
+  const docEl = ui.doc.querySelector('.document'), host = ui.doc.querySelector('.reading-area'), popup = ui.doc.querySelector('.entity-picker');
+  let vw = 1600, vh = 900;
+  Object.defineProperty(ui.doc.defaultView, 'innerWidth', { get: () => vw, configurable: true });
+  Object.defineProperty(ui.doc.defaultView, 'innerHeight', { get: () => vh, configurable: true });
+  docEl.getBoundingClientRect = () => ({ left: 260, right: 900, width: 640, top: 80, bottom: 500, height: 420, x: 260, y: 80, toJSON() {} });
+  host.getBoundingClientRect = () => ({ left: 230, right: vw, width: vw - 230, top: 76, bottom: vh - 44, height: vh - 120, x: 230, y: 76, toJSON() {} });
+
+  await openContext(ui);
+  assert.equal(popup.dataset.contextLayout, 'edge');
+  assert.ok(popup.classList.contains('context-edge'));
+  assert.equal(popup.style.left, '924px');
+  const edgeWidth = parseFloat(popup.style.width);
+  assert.ok(edgeWidth >= 300 && edgeWidth <= 360);
+  assert.ok(924 + edgeWidth <= vw - 16);
+
+  // Narrowing to 1120px falls back to V1 anchored; near-bottom caret flips above caret.
+  vw = 1120; vh = 780;
+  docEl.getBoundingClientRect = () => ({ left: 300, right: 940, width: 640, top: 80, bottom: 720, height: 640, x: 300, y: 80, toJSON() {} });
+  view.coordsAtPos = () => ({ left: 340, right: 345, top: 680, bottom: 700 });
+  Object.defineProperty(popup, 'offsetHeight', { value: 240, configurable: true });
+  Object.defineProperty(popup, 'offsetWidth', { value: 420, configurable: true });
+  ui.doc.defaultView.dispatchEvent(new ui.doc.defaultView.Event('resize'));
+  assert.equal(popup.dataset.contextLayout, 'anchored');
+  assert.ok(popup.classList.contains('context-anchored'));
+  assert.ok(parseFloat(popup.style.top) + 240 <= 680, 'near-bottom anchored overlay flips above caret');
+  view.destroy();
+  ui.close();
+});
