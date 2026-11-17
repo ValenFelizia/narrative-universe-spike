@@ -5,61 +5,30 @@
 //   node scripts/webview2-parity.mjs
 // Prints the WebView2 user agent and every mismatch; exits 1 on any.
 
-import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import {
+  evaluate,
+  spawnDesktopApp,
+  startVite,
+  uiDir,
+  waitForTarget,
+} from "./webview2-harness.mjs";
 
-const ui = fileURLToPath(new URL("..", import.meta.url));
 const port = 9333;
-const fixture = (name) => JSON.parse(readFileSync(new URL(`../../tests/fixtures/${name}`, import.meta.url), "utf8"));
+const fixture = (name) =>
+  JSON.parse(readFileSync(new URL(`../../tests/fixtures/${name}`, import.meta.url), "utf8"));
 const bridge = fixture("bridge_cases.json");
 const corpus = fixture("grapheme_boundaries.json");
-const mirror = "/@fs/" + fileURLToPath(new URL("../src/mentions.ts", import.meta.url)).replaceAll("\\", "/");
+const mirror =
+  "/@fs/" + fileURLToPath(new URL("../src/mentions.ts", import.meta.url)).replaceAll("\\", "/");
 
-const vite = spawn(process.execPath, ["node_modules/vite/bin/vite.js", "--config", "desktop/vite.config.ts"], { cwd: ui, stdio: "ignore" });
-for (let attempt = 0; ; attempt += 1) {
-  try {
-    if ((await fetch("http://127.0.0.1:5173/")).ok) break;
-  } catch {}
-  if (attempt > 60) throw new Error("vite did not start");
-  await new Promise((resolve) => setTimeout(resolve, 500));
-}
-const app = spawn(fileURLToPath(new URL("../src-tauri/target/debug/narrative-universe-desktop.exe", import.meta.url)), [], {
-  cwd: ui,
-  stdio: "ignore",
-  env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` },
-});
+let vite;
+let app;
 const stop = () => {
-  app.kill();
-  vite.kill();
+  app?.kill();
+  vite?.kill();
 };
-
-async function target() {
-  for (let attempt = 0; attempt < 120; attempt += 1) {
-    try {
-      const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-      const page = pages.find((entry) => entry.type === "page" && /^http:\/\/(localhost|127\.0\.0\.1):5173\//.test(entry.url));
-      if (page) return page.webSocketDebuggerUrl;
-    } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-  throw new Error("WebView2 debugging target did not appear");
-}
-
-function evaluate(url, expression) {
-  return new Promise((resolve, reject) => {
-    const socket = new WebSocket(url);
-    socket.onopen = () => socket.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression, awaitPromise: true, returnByValue: true } }));
-    socket.onmessage = (event) => {
-      const message = JSON.parse(event.data);
-      if (message.id !== 1) return;
-      socket.close();
-      if (message.result.exceptionDetails) reject(new Error(JSON.stringify(message.result.exceptionDetails)));
-      else resolve(message.result.result.value);
-    };
-    socket.onerror = reject;
-  });
-}
 
 const probe = `(async () => {
   const { applyMentionOp, validateMentions } = await import(${JSON.stringify(mirror)});
@@ -90,7 +59,9 @@ const probe = `(async () => {
 })()`;
 
 try {
-  const result = await evaluate(await target(), probe);
+  vite = await startVite({ cwd: uiDir, attempts: 61, delayMs: 500 });
+  app = spawnDesktopApp({ port, cwd: uiDir });
+  const result = await evaluate(await waitForTarget(port), probe);
   console.log(JSON.stringify(result, null, 2));
   process.exitCode = result.failures.length === 0 ? 0 : 1;
 } finally {

@@ -1,32 +1,35 @@
-import { spawn, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { writeFileSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-const ui = fileURLToPath(new URL('..', import.meta.url));
+import {
+  cdpCommand,
+  editorImports,
+  evaluate,
+  spawnDesktopApp,
+  spikeExe,
+  startVite,
+  stopAppAndWait,
+  uiDir,
+  waitForTarget,
+  waitPageReady,
+} from './webview2-harness.mjs';
+
 const evidence = fileURLToPath(new URL('../../docs/evidence/connect-native/', import.meta.url));
 mkdirSync(evidence, {recursive:true});
 const database = join(mkdtempSync(join(tmpdir(), 'connect-native-')), 'synthetic.sqlite');
 const webviewProfile = mkdtempSync(join(tmpdir(), 'connect-webview-'));
-execFileSync(fileURLToPath(new URL('../../target/debug/spike.exe', import.meta.url)), ['import-new', database, fileURLToPath(new URL('../../tests/fixtures/connect-smoke.json', import.meta.url))]);
-const vite = spawn(process.execPath, ['node_modules/vite/bin/vite.js','--config','desktop/vite.config.ts'],{cwd:ui,stdio:'ignore',windowsHide:true});
+execFileSync(spikeExe, ['import-new', database, fileURLToPath(new URL('../../tests/fixtures/connect-smoke.json', import.meta.url))]);
+let vite;
 let app;
-const pause = ms => new Promise(r=>setTimeout(r,ms));
-async function target() {
-  for(let i=0;i<120;i++) {
-    try { const pages=await (await fetch('http://127.0.0.1:9334/json/list')).json();const page=pages.find(p=>p.type==='page'&&/5173/.test(p.url));if(page)return page.webSocketDebuggerUrl; } catch {}
-    await pause(500);
-  }
-  throw Error('No native WebView2 target');
-}
-let seq=0;
-function command(url,method,params={}) { return new Promise((resolve,reject)=>{const ws=new WebSocket(url),id=++seq;const timeout=setTimeout(()=>{ws.close();reject(Error('CDP timeout '+method));},30000);ws.onopen=()=>ws.send(JSON.stringify({id,method,params}));ws.onmessage=e=>{const msg=JSON.parse(e.data);if(msg.id!==id)return;clearTimeout(timeout);ws.close();if(msg.error||msg.result?.exceptionDetails)reject(Error(JSON.stringify(msg)));else resolve(msg.result);};ws.onerror=reject;}); }
-const evaluate = async (url,expression) => (await command(url,'Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true})).result.value;
-const imports = `const {EditorView}=await import('/@fs/'+${JSON.stringify(ui.replaceAll('\\','/').replace(/\/$/, ''))}+'/node_modules/@codemirror/view/dist/index.js'); const {mentionField}=await import('/@fs/'+${JSON.stringify(ui.replaceAll('\\','/').replace(/\/$/, ''))}+'/src/mention-history.ts');`;
+const port = 9334;
+const imports = editorImports(uiDir);
 try {
-  for(let i=0;i<80;i++){try{if((await fetch('http://127.0.0.1:5173/')).ok)break;}catch{}await pause(250);}
-  app=spawn(fileURLToPath(new URL('../src-tauri/target/debug/narrative-universe-desktop.exe',import.meta.url)),[],{cwd:ui,stdio:'ignore',windowsHide:true,env:{...process.env,WEBVIEW2_USER_DATA_FOLDER:webviewProfile,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9334'}});
-  let url=await target();
+  vite = await startVite({ cwd: uiDir });
+  app = spawnDesktopApp({ port, userDataDir: webviewProfile, cwd: uiDir });
+  let url = await waitForTarget(port);
+  await waitPageReady(url);
   const result=await evaluate(url,`(async()=>{${imports}
     const wait=()=>new Promise(r=>setTimeout(r,150));const assert=(v,m)=>{if(!v)throw Error(m)};
     document.querySelector('#database-path').value=${JSON.stringify(database)};document.querySelector('#open-form').requestSubmit();await wait();await wait();
@@ -36,7 +39,7 @@ try {
     const rows=[...document.querySelectorAll('[data-entity-id]')];assert(rows.length===3,'duplicate candidates');assert(rows.filter(r=>r.textContent.includes('Place')).every(r=>r.textContent.includes('…')),'exact tie suffix');
     return {userAgent:navigator.userAgent,width:innerWidth,height:innerHeight,dpr:devicePixelRatio,from,candidates:rows.map(r=>r.textContent)};
   })()`);
-  const screenshot=async name=>{const png=await command(url,'Page.captureScreenshot',{format:'png'});writeFileSync(join(evidence,name),Buffer.from(png.data,'base64'));};
+  const screenshot=async name=>{const png=await cdpCommand(url,'Page.captureScreenshot',{format:'png'});writeFileSync(join(evidence,name),Buffer.from(png.data,'base64'));};
   await screenshot('picker.png');
   const linked=await evaluate(url,`(async()=>{${imports}
     const wait=()=>new Promise(r=>setTimeout(r,180));const assert=(v,m)=>{if(!v)throw Error(m)};const view=EditorView.findFromDOM(document.querySelector('.cm-editor'));
@@ -48,9 +51,10 @@ try {
   await screenshot('linked.png');
   await evaluate(url,`(async()=>{${imports}const v=EditorView.findFromDOM(document.querySelector('.cm-editor'));v.dispatch({selection:{anchor:${result.from+1}}});v.contentDOM.dispatchEvent(new KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));await new Promise(r=>setTimeout(r,200));})()`);
   await screenshot('inspect.png');
-  await new Promise(resolve => { app.once('exit', resolve); app.kill(); });
-  app=spawn(fileURLToPath(new URL('../src-tauri/target/debug/narrative-universe-desktop.exe',import.meta.url)),[],{cwd:ui,stdio:'ignore',windowsHide:true,env:{...process.env,WEBVIEW2_USER_DATA_FOLDER:webviewProfile,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9334'}});
-  url=await target();
+  await stopAppAndWait(app);
+  app = spawnDesktopApp({ port, userDataDir: webviewProfile, cwd: uiDir });
+  url = await waitForTarget(port);
+  await waitPageReady(url);
   const exactSelection = await evaluate(url, `(async()=>{${imports}
     const wait=()=>new Promise(r=>setTimeout(r,200));const assert=(v,m)=>{if(!v)throw Error(m)};
     document.querySelector('#database-path').value=${JSON.stringify(database)};document.querySelector('#open-form').requestSubmit();await wait();await wait();
@@ -97,4 +101,4 @@ try {
   linked.checks.push(...exactSelection);
   writeFileSync(join(evidence,'result.json'),JSON.stringify({...result,...linked,synthetic:true},null,2)+'\n');
   console.log(JSON.stringify({...result,...linked,synthetic:true},null,2));
-} finally { app?.kill();vite.kill(); }
+} finally { app?.kill();vite?.kill(); }
