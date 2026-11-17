@@ -254,3 +254,30 @@ The overlay is capped at min(340px, 100vh - 220px), scrolls internally and
 repositions when source details expand. Empty sections collapse to one line.
 Distinct definitions sharing a label show a short definition-ID suffix. Escape returns focus and captured scroll only while the editor,
 document, selection, mentions, session, page and universe capture remain valid.
+
+## R2-A on-demand Explore Context exception (issue #44)
+
+The permanent right-panel, IDE-chrome, and unrequested peek bans remain in
+force. R2-A explicitly authorizes one on-demand, read-only **Explore context**
+view opened deliberately from the R1-B facts peek (`Explore context`) and
+reversible via `Back to facts` without refetching `entity_reveal`.
+
+- **Measured edge placement (V2):** When the writing column is laid out
+  (`proseRect.width > 0`) and at least `300 px` of clear margin sits to its
+  right (`window.innerWidth - proseRect.right - 24 - 16 >= 300`, e.g., at
+  `1600×900` with library open or closed), the context dialog docks into that
+  right margin (`width = min(360px, freeRight)`) inside the reading band
+  without reflowing, shifting, or recentering the prose column.
+- **Anchored fallback (V1):** When right-edge margin is below `300 px` (e.g.,
+  `1120×780`, `800×600`, or narrow windows), it automatically transitions to an
+  anchored overlay bounded to the reading area, preferring below the caret and
+  flipping above near-bottom carets so the active prose line stays visible.
+- **Content & epistemic boundaries:** Displays disambiguated identity,
+  grouped active outgoing properties (including applicable zero-claim properties
+  as `Not recorded` or `Not recorded · Archived history available`), incoming
+  references grouped by `(subject, definition)` in their stored `subject →
+  predicate → target` direction, literal canon states with human glosses,
+  plain-text provenance/scope disclosure, and a closed-by-default **Archived
+  history** section preserving definition and assertion archive bits
+  independently. No incompatibility flags, occurrence lists, clickable sources,
+  editing, or AI features are included.

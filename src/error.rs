@@ -69,6 +69,7 @@ pub enum ValidationReason {
     ValueMismatch,
     ArchivedDefinition,
     InputTooLarge,
+    ContextTooLarge,
     InvalidTextRange,
     InvalidMentionRange,
     SplitScalar,
