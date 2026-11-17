@@ -2,9 +2,8 @@
 #[allow(dead_code)]
 mod support;
 
-use std::sync::{Arc, Barrier};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use narrative_universe::{
     import_new_json, Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId,
@@ -520,6 +519,7 @@ fn busy_and_corrupt_active_or_archived_records_fail_closed_without_writes() {
 fn synchronized_concurrent_writer_observes_atomic_snapshot_and_releases_read_lock() {
     use std::sync::mpsc;
 
+    const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
     let scratch = support::scratch("context-concurrent.sqlite");
     let mut writer_store = fixture(&scratch.path);
     let universe = writer_store.export_snapshot().unwrap().universe_id;
@@ -544,7 +544,9 @@ fn synchronized_concurrent_writer_observes_atomic_snapshot_and_releases_read_loc
         )
         .unwrap();
         def_inserted_tx.send(()).unwrap();
-        reader_checked_rx.recv().unwrap();
+        reader_checked_rx
+            .recv_timeout(WAIT_TIMEOUT)
+            .expect("reader checked pre-commit snapshot");
         conn.execute(
             "INSERT INTO assertions (id, subject_id, definition_id, value_kind, text_value, canon, archived)
              VALUES (?1, ?2, ?3, 'text', 'committed-together', 'ACORDADO', 0)",
@@ -554,7 +556,9 @@ fn synchronized_concurrent_writer_observes_atomic_snapshot_and_releases_read_loc
         conn.execute_batch("COMMIT").unwrap();
     });
 
-    def_inserted_rx.recv().unwrap();
+    def_inserted_rx
+        .recv_timeout(WAIT_TIMEOUT)
+        .expect("writer inserted uncommitted definition");
     // While the single write tx holds RESERVED lock with def_a uncommitted and ass_a not yet inserted,
     // reader observes strictly all-old state (neither def_a nor ass_a).
     let pre_ctx = reader_store.entity_context(&id("11")).unwrap();
@@ -576,100 +580,103 @@ fn synchronized_concurrent_writer_observes_atomic_snapshot_and_releases_read_loc
         .iter()
         .any(|g| g.definition.id == def_a && g.claims.iter().any(|c| c.assertion.id == ass_a)));
 
-    // Part B: Single atomic Store::import_snapshot batch against synchronized concurrent reader.
+    // Part B: Deterministic DELETE-mode snapshot behavior for Store::import_snapshot.
+    // Under DELETE journaling, a writer may prepare work while a reader holds a SHARED read lock,
+    // but commit cannot finish until the read lock releases (returning Error::Busy cleanly with
+    // zero partial visibility). Once the reader releases, import_snapshot commits atomically and
+    // reader_store observes the complete post-commit state. (Mid-read overlap while paused inside
+    // entity_context is covered deterministically by
+    // `store::tests::context_reader_overlaps_atomic_import_commit_with_zero_tearing_and_releases_lock`.)
     let def_b = DefinitionId::parse(&uuid_n("44444444", 99)).unwrap();
     let ass_b = AssertionId::parse(&uuid_n("55555555", 99)).unwrap();
-    let barrier = Arc::new(Barrier::new(2));
-    let reader_barrier = Arc::clone(&barrier);
-    let def_b_reader = def_b.clone();
+    let make_snapshot = || Snapshot {
+        universe_id: universe.clone(),
+        pages: vec![],
+        types: vec![],
+        entities: vec![],
+        definitions: vec![Definition {
+            id: def_b.clone(),
+            owner: Owner::Entity(id("11")),
+            value_class: ValueClass::Text,
+            cardinality: Cardinality::Singular,
+            label: Some(DefinitionLabel::parse("callsign").unwrap()),
+            archived: false,
+        }],
+        assertions: vec![Assertion {
+            id: ass_b.clone(),
+            subject_id: id("11"),
+            definition_id: def_b.clone(),
+            value: Value::Text("Lantern".into()),
+            canon: Canon::Acordado,
+            source_status_raw: None,
+            provenance: Provenance::absent(),
+            scope_note: None,
+            archived: false,
+        }],
+    };
+
+    let (read_lock_held_tx, read_lock_held_rx) = mpsc::channel();
+    let (writer_attempted_tx, writer_attempted_rx) = mpsc::channel();
     let path_for_reader = scratch.path.clone();
 
-    let reader_handle = thread::spawn(move || {
-        let mut snapshots = Vec::new();
-        reader_barrier.wait();
-        loop {
-            match reader_store.entity_context(&id("11")) {
-                Ok(ctx) => {
-                    let committed = ctx
-                        .outgoing_groups
-                        .iter()
-                        .any(|g| g.definition.id == def_b_reader);
-                    snapshots.push(ctx);
-                    if committed && snapshots.len() >= 2 {
-                        break;
-                    }
-                    if committed && snapshots.len() == 1 {
-                        // Read one more snapshot post-commit and stop.
-                        continue;
-                    }
-                }
-                Err(Error::Busy) => {}
-                Err(other) => panic!("unexpected reader error: {other}"),
-            }
-        }
-        // Confirm reader store holds NO open transaction after entity_context returns.
-        let checker = Connection::open(&path_for_reader).unwrap();
-        checker.execute_batch("BEGIN IMMEDIATE; ROLLBACK;").unwrap();
-        snapshots
+    let reader_lock_holder = thread::spawn(move || {
+        let conn = Connection::open(&path_for_reader).unwrap();
+        conn.execute_batch("BEGIN DEFERRED").unwrap();
+        let entity_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))
+            .unwrap();
+        assert!(entity_count > 0);
+        read_lock_held_tx.send(()).unwrap();
+        writer_attempted_rx
+            .recv_timeout(WAIT_TIMEOUT)
+            .expect("writer finished busy import attempt");
+        conn.execute_batch("ROLLBACK").unwrap();
     });
 
-    barrier.wait();
-    // Publish def_b and ass_b together in ONE atomic Store transaction.
-    let outcome = writer_store
-        .import_snapshot(Snapshot {
-            universe_id: universe,
-            pages: vec![],
-            types: vec![],
-            entities: vec![],
-            definitions: vec![Definition {
-                id: def_b.clone(),
-                owner: Owner::Entity(id("11")),
-                value_class: ValueClass::Text,
-                cardinality: Cardinality::Singular,
-                label: Some(DefinitionLabel::parse("callsign").unwrap()),
-                archived: false,
-            }],
-            assertions: vec![Assertion {
-                id: ass_b.clone(),
-                subject_id: id("11"),
-                definition_id: def_b.clone(),
-                value: Value::Text("Lantern".into()),
-                canon: Canon::Acordado,
-                source_status_raw: None,
-                provenance: Provenance::absent(),
-                scope_note: None,
-                archived: false,
-            }],
-        })
-        .unwrap();
+    read_lock_held_rx
+        .recv_timeout(WAIT_TIMEOUT)
+        .expect("reader acquired SHARED lock");
+
+    // Another reader can still read pre-import state concurrently while SHARED lock is held.
+    let concurrent_pre_b = reader_store.entity_context(&id("11")).unwrap();
+    assert!(!concurrent_pre_b
+        .outgoing_groups
+        .iter()
+        .any(|g| g.definition.id == def_b));
+
+    // In DELETE mode, import_snapshot prepares under RESERVED but cannot commit while SHARED is held.
+    let busy_err = writer_store.import_snapshot(make_snapshot()).unwrap_err();
+    assert!(
+        matches!(busy_err, Error::Busy),
+        "expected Error::Busy while reader held SHARED lock, got {busy_err:?}"
+    );
+
+    // Neither def_b nor ass_b leaked from the rolled-back import attempt.
+    let after_busy_ctx = reader_store.entity_context(&id("11")).unwrap();
+    assert!(!after_busy_ctx
+        .outgoing_groups
+        .iter()
+        .any(|g| g.definition.id == def_b));
+    assert!(!after_busy_ctx
+        .outgoing_groups
+        .iter()
+        .flat_map(|g| g.claims.iter())
+        .any(|c| c.assertion.id == ass_b));
+
+    writer_attempted_tx.send(()).unwrap();
+    reader_lock_holder.join().unwrap();
+
+    // Once the SHARED lock releases, import_snapshot commits atomically.
+    let outcome = writer_store.import_snapshot(make_snapshot()).unwrap();
     assert_eq!(outcome.inserted, 2);
 
-    let snapshots = reader_handle.join().unwrap();
-    assert!(
-        !snapshots.is_empty(),
-        "concurrent reader must capture at least one successful snapshot"
-    );
-    for ctx in &snapshots {
-        let has_def = ctx.outgoing_groups.iter().any(|g| g.definition.id == def_b);
-        let has_ass = ctx
-            .outgoing_groups
-            .iter()
-            .flat_map(|g| g.claims.iter())
-            .any(|c| c.assertion.id == ass_b);
-        // Every observed snapshot is strictly all-old or all-new (zero partial commit visibility).
-        assert_eq!(
-            has_def, has_ass,
-            "partial snapshot: def={has_def} ass={has_ass}"
-        );
-        assert_eq!(ctx.entity.id, id("11"));
-    }
-    assert!(snapshots.iter().any(|ctx| {
-        ctx.outgoing_groups
-            .iter()
-            .any(|g| g.definition.id == def_b && g.claims.iter().any(|c| c.assertion.id == ass_b))
-    }));
+    let post_b_ctx = reader_store.entity_context(&id("11")).unwrap();
+    assert!(post_b_ctx
+        .outgoing_groups
+        .iter()
+        .any(|g| g.definition.id == def_b && g.claims.iter().any(|c| c.assertion.id == ass_b)));
 
-    // Confirm no lingering read lock remains on the file.
+    // Confirm no lingering read or write lock remains on the file.
     let conn = Connection::open(&scratch.path).unwrap();
     conn.execute_batch("BEGIN EXCLUSIVE; ROLLBACK;").unwrap();
 }
