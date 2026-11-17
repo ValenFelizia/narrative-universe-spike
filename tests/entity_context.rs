@@ -518,24 +518,91 @@ fn busy_and_corrupt_active_or_archived_records_fail_closed_without_writes() {
 
 #[test]
 fn synchronized_concurrent_writer_observes_atomic_snapshot_and_releases_read_lock() {
+    use std::sync::mpsc;
+
     let scratch = support::scratch("context-concurrent.sqlite");
     let mut writer_store = fixture(&scratch.path);
+    let universe = writer_store.export_snapshot().unwrap().universe_id;
     let reader_store = Store::open(&scratch.path).unwrap();
 
+    // Part A: Deterministic overlap with an in-flight uncommitted single transaction.
+    let def_a = DefinitionId::parse(&uuid_n("44444444", 98)).unwrap();
+    let ass_a = AssertionId::parse(&uuid_n("55555555", 98)).unwrap();
+    let (def_inserted_tx, def_inserted_rx) = mpsc::channel();
+    let (reader_checked_tx, reader_checked_rx) = mpsc::channel();
+    let path_for_writer = scratch.path.clone();
+
+    let def_a_writer = def_a.clone();
+    let ass_a_writer = ass_a.clone();
+    let writer_a = thread::spawn(move || {
+        let conn = Connection::open(&path_for_writer).unwrap();
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        conn.execute(
+            "INSERT INTO definitions (id, owner_type_id, owner_entity_id, value_class, cardinality, archived, label)
+             VALUES (?1, NULL, ?2, 'text', 'singular', 0, 'in-flight')",
+            rusqlite::params![def_a_writer.as_str(), id("11").as_str()],
+        )
+        .unwrap();
+        def_inserted_tx.send(()).unwrap();
+        reader_checked_rx.recv().unwrap();
+        conn.execute(
+            "INSERT INTO assertions (id, subject_id, definition_id, value_kind, text_value, canon, archived)
+             VALUES (?1, ?2, ?3, 'text', 'committed-together', 'ACORDADO', 0)",
+            rusqlite::params![ass_a_writer.as_str(), id("11").as_str(), def_a_writer.as_str()],
+        )
+        .unwrap();
+        conn.execute_batch("COMMIT").unwrap();
+    });
+
+    def_inserted_rx.recv().unwrap();
+    // While the single write tx holds RESERVED lock with def_a uncommitted and ass_a not yet inserted,
+    // reader observes strictly all-old state (neither def_a nor ass_a).
+    let pre_ctx = reader_store.entity_context(&id("11")).unwrap();
+    assert!(!pre_ctx
+        .outgoing_groups
+        .iter()
+        .any(|g| g.definition.id == def_a));
+    assert!(!pre_ctx
+        .outgoing_groups
+        .iter()
+        .flat_map(|g| g.claims.iter())
+        .any(|c| c.assertion.id == ass_a));
+    reader_checked_tx.send(()).unwrap();
+    writer_a.join().unwrap();
+
+    let post_a_ctx = reader_store.entity_context(&id("11")).unwrap();
+    assert!(post_a_ctx
+        .outgoing_groups
+        .iter()
+        .any(|g| g.definition.id == def_a && g.claims.iter().any(|c| c.assertion.id == ass_a)));
+
+    // Part B: Single atomic Store::import_snapshot batch against synchronized concurrent reader.
+    let def_b = DefinitionId::parse(&uuid_n("44444444", 99)).unwrap();
+    let ass_b = AssertionId::parse(&uuid_n("55555555", 99)).unwrap();
     let barrier = Arc::new(Barrier::new(2));
     let reader_barrier = Arc::clone(&barrier);
+    let def_b_reader = def_b.clone();
     let path_for_reader = scratch.path.clone();
-
-    // Prepare a new definition and new assertion that will commit atomically in one transaction.
-    let new_def = DefinitionId::parse(&uuid_n("44444444", 99)).unwrap();
-    let new_ass = AssertionId::parse(&uuid_n("55555555", 99)).unwrap();
 
     let reader_handle = thread::spawn(move || {
         let mut snapshots = Vec::new();
         reader_barrier.wait();
-        for _ in 0..8 {
+        loop {
             match reader_store.entity_context(&id("11")) {
-                Ok(ctx) => snapshots.push(ctx),
+                Ok(ctx) => {
+                    let committed = ctx
+                        .outgoing_groups
+                        .iter()
+                        .any(|g| g.definition.id == def_b_reader);
+                    snapshots.push(ctx);
+                    if committed && snapshots.len() >= 2 {
+                        break;
+                    }
+                    if committed && snapshots.len() == 1 {
+                        // Read one more snapshot post-commit and stop.
+                        continue;
+                    }
+                }
                 Err(Error::Busy) => {}
                 Err(other) => panic!("unexpected reader error: {other}"),
             }
@@ -547,56 +614,238 @@ fn synchronized_concurrent_writer_observes_atomic_snapshot_and_releases_read_loc
     });
 
     barrier.wait();
-    // Commit new definition + new assertion together inside one write transaction.
-    writer_store
-        .create_definition(Definition {
-            id: new_def.clone(),
-            owner: Owner::Entity(id("11")),
-            value_class: ValueClass::Text,
-            cardinality: Cardinality::Singular,
-            label: Some(DefinitionLabel::parse("callsign").unwrap()),
-            archived: false,
+    // Publish def_b and ass_b together in ONE atomic Store transaction.
+    let outcome = writer_store
+        .import_snapshot(Snapshot {
+            universe_id: universe,
+            pages: vec![],
+            types: vec![],
+            entities: vec![],
+            definitions: vec![Definition {
+                id: def_b.clone(),
+                owner: Owner::Entity(id("11")),
+                value_class: ValueClass::Text,
+                cardinality: Cardinality::Singular,
+                label: Some(DefinitionLabel::parse("callsign").unwrap()),
+                archived: false,
+            }],
+            assertions: vec![Assertion {
+                id: ass_b.clone(),
+                subject_id: id("11"),
+                definition_id: def_b.clone(),
+                value: Value::Text("Lantern".into()),
+                canon: Canon::Acordado,
+                source_status_raw: None,
+                provenance: Provenance::absent(),
+                scope_note: None,
+                archived: false,
+            }],
         })
         .unwrap();
-    writer_store
-        .create_assertion(Assertion {
-            id: new_ass.clone(),
-            subject_id: id("11"),
-            definition_id: new_def.clone(),
-            value: Value::Text("Lantern".into()),
-            canon: Canon::Acordado,
-            source_status_raw: None,
-            provenance: Provenance::absent(),
-            scope_note: None,
-            archived: false,
-        })
-        .unwrap();
+    assert_eq!(outcome.inserted, 2);
 
     let snapshots = reader_handle.join().unwrap();
+    assert!(
+        !snapshots.is_empty(),
+        "concurrent reader must capture at least one successful snapshot"
+    );
     for ctx in &snapshots {
-        let has_def = ctx
-            .outgoing_groups
-            .iter()
-            .any(|g| g.definition.id == new_def);
+        let has_def = ctx.outgoing_groups.iter().any(|g| g.definition.id == def_b);
         let has_ass = ctx
             .outgoing_groups
             .iter()
             .flat_map(|g| g.claims.iter())
-            .any(|c| c.assertion.id == new_ass);
-        // Never see the assertion without its definition.
-        assert!(!has_ass || has_def);
-        // Never see an entity with mismatched type/entity consistency.
+            .any(|c| c.assertion.id == ass_b);
+        // Every observed snapshot is strictly all-old or all-new (zero partial commit visibility).
+        assert_eq!(
+            has_def, has_ass,
+            "partial snapshot: def={has_def} ass={has_ass}"
+        );
         assert_eq!(ctx.entity.id, id("11"));
     }
+    assert!(snapshots.iter().any(|ctx| {
+        ctx.outgoing_groups
+            .iter()
+            .any(|g| g.definition.id == def_b && g.claims.iter().any(|c| c.assertion.id == ass_b))
+    }));
 
-    // Confirm final atomic state after both writes committed, and no lingering read lock.
-    let final_ctx = writer_store.entity_context(&id("11")).unwrap();
-    assert!(final_ctx
-        .outgoing_groups
-        .iter()
-        .any(|g| g.definition.id == new_def && g.claims.len() == 1));
+    // Confirm no lingering read lock remains on the file.
     let conn = Connection::open(&scratch.path).unwrap();
     conn.execute_batch("BEGIN EXCLUSIVE; ROLLBACK;").unwrap();
+}
+
+#[test]
+fn oversized_non_projected_owner_type_label_does_not_oom_or_block_small_context() {
+    let scratch = support::scratch("context-oversized-owner-type.sqlite");
+    let universe = UniverseId::parse("11111111-1111-4111-8111-111111111111").unwrap();
+    let t_huge = TypeId::parse(&uuid_n("22222222", 1)).unwrap();
+    let e_subject = EntityId::parse(&uuid_n("33333333", 1)).unwrap();
+    let e_target = EntityId::parse(&uuid_n("33333333", 2)).unwrap();
+    let d_rel = DefinitionId::parse(&uuid_n("44444444", 1)).unwrap();
+    let a_rel = AssertionId::parse(&uuid_n("55555555", 1)).unwrap();
+
+    // Type label is 3 MiB (> MAX_CONTEXT_BYTES), but it belongs ONLY to the incoming
+    // claim's subject type and is NOT projected into `e_target`'s EntityContext.
+    let store = Store::import_new(
+        &scratch.path,
+        Snapshot {
+            universe_id: universe,
+            pages: vec![],
+            types: vec![EntityType {
+                id: t_huge.clone(),
+                label: "T".repeat(3 * 1024 * 1024),
+            }],
+            entities: vec![
+                Entity {
+                    id: e_subject.clone(),
+                    label: "Courier".into(),
+                    type_id: Some(t_huge.clone()),
+                    page_id: None,
+                },
+                Entity {
+                    id: e_target.clone(),
+                    label: "Harbor".into(),
+                    type_id: None,
+                    page_id: None,
+                },
+            ],
+            definitions: vec![Definition {
+                id: d_rel.clone(),
+                owner: Owner::Type(t_huge),
+                value_class: ValueClass::Reference,
+                cardinality: Cardinality::Multiple,
+                label: Some(DefinitionLabel::parse("docked at").unwrap()),
+                archived: false,
+            }],
+            assertions: vec![Assertion {
+                id: a_rel.clone(),
+                subject_id: e_subject.clone(),
+                definition_id: d_rel.clone(),
+                value: Value::Reference(e_target.clone()),
+                canon: Canon::Acordado,
+                source_status_raw: None,
+                provenance: Provenance::absent(),
+                scope_note: None,
+                archived: false,
+            }],
+        },
+    )
+    .unwrap()
+    .0;
+
+    let ctx = store.entity_context(&e_target).unwrap();
+    assert_eq!(ctx.entity.id, e_target);
+    assert!(ctx.type_label.is_none());
+    assert_eq!(ctx.incoming_groups.len(), 1);
+    assert_eq!(ctx.incoming_groups[0].subject.id, e_subject);
+    assert_eq!(ctx.incoming_groups[0].definition.id, d_rel);
+    assert_eq!(ctx.incoming_groups[0].claims[0].assertion.id, a_rel);
+}
+
+#[test]
+fn missing_definition_owner_fails_closed_without_writing_bytes() {
+    // 1. Missing Owner::Type fails closed with UnknownType and mutates nothing.
+    {
+        let scratch = support::scratch("context-missing-owner-type.sqlite");
+        let _store = fixture(&scratch.path);
+        let conn = Connection::open(&scratch.path).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             DELETE FROM types WHERE id = '00000000-0000-4000-8000-000000000021';
+             UPDATE entities SET type_id = NULL WHERE id = '00000000-0000-4000-8000-000000000013';",
+        )
+        .unwrap();
+        let before = support::bytes(&scratch.path);
+        let store = Store::open(&scratch.path).unwrap();
+        // Inspecting Ashfall Order (0013, untyped) loads incoming claim 0041 from Mara Vey,
+        // whose definition 0031 is owned by missing type 0021.
+        let err = store.entity_context(&id("13")).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::Validation {
+                    reason: ValidationReason::UnknownType,
+                    field: "owner_type_id",
+                    ..
+                }
+            ),
+            "expected UnknownType, got {err:?}"
+        );
+        assert_eq!(support::bytes(&scratch.path), before);
+    }
+
+    // 2. Missing Owner::Entity fails closed with UnknownEntity and mutates nothing.
+    {
+        let scratch = support::scratch("context-missing-owner-entity.sqlite");
+        let universe = UniverseId::parse("11111111-1111-4111-8111-111111111111").unwrap();
+        let e1 = id("11");
+        let e2 = id("12");
+        let d_ent = def_id("39");
+        let mut store = Store::import_new(
+            &scratch.path,
+            Snapshot {
+                universe_id: universe,
+                pages: vec![],
+                types: vec![],
+                entities: vec![
+                    Entity {
+                        id: e1.clone(),
+                        label: "One".into(),
+                        type_id: None,
+                        page_id: None,
+                    },
+                    Entity {
+                        id: e2.clone(),
+                        label: "Two".into(),
+                        type_id: None,
+                        page_id: None,
+                    },
+                ],
+                definitions: vec![Definition {
+                    id: d_ent.clone(),
+                    owner: Owner::Entity(e2.clone()),
+                    value_class: ValueClass::Text,
+                    cardinality: Cardinality::Singular,
+                    label: Some(DefinitionLabel::parse("tag").unwrap()),
+                    archived: false,
+                }],
+                assertions: vec![],
+            },
+        )
+        .unwrap()
+        .0;
+        drop(store);
+        let conn = Connection::open(&scratch.path).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             UPDATE definitions SET owner_entity_id = '00000000-0000-4000-8000-000000000099'
+             WHERE id = '00000000-0000-4000-8000-000000000039';",
+        )
+        .unwrap();
+        // Trigger lookup via a dangling outgoing assertion referencing d_ent.
+        conn.execute(
+            "INSERT INTO assertions (id, subject_id, definition_id, value_kind, text_value, canon, archived)
+             VALUES (?1, ?2, ?3, 'text', 'v', 'ACORDADO', 0)",
+            rusqlite::params![ass_id("51").as_str(), e1.as_str(), d_ent.as_str()],
+        )
+        .unwrap();
+        drop(conn);
+        let before = support::bytes(&scratch.path);
+        store = Store::open(&scratch.path).unwrap();
+        let err = store.entity_context(&e1).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::Validation {
+                    reason: ValidationReason::UnknownEntity,
+                    field: "owner_entity_id",
+                    ..
+                }
+            ),
+            "expected UnknownEntity, got {err:?}"
+        );
+        assert_eq!(support::bytes(&scratch.path), before);
+    }
 }
 
 #[test]
@@ -936,11 +1185,10 @@ fn query_plans_and_scale_measurement_report() {
         "SELECT id, owner_type_id, owner_entity_id, value_class, cardinality, archived, label \
          FROM definitions WHERE owner_entity_id = 'a' OR owner_type_id = 'b' ORDER BY id",
     );
-    let out_plan = plan_for(
-        "SELECT id, subject_id, definition_id FROM assertions WHERE subject_id = 'a' ORDER BY definition_id, id",
-    );
+    let out_plan =
+        plan_for("SELECT id, subject_id, definition_id FROM assertions WHERE subject_id = 'a'");
     let in_plan = plan_for(
-        "SELECT id, subject_id, definition_id FROM assertions WHERE target_entity_id = 'a' ORDER BY subject_id, definition_id, id",
+        "SELECT id, subject_id, definition_id FROM assertions WHERE target_entity_id = 'a'",
     );
     assert!(
         out_plan
@@ -949,8 +1197,16 @@ fn query_plans_and_scale_measurement_report() {
         "outgoing plan: {out_plan:?}"
     );
     assert!(
+        !out_plan.iter().any(|p| p.contains("TEMP B-TREE")),
+        "unexpected temp b-tree in outgoing plan: {out_plan:?}"
+    );
+    assert!(
         in_plan.iter().any(|p| p.contains("idx_assertions_target")),
         "incoming plan: {in_plan:?}"
+    );
+    assert!(
+        !in_plan.iter().any(|p| p.contains("TEMP B-TREE")),
+        "unexpected temp b-tree in incoming plan: {in_plan:?}"
     );
     eprintln!(
         "QUERY PLANS:\n  defs: {def_plan:?}\n  out:  {out_plan:?}\n  in:   {in_plan:?}\n  2040 defs + 300 claims elapsed: {elapsed:?}"

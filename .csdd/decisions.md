@@ -135,16 +135,19 @@ accepted direction from implementation alone.
   1. Separate core read (`Store::entity_context`) rather than expanding
      `Store::entity_reveal`: keeps `entity_reveal` compact and unchanged while
      executing `entity_context` in one deferred SQLite read transaction. Reuses
-     validated row readers (`read_entity`, `read_definition`, `read_assertion`)
-     with history-aware applicability checks (archived definitions remain
-     readable in archived context while `Store::create_assertion` still rejects
-     new assertions against archived definitions).
-  2. Fail-closed bounds with escaping-aware byte accounting: enforce
+     validated bounded row readers (`read_bounded_entity`, `read_definition_from_row`,
+     and bounded assertion readers) with history-aware applicability checks
+     (archived definitions remain readable in archived context while
+     `Store::create_assertion` still rejects new assertions against archived
+     definitions) and bounded owner existence checks (`typeof(label)` without
+     allocating unprojected owner labels). Collected assertions (at most 500) are
+     sorted in memory so SQLite never runs `TEMP B-TREE` payload sorts.
+  2. Fail-closed bounds with exact wire-byte accounting: enforce
      `MAX_CONTEXT_GROUPS = 128`, `MAX_CONTEXT_UNIQUE_ASSERTIONS = 500`, and
-     `MAX_CONTEXT_BYTES = 2 MiB` before copying oversized payloads, accounting
-     for worst-case JSON string escaping so serialized Tauri DTOs never silently
-     overflow the wire limit (`Error::ContextTooLarge` ->
-     `BridgeError::ContextTooLarge`).
+     `MAX_CONTEXT_BYTES = 2 MiB` (`2_097_152` serialized camelCase DTO bytes)
+     before copying oversized payloads, accounting for worst-case JSON string
+     escaping in core and re-verifying the exact serialized DTO length at the
+     Tauri bridge (`Error::ContextTooLarge` -> `BridgeError::ContextTooLarge`).
   3. Shared frontend context renderer with measured V2-edge / V1-anchored
      layout: render on demand inside `.entity-picker.context` rather than as a
      persistent right-hand split pane. Measure `proseRect` against

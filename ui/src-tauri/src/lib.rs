@@ -609,7 +609,7 @@ fn context_active(
         Error::Io { .. } => BridgeError::Io,
         other => map_read_error(other, false),
     })?;
-    Ok(EntityContext {
+    let dto = EntityContext {
         entity: reveal_identity(context.entity),
         type_label: context.type_label,
         outgoing_groups: context
@@ -632,7 +632,143 @@ fn context_active(
             .into_iter()
             .map(context_incoming_group)
             .collect::<Result<_, _>>()?,
-    })
+    };
+    if context_dto_wire_bytes(&dto).is_none_or(|len| len > narrative_universe::MAX_CONTEXT_BYTES) {
+        return Err(BridgeError::ContextTooLarge);
+    }
+    Ok(dto)
+}
+
+fn json_str_wire_bytes(s: &str) -> Option<usize> {
+    let mut total = 2usize;
+    for &b in s.as_bytes() {
+        let step = match b {
+            b'"' | b'\\' | b'\x08' | b'\x09' | b'\x0a' | b'\x0c' | b'\x0d' => 2,
+            0x00..=0x1f => 6,
+            _ => 1,
+        };
+        total = total.checked_add(step)?;
+    }
+    Some(total)
+}
+
+fn json_opt_str_wire_bytes(s: Option<&str>) -> Option<usize> {
+    match s {
+        Some(text) => json_str_wire_bytes(text),
+        None => Some(4),
+    }
+}
+
+fn json_array_wire_bytes<T>(
+    items: &[T],
+    item_bytes: impl Fn(&T) -> Option<usize>,
+) -> Option<usize> {
+    let mut total = 2usize; // "[]"
+    for (idx, item) in items.iter().enumerate() {
+        if idx > 0 {
+            total = total.checked_add(1)?;
+        }
+        total = total.checked_add(item_bytes(item)?)?;
+    }
+    Some(total)
+}
+
+fn reveal_identity_wire_bytes(identity: &RevealIdentity) -> Option<usize> {
+    // {"id":<id>,"label":<label>}
+    16usize
+        .checked_add(json_str_wire_bytes(&identity.id)?)?
+        .checked_add(json_str_wire_bytes(&identity.label)?)
+}
+
+fn context_definition_wire_bytes(def: &ContextDefinition) -> Option<usize> {
+    // {"id":,"ownerKind":,"ownerId":,"propertyLabel":,"valueClass":,"cardinality":,"archived":}
+    let archived = if def.archived { 4 } else { 5 };
+    89usize
+        .checked_add(json_str_wire_bytes(&def.id)?)?
+        .checked_add(json_str_wire_bytes(def.owner_kind)?)?
+        .checked_add(json_str_wire_bytes(&def.owner_id)?)?
+        .checked_add(json_opt_str_wire_bytes(def.property_label.as_deref())?)?
+        .checked_add(json_str_wire_bytes(&def.value_class)?)?
+        .checked_add(json_str_wire_bytes(&def.cardinality)?)?
+        .checked_add(archived)
+}
+
+fn context_claim_wire_bytes(claim: &ContextClaim) -> Option<usize> {
+    // {"id":,"value":,"canon":,"sourceStatusRaw":,"provenance":{"externalRef":,"locator":,"fragment":,"sourceRevision":},"scopeNote":,"archived":}
+    let value = match &claim.value {
+        RevealValue::Text { text } => 23usize.checked_add(json_str_wire_bytes(text)?)?,
+        RevealValue::Boolean { value } => 27usize + if *value { 4 } else { 5 },
+        RevealValue::Reference { target } => {
+            30usize.checked_add(reveal_identity_wire_bytes(target)?)?
+        }
+        RevealValue::Unknown => 18usize,
+    };
+    let archived = if claim.archived { 4 } else { 5 };
+    140usize
+        .checked_add(json_str_wire_bytes(&claim.id)?)?
+        .checked_add(value)?
+        .checked_add(json_str_wire_bytes(&claim.canon)?)?
+        .checked_add(json_opt_str_wire_bytes(claim.source_status_raw.as_deref())?)?
+        .checked_add(json_opt_str_wire_bytes(
+            claim.provenance.external_ref.as_deref(),
+        )?)?
+        .checked_add(json_opt_str_wire_bytes(
+            claim.provenance.locator.as_deref(),
+        )?)?
+        .checked_add(json_opt_str_wire_bytes(
+            claim.provenance.fragment.as_deref(),
+        )?)?
+        .checked_add(json_opt_str_wire_bytes(
+            claim.provenance.source_revision.as_deref(),
+        )?)?
+        .checked_add(json_opt_str_wire_bytes(claim.scope_note.as_deref())?)?
+        .checked_add(archived)
+}
+
+fn context_outgoing_group_wire_bytes(group: &ContextOutgoingGroup) -> Option<usize> {
+    // {"definition":,"claims":[],"hasArchivedClaims":}
+    let has_arch = if group.has_archived_claims { 4 } else { 5 };
+    46usize
+        .checked_add(context_definition_wire_bytes(&group.definition)?)?
+        .checked_add(json_array_wire_bytes(
+            &group.claims,
+            context_claim_wire_bytes,
+        )?)?
+        .checked_add(has_arch)
+}
+
+fn context_incoming_group_wire_bytes(group: &ContextIncomingGroup) -> Option<usize> {
+    // {"subject":,"definition":,"claims":[]}
+    36usize
+        .checked_add(reveal_identity_wire_bytes(&group.subject)?)?
+        .checked_add(context_definition_wire_bytes(&group.definition)?)?
+        .checked_add(json_array_wire_bytes(
+            &group.claims,
+            context_claim_wire_bytes,
+        )?)
+}
+
+fn context_dto_wire_bytes(dto: &EntityContext) -> Option<usize> {
+    // {"entity":,"typeLabel":,"outgoingGroups":[],"incomingGroups":[],"archivedOutgoingGroups":[],"archivedIncomingGroups":[]}
+    112usize
+        .checked_add(reveal_identity_wire_bytes(&dto.entity)?)?
+        .checked_add(json_opt_str_wire_bytes(dto.type_label.as_deref())?)?
+        .checked_add(json_array_wire_bytes(
+            &dto.outgoing_groups,
+            context_outgoing_group_wire_bytes,
+        )?)?
+        .checked_add(json_array_wire_bytes(
+            &dto.incoming_groups,
+            context_incoming_group_wire_bytes,
+        )?)?
+        .checked_add(json_array_wire_bytes(
+            &dto.archived_outgoing_groups,
+            context_outgoing_group_wire_bytes,
+        )?)?
+        .checked_add(json_array_wire_bytes(
+            &dto.archived_incoming_groups,
+            context_incoming_group_wire_bytes,
+        )?)
 }
 
 #[tauri::command(async)]
@@ -2145,6 +2281,289 @@ mod tests {
             serde_json::to_value(error).unwrap(),
             serde_json::json!({"kind":"read_failed"})
         );
+    }
+
+    #[test]
+    fn context_wire_bound_holds_at_exact_2_mib_boundary_for_zero_claim_and_mixed_dto_variants() {
+        let dir = tempfile::tempdir().unwrap();
+        let universe = UniverseId::parse(UNIVERSE).unwrap();
+        let e1 = EntityId::parse("33333333-3333-4333-8333-333333333301").unwrap();
+
+        // 1. Ari's 128-group zero-claim case: untyped entity, 128 active entity-owned
+        // reference/multiple definitions labeled "x".
+        let defs_128: Vec<narrative_universe::Definition> = (1
+            ..=narrative_universe::MAX_CONTEXT_GROUPS)
+            .map(|i| narrative_universe::Definition {
+                id: narrative_universe::DefinitionId::parse(&format!(
+                    "44444444-4444-4444-8444-{i:012x}"
+                ))
+                .unwrap(),
+                owner: narrative_universe::Owner::Entity(e1.clone()),
+                value_class: narrative_universe::ValueClass::Reference,
+                cardinality: narrative_universe::Cardinality::Multiple,
+                label: Some(narrative_universe::DefinitionLabel::parse("x").unwrap()),
+                archived: false,
+            })
+            .collect();
+
+        // Root (174 + 2 + 4 = 180) + 128 * 255 + 127 commas = 32_947 -> 2_097_152 - 32_947 = 2_064_205.
+        let exact_fit_len = 2_064_205usize;
+        for (idx, (label_len, should_fit)) in [
+            (exact_fit_len, true),
+            (exact_fit_len + 1, false),
+            (2_064_591, false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let db_path = dir.path().join(format!("boundary-128-{idx}.sqlite"));
+            let (store, _) = Store::import_new(
+                &db_path,
+                narrative_universe::Snapshot {
+                    universe_id: universe.clone(),
+                    pages: vec![],
+                    types: vec![],
+                    entities: vec![Entity {
+                        id: e1.clone(),
+                        label: "a".repeat(label_len),
+                        type_id: None,
+                        page_id: None,
+                    }],
+                    definitions: defs_128.clone(),
+                    assertions: vec![],
+                },
+            )
+            .unwrap();
+            let active = Some(super::ActiveUniverse {
+                token: "t".into(),
+                store,
+            });
+            let res = super::context_active(&active, "t", e1.as_str());
+            if should_fit {
+                let dto = res.unwrap();
+                let serialized_len = serde_json::to_vec(&dto).unwrap().len();
+                assert_eq!(super::context_dto_wire_bytes(&dto), Some(serialized_len));
+                assert_eq!(serialized_len, narrative_universe::MAX_CONTEXT_BYTES);
+            } else {
+                assert!(
+                    matches!(res, Err(BridgeError::ContextTooLarge)),
+                    "label_len={label_len} should exceed 2 MiB wire limit"
+                );
+            }
+        }
+
+        // 2. Mixed typed entity with outgoing/incoming/self-ref/archived, booleans,
+        // unknown, provenance, and large text padded up to the exact budget boundary.
+        let t_person = TypeId::parse("22222222-2222-4222-8222-222222222201").unwrap();
+        let e2 = EntityId::parse("33333333-3333-4333-8333-333333333302").unwrap();
+        let d_text =
+            narrative_universe::DefinitionId::parse("44444444-4444-4444-8444-000000000001")
+                .unwrap();
+        let d_bool =
+            narrative_universe::DefinitionId::parse("44444444-4444-4444-8444-000000000002")
+                .unwrap();
+        let d_ref = narrative_universe::DefinitionId::parse("44444444-4444-4444-8444-000000000003")
+            .unwrap();
+        let d_arch =
+            narrative_universe::DefinitionId::parse("44444444-4444-4444-8444-000000000004")
+                .unwrap();
+
+        let build_mixed_store = |db_name: &str, text_payload: String| {
+            let db_path = dir.path().join(db_name);
+            Store::import_new(
+                &db_path,
+                narrative_universe::Snapshot {
+                    universe_id: universe.clone(),
+                    pages: vec![],
+                    types: vec![EntityType {
+                        id: t_person.clone(),
+                        label: "Person".into(),
+                    }],
+                    entities: vec![
+                        Entity {
+                            id: e1.clone(),
+                            label: "Alden".into(),
+                            type_id: Some(t_person.clone()),
+                            page_id: None,
+                        },
+                        Entity {
+                            id: e2.clone(),
+                            label: "Bram".into(),
+                            type_id: Some(t_person.clone()),
+                            page_id: None,
+                        },
+                    ],
+                    definitions: vec![
+                        narrative_universe::Definition {
+                            id: d_text.clone(),
+                            owner: narrative_universe::Owner::Type(t_person.clone()),
+                            value_class: narrative_universe::ValueClass::Text,
+                            cardinality: narrative_universe::Cardinality::Multiple,
+                            label: Some(
+                                narrative_universe::DefinitionLabel::parse("notes").unwrap(),
+                            ),
+                            archived: false,
+                        },
+                        narrative_universe::Definition {
+                            id: d_bool.clone(),
+                            owner: narrative_universe::Owner::Type(t_person.clone()),
+                            value_class: narrative_universe::ValueClass::Boolean,
+                            cardinality: narrative_universe::Cardinality::Multiple,
+                            label: Some(
+                                narrative_universe::DefinitionLabel::parse("oath bound").unwrap(),
+                            ),
+                            archived: false,
+                        },
+                        narrative_universe::Definition {
+                            id: d_ref.clone(),
+                            owner: narrative_universe::Owner::Entity(e1.clone()),
+                            value_class: narrative_universe::ValueClass::Reference,
+                            cardinality: narrative_universe::Cardinality::Multiple,
+                            label: None,
+                            archived: false,
+                        },
+                        narrative_universe::Definition {
+                            id: d_arch.clone(),
+                            owner: narrative_universe::Owner::Entity(e1.clone()),
+                            value_class: narrative_universe::ValueClass::Text,
+                            cardinality: narrative_universe::Cardinality::Singular,
+                            label: Some(
+                                narrative_universe::DefinitionLabel::parse("retired").unwrap(),
+                            ),
+                            archived: true,
+                        },
+                    ],
+                    assertions: vec![
+                        narrative_universe::Assertion {
+                            id: narrative_universe::AssertionId::parse(
+                                "55555555-5555-4555-8555-000000000001",
+                            )
+                            .unwrap(),
+                            subject_id: e1.clone(),
+                            definition_id: d_text.clone(),
+                            value: narrative_universe::Value::Text(text_payload),
+                            canon: narrative_universe::Canon::Acordado,
+                            source_status_raw: Some("draft".into()),
+                            provenance: narrative_universe::Provenance {
+                                external_ref: Some("ext".into()),
+                                locator: Some("loc".into()),
+                                fragment: Some("frag".into()),
+                                source_revision: Some("rev".into()),
+                            },
+                            scope_note: Some("note".into()),
+                            archived: false,
+                        },
+                        narrative_universe::Assertion {
+                            id: narrative_universe::AssertionId::parse(
+                                "55555555-5555-4555-8555-000000000002",
+                            )
+                            .unwrap(),
+                            subject_id: e1.clone(),
+                            definition_id: d_text.clone(),
+                            value: narrative_universe::Value::Unknown,
+                            canon: narrative_universe::Canon::Abierto,
+                            source_status_raw: None,
+                            provenance: narrative_universe::Provenance::absent(),
+                            scope_note: None,
+                            archived: true,
+                        },
+                        narrative_universe::Assertion {
+                            id: narrative_universe::AssertionId::parse(
+                                "55555555-5555-4555-8555-000000000003",
+                            )
+                            .unwrap(),
+                            subject_id: e1.clone(),
+                            definition_id: d_bool.clone(),
+                            value: narrative_universe::Value::Boolean(false),
+                            canon: narrative_universe::Canon::Provisional,
+                            source_status_raw: None,
+                            provenance: narrative_universe::Provenance::absent(),
+                            scope_note: None,
+                            archived: false,
+                        },
+                        narrative_universe::Assertion {
+                            id: narrative_universe::AssertionId::parse(
+                                "55555555-5555-4555-8555-000000000004",
+                            )
+                            .unwrap(),
+                            subject_id: e1.clone(),
+                            definition_id: d_bool.clone(),
+                            value: narrative_universe::Value::Boolean(true),
+                            canon: narrative_universe::Canon::Acordado,
+                            source_status_raw: None,
+                            provenance: narrative_universe::Provenance::absent(),
+                            scope_note: None,
+                            archived: false,
+                        },
+                        narrative_universe::Assertion {
+                            id: narrative_universe::AssertionId::parse(
+                                "55555555-5555-4555-8555-000000000005",
+                            )
+                            .unwrap(),
+                            subject_id: e1.clone(),
+                            definition_id: d_ref.clone(),
+                            value: narrative_universe::Value::Reference(e1.clone()),
+                            canon: narrative_universe::Canon::MisterioIntencional,
+                            source_status_raw: None,
+                            provenance: narrative_universe::Provenance::absent(),
+                            scope_note: None,
+                            archived: false,
+                        },
+                        narrative_universe::Assertion {
+                            id: narrative_universe::AssertionId::parse(
+                                "55555555-5555-4555-8555-000000000006",
+                            )
+                            .unwrap(),
+                            subject_id: e1.clone(),
+                            definition_id: d_ref.clone(),
+                            value: narrative_universe::Value::Reference(e2.clone()),
+                            canon: narrative_universe::Canon::Acordado,
+                            source_status_raw: None,
+                            provenance: narrative_universe::Provenance::absent(),
+                            scope_note: None,
+                            archived: true,
+                        },
+                    ],
+                },
+            )
+            .unwrap()
+            .0
+        };
+
+        let base_store = build_mixed_store("mixed-base.sqlite", String::new());
+        let base_active = Some(super::ActiveUniverse {
+            token: "m".into(),
+            store: base_store,
+        });
+        let base_dto = super::context_active(&base_active, "m", e1.as_str()).unwrap();
+        let base_len = serde_json::to_vec(&base_dto).unwrap().len();
+        assert_eq!(super::context_dto_wire_bytes(&base_dto), Some(base_len));
+        // `d_text` and `d_ref` each emit both an active and an archived outgoing group with
+        // `hasArchivedClaims: true` (4B instead of 5B budgeted for `false`), so store budget charges
+        // +4 bytes more than serialized wire length.
+        let headroom = narrative_universe::MAX_CONTEXT_BYTES - base_len;
+        let max_core_fit = headroom - 4;
+
+        let fit_store = build_mixed_store("mixed-fit.sqlite", "x".repeat(max_core_fit));
+        let fit_active = Some(super::ActiveUniverse {
+            token: "m".into(),
+            store: fit_store,
+        });
+        let fit_dto = super::context_active(&fit_active, "m", e1.as_str()).unwrap();
+        let fit_len = serde_json::to_vec(&fit_dto).unwrap().len();
+        assert_eq!(super::context_dto_wire_bytes(&fit_dto), Some(fit_len));
+        assert!(fit_len <= narrative_universe::MAX_CONTEXT_BYTES);
+        assert_eq!(fit_len, narrative_universe::MAX_CONTEXT_BYTES - 4);
+
+        let over_store = build_mixed_store("mixed-over.sqlite", "x".repeat(headroom + 1));
+        let over_active = Some(super::ActiveUniverse {
+            token: "m".into(),
+            store: over_store,
+        });
+        assert!(matches!(
+            super::context_active(&over_active, "m", e1.as_str()),
+            Err(BridgeError::ContextTooLarge)
+        ));
     }
 
     #[derive(serde::Deserialize)]

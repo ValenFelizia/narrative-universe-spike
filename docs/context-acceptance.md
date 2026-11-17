@@ -8,42 +8,52 @@ change. `tests/fixtures/reveal-facts.json` is untouched; no real lore was used.
 ## Automated checks
 
 - PASS: `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`,
-  and `cargo test --locked --all-targets` (365 tests across all root suites,
-  including 6 real-file tests in `tests/entity_context.rs`).
+  and `cargo test --locked --all-targets` (368 tests across all root suites,
+  including 8 real-file tests in `tests/entity_context.rs` and unit test
+  `context_reader_overlaps_atomic_import_commit_with_zero_tearing_and_releases_lock`).
 - PASS: Tauri `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`,
-  and `cargo test --locked` (21 bridge tests).
+  and `cargo test --locked` (22 bridge tests).
 - PASS: UI `npm test` (126 tests), `npm run check`, `npm run desktop:check`, and
   `npm run desktop:frontend:build`.
 - PASS: `git diff --check`.
 
-Root `tests/entity_context.rs` verifies:
+Root `tests/entity_context.rs` and `src/store.rs` unit tests verify:
 
 - Real SQLite fixture reads for Mara Vey (active grouped definitions, zero-claim
   applicable `oath sworn`, archived entity-owned `archived sigil`, duplicate
   `member of` definition suffixes) and Ashfall Order (subject-first incoming
   groups).
-- Synchronized concurrent writer/reader snapshot consistency (one deferred read
-  transaction never observes a partial write and releases the read lock cleanly).
+- Synchronized concurrent writer/reader snapshot consistency (deterministic
+  uncommitted `BEGIN IMMEDIATE` overlap, atomic `Store::import_snapshot` batch
+  overlap, and mid-read `#[cfg(test)]` hook interleaving with an overlapping
+  atomic commit prove zero tearing and clean read-lock release).
 - Independent `definition.archived` and `assertion.archived` combinations,
   zero-claim archived definitions, and self-references appearing in both
   outgoing and incoming groups.
 - Hard bounds (`MAX_CONTEXT_GROUPS = 128`, `MAX_CONTEXT_UNIQUE_ASSERTIONS = 500`,
-  and `MAX_CONTEXT_BYTES = 2 MiB` with escaping-aware byte projection returning
-  `Error::ContextTooLarge`).
-- Fail-closed behavior on `Busy` and malformed active or archived rows without
-  mutating database bytes.
+  and `MAX_CONTEXT_BYTES = 2 MiB` with exact camelCase DTO wire sizing and
+  escaping-aware byte projection returning `Error::ContextTooLarge`), plus
+  bounded definition owner existence checks (`typeof(label)`) so oversized
+  unprojected owner labels never OOM or trip the 2 MiB cap.
+- Fail-closed behavior on `Busy`, missing definition owners, and malformed active
+  or archived rows without mutating database bytes.
 
 Measured SQLite query plans and scale latency (`query_plans_and_scale_measurement_report`):
 
 - `defs`: `["SCAN definitions USING INDEX sqlite_autoindex_definitions_1"]`
-- `out`: `["SEARCH assertions USING INDEX idx_assertions_subject_definition (subject_id=?)", "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"]`
-- `in`: `["SEARCH assertions USING INDEX idx_assertions_target (target_entity_id=?)", "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"]`
-- `2040 defs + 300 claims elapsed: 4.9365ms` (without adding schema indexes)
+- `out`: `["SEARCH assertions USING INDEX idx_assertions_subject_definition (subject_id=?)"]`
+- `in`: `["SEARCH assertions USING INDEX idx_assertions_target (target_entity_id=?)"]`
+- `2040 defs + 300 claims elapsed: 5.1516ms` (no SQLite `TEMP B-TREE` payload
+  sort on outgoing or incoming assertions; bounded claims are sorted in memory,
+  with zero schema/index changes).
 
 Bridge tests (`ui/src-tauri/src/lib.rs`) cover universe-token validation,
 camelCase DTOs, `ContextTooLarge` (`"context_too_large"`) under worst-case JSON
-quote escaping, independent archive flags, zero-claim archived definitions, `Busy`,
-and sanitized `ReadFailed` errors.
+quote escaping and at the exact 2 MiB wire boundary (128-group zero-claim
+`2_064_205`-byte entity label and mixed-variant DTOs matching `serde_json::to_vec`
+and guarded at the bridge via `context_dto_wire_bytes`), independent archive
+flags, zero-claim archived definitions, `Busy`, and sanitized `ReadFailed`
+errors.
 
 Frontend tests (`ui/test/desktop.test.ts`) verify grouped rendering, zero-claim
 differentiation (`Not recorded` vs `Not recorded · Archived history available`),
@@ -56,13 +66,16 @@ V2 edge placement and V1 anchored fallback (including near-bottom flipping).
 
 ## Native Windows/WebView2 evidence
 
-PASS: `node ui/scripts/webview2-context.mjs` launches the actual debug Tauri
-executable (`narrative-universe-desktop.exe`), connects to its WebView2 CDP
-target, and invokes the real Rust/SQLite backend against fresh temporary v3
-databases (`reveal-fixture.sqlite` imported from
+PASS: `node ui/scripts/webview2-reveal.mjs` (R1-B compact peek regression,
+unblocked with `EnumWindows` `Tauri Window` HWND lookup and `waitPageReady`) and
+`node ui/scripts/webview2-context.mjs` (R2-A Explore Context) both launch the
+rebuilt debug Tauri executable (`narrative-universe-desktop.exe`), connect to its
+WebView2 CDP target, and invoke the real Rust/SQLite backend against fresh
+temporary v3 databases (`reveal-fixture.sqlite` imported from
 `tests/fixtures/reveal-facts.json` via `spike import-new`, plus a temporary
 synthetic v3 archive/self-reference database). See
-[machine results](evidence/context-native/result.json).
+[R2-A machine results](evidence/context-native/result.json) and
+[R1-B machine results](evidence/reveal-native/result.json).
 
 - **1600 × 900 wide viewport (DPR 1, library open & closed):** Measures `freeRight`
   and selects V2 edge layout (`width: 332px`, `left: 1252px`, `top: 92px`,

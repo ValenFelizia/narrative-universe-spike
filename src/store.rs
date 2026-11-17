@@ -946,8 +946,27 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|err| map_sql("begin", err))?;
         let value = body(&transaction)?;
+        #[cfg(test)]
+        run_test_hook("before_write_commit");
         transaction.commit().map_err(|err| map_sql("commit", err))?;
         Ok(value)
+    }
+}
+
+#[cfg(test)]
+type TestHook = std::sync::Arc<dyn Fn(&'static str) + Send + Sync>;
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_HOOK: std::cell::RefCell<Option<TestHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn run_test_hook(point: &'static str) {
+    let hook = TEST_HOOK.with(|cell| cell.borrow().clone());
+    if let Some(hook) = hook {
+        hook(point);
     }
 }
 
@@ -2488,14 +2507,17 @@ fn is_primary_key(err: &rusqlite::Error) -> bool {
     }
 }
 
-const CONTEXT_ROOT_BASE_BYTES: usize = 171;
-const CONTEXT_OUTGOING_GROUP_BASE_BYTES: usize = 250;
-const CONTEXT_INCOMING_GROUP_BASE_BYTES: usize = 284;
-const CONTEXT_CLAIM_BASE_BYTES: usize = 189;
-const CONTEXT_TEXT_VALUE_OVERHEAD: usize = 23;
-const CONTEXT_BOOL_VALUE_BYTES: usize = 32;
-const CONTEXT_UNKNOWN_VALUE_BYTES: usize = 18;
-const CONTEXT_REF_VALUE_OVERHEAD: usize = 86;
+// Compact camelCase JSON wire sizes matching `ui/src-tauri/src/lib.rs` DTOs.
+// `RevealIdentity`: `{"id":"<36>","label":...}` = 54 + label.
+const CONTEXT_ROOT_BASE_BYTES: usize = 174; // {"entity":{"id":"<36>","label":},"typeLabel":,"outgoingGroups":[],"incomingGroups":[],"archivedOutgoingGroups":[],"archivedIncomingGroups":[]}
+const CONTEXT_DEFINITION_BASE_BYTES: usize = 165; // {"id":"<36>","ownerKind":,"ownerId":"<36>","propertyLabel":,"valueClass":,"cardinality":,"archived":}
+const CONTEXT_OUTGOING_GROUP_WRAPPER_BYTES: usize = 53; // {"definition":,"claims":[],"hasArchivedClaims":false} (true saves 1B)
+const CONTEXT_INCOMING_GROUP_WRAPPER_BYTES: usize = 92; // {"subject":{"id":"<36>","label":},"definition":,"claims":[]}
+const CONTEXT_CLAIM_BASE_BYTES: usize = 180; // {"id":"<36>","value":,"canon":"","sourceStatusRaw":,"provenance":{"externalRef":,"locator":,"fragment":,"sourceRevision":},"scopeNote":,"archived":}
+const CONTEXT_TEXT_VALUE_OVERHEAD: usize = 23; // {"kind":"text","text":}
+const CONTEXT_BOOL_VALUE_BASE_BYTES: usize = 27; // {"kind":"boolean","value":} + 4 (true) or 5 (false)
+const CONTEXT_UNKNOWN_VALUE_BYTES: usize = 18; // {"kind":"unknown"}
+const CONTEXT_REF_VALUE_OVERHEAD: usize = 84; // {"kind":"reference","target":{"id":"<36>","label":}}
 const JSON_NULL_BYTES: usize = 4;
 
 struct ContextBudget<'a> {
@@ -2572,22 +2594,48 @@ fn json_str_bytes(bytes: &[u8]) -> usize {
     total
 }
 
-fn json_opt_str_bytes(bytes: Option<&[u8]>) -> usize {
-    match bytes {
-        Some(bytes) => json_str_bytes(bytes),
-        None => JSON_NULL_BYTES,
+fn json_bool_bytes(flag: bool) -> usize {
+    if flag {
+        4
+    } else {
+        5
     }
 }
 
-fn outgoing_group_json_bytes(definition: &Definition) -> usize {
-    CONTEXT_OUTGOING_GROUP_BASE_BYTES
-        + json_opt_str_bytes(definition.label.as_ref().map(|l| l.as_str().as_bytes()))
+fn definition_json_bytes(definition: &Definition) -> usize {
+    let owner_kind_bytes = match definition.owner {
+        Owner::Type(_) => 6,   // "type"
+        Owner::Entity(_) => 8, // "entity"
+    };
+    let label_bytes = match definition.label.as_ref() {
+        Some(label) => json_str_bytes(label.as_str().as_bytes()),
+        None => JSON_NULL_BYTES,
+    };
+    CONTEXT_DEFINITION_BASE_BYTES
+        + owner_kind_bytes
+        + label_bytes
+        + 2
+        + definition.value_class.as_str().len()
+        + 2
+        + definition.cardinality.as_str().len()
+        + json_bool_bytes(definition.archived)
 }
 
-fn incoming_group_json_bytes(subject: &Entity, definition: &Definition) -> usize {
-    CONTEXT_INCOMING_GROUP_BASE_BYTES
+fn outgoing_group_json_bytes(definition: &Definition, has_prior_groups: bool) -> usize {
+    CONTEXT_OUTGOING_GROUP_WRAPPER_BYTES
+        + definition_json_bytes(definition)
+        + usize::from(has_prior_groups)
+}
+
+fn incoming_group_json_bytes(
+    subject: &Entity,
+    definition: &Definition,
+    has_prior_groups: bool,
+) -> usize {
+    CONTEXT_INCOMING_GROUP_WRAPPER_BYTES
         + json_str_bytes(subject.label.as_bytes())
-        + json_opt_str_bytes(definition.label.as_ref().map(|l| l.as_str().as_bytes()))
+        + definition_json_bytes(definition)
+        + usize::from(has_prior_groups)
 }
 
 fn read_bounded_id<T>(
@@ -2866,10 +2914,77 @@ fn read_definition_from_row(row: &rusqlite::Row<'_>) -> Result<Definition> {
     })
 }
 
+fn require_bounded_definition_owner(
+    conn: &Connection,
+    definition: &Definition,
+    checked_owner_types: &mut BTreeSet<String>,
+    checked_entities: &BTreeMap<String, Entity>,
+    checked_owner_entities: &mut BTreeSet<String>,
+) -> Result<()> {
+    match &definition.owner {
+        Owner::Type(type_id) => {
+            let key = type_id.as_str();
+            if checked_owner_types.contains(key) {
+                return Ok(());
+            }
+            let mut stmt = conn
+                .prepare_cached("SELECT id, typeof(label) FROM types WHERE id = ?1")
+                .map_err(|err| map_sql("type", err))?;
+            let mut rows = stmt.query([key]).map_err(|err| map_sql("type", err))?;
+            let Some(row) = rows.next().map_err(|err| map_sql("type", err))? else {
+                return Err(Error::validation(
+                    ValidationReason::UnknownType,
+                    "owner_type_id",
+                    Some(key),
+                ));
+            };
+            let _ = read_bounded_id(row, 0, "type", TypeId::parse)?;
+            if read_bounded_short_str(row, 1, "type label", 16)? != "text" {
+                return Err(Error::Storage {
+                    message: "invalid column type for type label".to_string(),
+                });
+            }
+            checked_owner_types.insert(key.to_owned());
+        }
+        Owner::Entity(entity_id) => {
+            let key = entity_id.as_str();
+            if checked_entities.contains_key(key) || checked_owner_entities.contains(key) {
+                return Ok(());
+            }
+            let mut stmt = conn
+                .prepare_cached(
+                    "SELECT id, typeof(label), type_id, page_id FROM entities WHERE id = ?1",
+                )
+                .map_err(|err| map_sql("entity", err))?;
+            let mut rows = stmt.query([key]).map_err(|err| map_sql("entity", err))?;
+            let Some(row) = rows.next().map_err(|err| map_sql("entity", err))? else {
+                return Err(Error::validation(
+                    ValidationReason::UnknownEntity,
+                    "owner_entity_id",
+                    Some(key),
+                ));
+            };
+            let _ = read_bounded_id(row, 0, "entity", EntityId::parse)?;
+            if read_bounded_short_str(row, 1, "entity label", 16)? != "text" {
+                return Err(Error::Storage {
+                    message: "invalid column type for entity label".to_string(),
+                });
+            }
+            let _ = read_bounded_opt_id(row, 2, "entity type", TypeId::parse)?;
+            let _ = read_bounded_opt_id(row, 3, "entity page", PageId::parse)?;
+            checked_owner_entities.insert(key.to_owned());
+        }
+    }
+    Ok(())
+}
+
 fn lookup_cached_definition<'a>(
     tx: &Transaction,
     id: &DefinitionId,
     cache: &'a mut BTreeMap<String, Definition>,
+    checked_owner_types: &mut BTreeSet<String>,
+    checked_entities: &BTreeMap<String, Entity>,
+    checked_owner_entities: &mut BTreeSet<String>,
 ) -> Result<&'a Definition> {
     let key = id.as_str();
     if !cache.contains_key(key) {
@@ -2890,7 +3005,13 @@ fn lookup_cached_definition<'a>(
             ));
         };
         let definition = read_definition_from_row(row)?;
-        require_definition_owner(tx, &definition)?;
+        require_bounded_definition_owner(
+            tx,
+            &definition,
+            checked_owner_types,
+            checked_entities,
+            checked_owner_entities,
+        )?;
         cache.insert(key.to_owned(), definition);
     }
     Ok(cache
@@ -3028,14 +3149,19 @@ fn validate_header_against_subject_and_definition(
 fn read_bounded_claim_payload(
     row: &rusqlite::Row<'_>,
     header: AssertionHeader,
-    target: Option<Entity>,
+    target: Option<&Entity>,
+    has_prior_claims: bool,
     budget: &mut ContextBudget<'_>,
 ) -> Result<ContextClaim> {
     let base = CONTEXT_CLAIM_BASE_BYTES
+        + usize::from(has_prior_claims)
         + header.canon.as_str().len()
+        + json_bool_bytes(header.archived)
         + match &header.value {
             AssertionValueHeader::Text => CONTEXT_TEXT_VALUE_OVERHEAD,
-            AssertionValueHeader::Boolean(_) => CONTEXT_BOOL_VALUE_BYTES,
+            AssertionValueHeader::Boolean(flag) => {
+                CONTEXT_BOOL_VALUE_BASE_BYTES + json_bool_bytes(*flag)
+            }
             AssertionValueHeader::Unknown => CONTEXT_UNKNOWN_VALUE_BYTES,
             AssertionValueHeader::Reference(_) => {
                 let target_label_len = target
@@ -3074,7 +3200,7 @@ fn read_bounded_claim_payload(
             scope_note,
             archived: header.archived,
         },
-        target,
+        target: target.cloned(),
     })
 }
 
@@ -3086,8 +3212,13 @@ fn read_entity_context(tx: &Transaction, id: &EntityId) -> Result<EntityContext>
         .ok_or_else(|| Error::validation(ValidationReason::NotFound, "id", Some(id.as_str())))?;
     budget.charge(json_str_bytes(entity.label.as_bytes()))?;
 
+    let mut checked_owner_types: BTreeSet<String> = BTreeSet::new();
     let type_label = match &entity.type_id {
-        Some(type_id) => Some(read_bounded_type_label(tx, type_id, &mut budget)?),
+        Some(type_id) => {
+            let label = read_bounded_type_label(tx, type_id, &mut budget)?;
+            checked_owner_types.insert(type_id.as_str().to_owned());
+            Some(label)
+        }
         None => {
             budget.charge(JSON_NULL_BYTES)?;
             None
@@ -3096,6 +3227,7 @@ fn read_entity_context(tx: &Transaction, id: &EntityId) -> Result<EntityContext>
 
     let mut checked_entities: BTreeMap<String, Entity> = BTreeMap::new();
     checked_entities.insert(entity.id.as_str().to_owned(), entity.clone());
+    let mut checked_owner_entities: BTreeSet<String> = BTreeSet::new();
 
     let mut checked_definitions: BTreeMap<String, Definition> = BTreeMap::new();
     let mut active_outgoing: BTreeMap<String, ContextOutgoingGroup> = BTreeMap::new();
@@ -3104,17 +3236,28 @@ fn read_entity_context(tx: &Transaction, id: &EntityId) -> Result<EntityContext>
     {
         let mut load_definition = |row: &rusqlite::Row<'_>| -> Result<()> {
             let definition = read_definition_from_row(row)?;
-            require_definition_owner(tx, &definition)?;
+            require_bounded_definition_owner(
+                tx,
+                &definition,
+                &mut checked_owner_types,
+                &checked_entities,
+                &mut checked_owner_entities,
+            )?;
             budget.add_group()?;
-            budget.charge(outgoing_group_json_bytes(&definition))?;
+            let has_prior_groups = if definition.archived {
+                !archived_outgoing.is_empty()
+            } else {
+                !active_outgoing.is_empty()
+            };
+            budget.charge(outgoing_group_json_bytes(&definition, has_prior_groups))?;
             let key = definition.id.as_str().to_owned();
             checked_definitions.insert(key.clone(), definition.clone());
             let group = ContextOutgoingGroup {
-                definition: definition.clone(),
+                definition,
                 claims: Vec::new(),
                 has_archived_claims: false,
             };
-            if definition.archived {
+            if group.definition.archived {
                 archived_outgoing.insert(key, group);
             } else {
                 active_outgoing.insert(key, group);
@@ -3151,11 +3294,13 @@ fn read_entity_context(tx: &Transaction, id: &EntityId) -> Result<EntityContext>
         }
     }
 
-    // Outgoing assertions for this subject.
+    #[cfg(test)]
+    run_test_hook("context_after_definitions");
+
+    // Outgoing assertions for this subject (grouped in BTreeMap and sorted in memory
+    // after bounded reads to avoid SQLite TEMP B-TREE sorts over full text payloads).
     {
-        let sql = format!(
-            "SELECT {ASSERTION_COLUMNS} FROM assertions WHERE subject_id = ?1 ORDER BY definition_id, id"
-        );
+        let sql = format!("SELECT {ASSERTION_COLUMNS} FROM assertions WHERE subject_id = ?1");
         let mut stmt = tx
             .prepare(&sql)
             .map_err(|err| map_sql("prepare outgoing", err))?;
@@ -3169,40 +3314,58 @@ fn read_entity_context(tx: &Transaction, id: &EntityId) -> Result<EntityContext>
                     message: format!("mismatched subject on assertion {}", header.id),
                 });
             }
-            let definition =
-                lookup_cached_definition(tx, &header.definition_id, &mut checked_definitions)?
-                    .clone();
+            let definition = lookup_cached_definition(
+                tx,
+                &header.definition_id,
+                &mut checked_definitions,
+                &mut checked_owner_types,
+                &checked_entities,
+                &mut checked_owner_entities,
+            )?
+            .clone();
             validate_header_against_subject_and_definition(&header, &entity, &definition)?;
-            let target = match &header.value {
-                AssertionValueHeader::Reference(target_id) => Some(
-                    lookup_cached_entity(
+            let target_key = match &header.value {
+                AssertionValueHeader::Reference(target_id) => {
+                    let _ = lookup_cached_entity(
                         tx,
                         target_id,
                         &mut checked_entities,
                         &budget,
                         ValidationReason::UnknownTarget,
                         "target_entity_id",
-                    )?
-                    .clone(),
-                ),
+                    )?;
+                    Some(target_id.as_str().to_owned())
+                }
                 _ => None,
             };
+            let target = target_key
+                .as_deref()
+                .and_then(|key| checked_entities.get(key));
             budget.add_unique_assertion(&header.id)?;
             let def_key = definition.id.as_str().to_owned();
             let is_archived = header.archived || definition.archived;
             if !is_archived {
-                let claim = read_bounded_claim_payload(row, header, target, &mut budget)?;
-                active_outgoing
-                    .get_mut(&def_key)
+                let has_prior_claims = !active_outgoing
+                    .get(&def_key)
                     .ok_or_else(|| Error::Storage {
                         message: "missing active outgoing group".to_string(),
                     })?
+                    .claims
+                    .is_empty();
+                let claim =
+                    read_bounded_claim_payload(row, header, target, has_prior_claims, &mut budget)?;
+                active_outgoing
+                    .get_mut(&def_key)
+                    .expect("active outgoing group was checked")
                     .claims
                     .push(claim);
             } else {
                 if !definition.archived && !archived_outgoing.contains_key(&def_key) {
                     budget.add_group()?;
-                    budget.charge(outgoing_group_json_bytes(&definition))?;
+                    budget.charge(outgoing_group_json_bytes(
+                        &definition,
+                        !archived_outgoing.is_empty(),
+                    ))?;
                     archived_outgoing.insert(
                         def_key.clone(),
                         ContextOutgoingGroup {
@@ -3215,13 +3378,18 @@ fn read_entity_context(tx: &Transaction, id: &EntityId) -> Result<EntityContext>
                 if let Some(active_group) = active_outgoing.get_mut(&def_key) {
                     active_group.has_archived_claims = true;
                 }
-                let claim = read_bounded_claim_payload(row, header, target, &mut budget)?;
-                let archived_group =
-                    archived_outgoing
-                        .get_mut(&def_key)
-                        .ok_or_else(|| Error::Storage {
-                            message: "missing archived outgoing group".to_string(),
-                        })?;
+                let has_prior_claims = !archived_outgoing
+                    .get(&def_key)
+                    .ok_or_else(|| Error::Storage {
+                        message: "missing archived outgoing group".to_string(),
+                    })?
+                    .claims
+                    .is_empty();
+                let claim =
+                    read_bounded_claim_payload(row, header, target, has_prior_claims, &mut budget)?;
+                let archived_group = archived_outgoing
+                    .get_mut(&def_key)
+                    .expect("archived outgoing group was checked");
                 if claim.assertion.archived {
                     archived_group.has_archived_claims = true;
                 }
@@ -3230,13 +3398,12 @@ fn read_entity_context(tx: &Transaction, id: &EntityId) -> Result<EntityContext>
         }
     }
 
-    // Incoming reference assertions pointing at this entity.
+    // Incoming reference assertions pointing at this entity (grouped and sorted in
+    // memory after bounded reads to avoid SQLite TEMP B-TREE payload sorts).
     let mut active_incoming: BTreeMap<(String, String), ContextIncomingGroup> = BTreeMap::new();
     let mut archived_incoming: BTreeMap<(String, String), ContextIncomingGroup> = BTreeMap::new();
     {
-        let sql = format!(
-            "SELECT {ASSERTION_COLUMNS} FROM assertions WHERE target_entity_id = ?1 ORDER BY subject_id, definition_id, id"
-        );
+        let sql = format!("SELECT {ASSERTION_COLUMNS} FROM assertions WHERE target_entity_id = ?1");
         let mut stmt = tx
             .prepare(&sql)
             .map_err(|err| map_sql("prepare incoming", err))?;
@@ -3253,25 +3420,31 @@ fn read_entity_context(tx: &Transaction, id: &EntityId) -> Result<EntityContext>
                     });
                 }
             }
-            let subject = lookup_cached_entity(
+            let subject_key = header.subject_id.as_str().to_owned();
+            let _ = lookup_cached_entity(
                 tx,
                 &header.subject_id,
                 &mut checked_entities,
                 &budget,
                 ValidationReason::UnknownSubject,
                 "subject_id",
+            )?;
+            let definition = lookup_cached_definition(
+                tx,
+                &header.definition_id,
+                &mut checked_definitions,
+                &mut checked_owner_types,
+                &checked_entities,
+                &mut checked_owner_entities,
             )?
             .clone();
-            let definition =
-                lookup_cached_definition(tx, &header.definition_id, &mut checked_definitions)?
-                    .clone();
-            validate_header_against_subject_and_definition(&header, &subject, &definition)?;
+            let subject = checked_entities
+                .get(&subject_key)
+                .expect("subject was cached");
+            validate_header_against_subject_and_definition(&header, subject, &definition)?;
             budget.add_unique_assertion(&header.id)?;
             let is_archived = header.archived || definition.archived;
-            let group_key = (
-                subject.id.as_str().to_owned(),
-                definition.id.as_str().to_owned(),
-            );
+            let group_key = (subject_key.clone(), definition.id.as_str().to_owned());
             let target_map = if is_archived {
                 &mut archived_incoming
             } else {
@@ -3279,23 +3452,58 @@ fn read_entity_context(tx: &Transaction, id: &EntityId) -> Result<EntityContext>
             };
             if !target_map.contains_key(&group_key) {
                 budget.add_group()?;
-                budget.charge(incoming_group_json_bytes(&subject, &definition))?;
+                let subject = checked_entities
+                    .get(&subject_key)
+                    .expect("subject was cached");
+                budget.charge(incoming_group_json_bytes(
+                    subject,
+                    &definition,
+                    !target_map.is_empty(),
+                ))?;
                 target_map.insert(
                     group_key.clone(),
                     ContextIncomingGroup {
-                        subject,
+                        subject: subject.clone(),
                         definition,
                         claims: Vec::new(),
                     },
                 );
             }
-            let claim = read_bounded_claim_payload(row, header, Some(entity.clone()), &mut budget)?;
+            let has_prior_claims = !target_map
+                .get(&group_key)
+                .expect("incoming group was just inserted")
+                .claims
+                .is_empty();
+            let claim = read_bounded_claim_payload(
+                row,
+                header,
+                Some(&entity),
+                has_prior_claims,
+                &mut budget,
+            )?;
             target_map
                 .get_mut(&group_key)
                 .expect("incoming group was just inserted")
                 .claims
                 .push(claim);
         }
+    }
+
+    for group in active_outgoing
+        .values_mut()
+        .chain(archived_outgoing.values_mut())
+    {
+        group
+            .claims
+            .sort_by(|a, b| a.assertion.id.as_str().cmp(b.assertion.id.as_str()));
+    }
+    for group in active_incoming
+        .values_mut()
+        .chain(archived_incoming.values_mut())
+    {
+        group
+            .claims
+            .sort_by(|a, b| a.assertion.id.as_str().cmp(b.assertion.id.as_str()));
     }
 
     Ok(EntityContext {
@@ -3454,5 +3662,125 @@ mod tests {
         let metadata = std::fs::metadata(&path).expect("metadata");
         assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
         assert_eq!(metadata.len(), 0);
+    }
+
+    #[test]
+    fn context_reader_overlaps_atomic_import_commit_with_zero_tearing_and_releases_lock() {
+        use crate::{
+            Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId, DefinitionLabel,
+            Entity, EntityId, Owner, Provenance, Snapshot, Value, ValueClass,
+        };
+        use std::sync::{mpsc, Arc};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("overlap.sqlite");
+        let universe = UniverseId::parse("11111111-1111-4111-8111-111111111111").expect("universe");
+        let e1 = EntityId::parse("33333333-3333-4333-8333-333333333301").expect("entity");
+        let new_def =
+            DefinitionId::parse("44444444-4444-4444-8444-444444444401").expect("definition");
+        let new_ass =
+            AssertionId::parse("55555555-5555-4555-8555-555555555501").expect("assertion");
+
+        let mut writer_store = Store::create(&path, universe.clone()).expect("create");
+        writer_store
+            .create_entity(Entity {
+                id: e1.clone(),
+                label: "Mara".into(),
+                type_id: None,
+                page_id: None,
+            })
+            .expect("create entity");
+        let reader_store = Store::open(&path).expect("open reader");
+
+        let (reader_paused_tx, reader_paused_rx) = mpsc::channel();
+        let (writer_ready_tx, writer_ready_rx) = mpsc::channel();
+        let (reader_done_tx, reader_done_rx) = mpsc::channel();
+
+        let e1_reader = e1.clone();
+        let path_reader = path.clone();
+        let reader_thread = std::thread::spawn(move || {
+            let rx = std::sync::Mutex::new(writer_ready_rx);
+            super::TEST_HOOK.with(|cell| {
+                *cell.borrow_mut() = Some(Arc::new(move |point| {
+                    if point == "context_after_definitions" {
+                        reader_paused_tx.send(()).expect("signal reader paused");
+                        rx.lock()
+                            .expect("lock rx")
+                            .recv()
+                            .expect("wait writer ready");
+                    }
+                }));
+            });
+            let mid_read = reader_store.entity_context(&e1_reader).expect("mid read");
+            super::TEST_HOOK.with(|cell| {
+                *cell.borrow_mut() = None;
+            });
+            reader_done_tx.send(()).expect("signal reader done");
+            (mid_read, reader_store, path_reader)
+        });
+
+        // Ensure reader is inside read_entity_context (past definitions, holding SHARED lock).
+        reader_paused_rx.recv().expect("wait reader paused");
+
+        let rx_writer = std::sync::Mutex::new(reader_done_rx);
+        super::TEST_HOOK.with(|cell| {
+            *cell.borrow_mut() = Some(Arc::new(move |point| {
+                if point == "before_write_commit" {
+                    writer_ready_tx.send(()).expect("signal writer ready");
+                    rx_writer
+                        .lock()
+                        .expect("lock rx")
+                        .recv()
+                        .expect("wait reader done");
+                }
+            }));
+        });
+        let outcome = writer_store
+            .import_snapshot(Snapshot {
+                universe_id: universe,
+                pages: vec![],
+                types: vec![],
+                entities: vec![],
+                definitions: vec![Definition {
+                    id: new_def.clone(),
+                    owner: Owner::Entity(e1.clone()),
+                    value_class: ValueClass::Text,
+                    cardinality: Cardinality::Singular,
+                    label: Some(DefinitionLabel::parse("callsign").expect("label")),
+                    archived: false,
+                }],
+                assertions: vec![Assertion {
+                    id: new_ass.clone(),
+                    subject_id: e1.clone(),
+                    definition_id: new_def.clone(),
+                    value: Value::Text("Lantern".into()),
+                    canon: Canon::Acordado,
+                    source_status_raw: None,
+                    provenance: Provenance::absent(),
+                    scope_note: None,
+                    archived: false,
+                }],
+            })
+            .expect("atomic import");
+        super::TEST_HOOK.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+        assert_eq!(outcome.inserted, 2);
+
+        let (mid_read, reader_store, _) = reader_thread.join().expect("join reader");
+        assert!(mid_read.outgoing_groups.is_empty());
+
+        let post_read = reader_store.entity_context(&e1).expect("post read");
+        assert_eq!(post_read.outgoing_groups.len(), 1);
+        assert_eq!(post_read.outgoing_groups[0].definition.id, new_def);
+        assert_eq!(post_read.outgoing_groups[0].claims.len(), 1);
+        assert_eq!(post_read.outgoing_groups[0].claims[0].assertion.id, new_ass);
+
+        drop(writer_store);
+        drop(reader_store);
+        let checker = rusqlite::Connection::open(&path).expect("checker");
+        checker
+            .execute_batch("BEGIN EXCLUSIVE; ROLLBACK;")
+            .expect("read lock released");
     }
 }

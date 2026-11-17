@@ -25,21 +25,33 @@ function command(url,method,params={}) { return new Promise((resolve,reject)=>{c
 const evaluate = async (url,expression) => (await command(url,'Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true})).result.value;
 const imports = `const {EditorView}=await import('/@fs/'+${JSON.stringify(ui.replaceAll('\\','/').replace(/\/$/, ''))}+'/node_modules/@codemirror/view/dist/index.js'); const {mentionField}=await import('/@fs/'+${JSON.stringify(ui.replaceAll('\\','/').replace(/\/$/, ''))}+'/src/mention-history.ts');`;
 const assert = (value, message) => {if(!value) throw Error(message)};
+async function waitPageReady(url) {
+  for(let i=0;i<80;i++){
+    try{const s=await evaluate(url,'({ready:document.readyState,href:location.href,hasDb:Boolean(document.querySelector("#database-path")),hasTauri:Boolean(window.__TAURI_INTERNALS__)})');if(s&&s.ready==='complete'&&/5173/.test(s.href)&&s.hasDb&&s.hasTauri)return s;}catch{}
+    await pause(200);
+  }
+  throw Error('Page never became ready on 5173');
+}
+async function resizeWindow(url,width,height) {
+  const dpr=await evaluate(url,'devicePixelRatio');
+  const script=(w,h)=>`Add-Type -TypeDefinition 'using System;using System.Text;using System.Runtime.InteropServices;public class RevealWindow{public delegate bool EnumWindowsProc(IntPtr h,IntPtr l);[DllImport("user32.dll")]public static extern bool EnumWindows(EnumWindowsProc p,IntPtr l);[DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);[DllImport("user32.dll")]public static extern int GetClassName(IntPtr h,StringBuilder s,int n);[DllImport("user32.dll")]public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);[DllImport("user32.dll")]public static extern bool SetWindowPos(IntPtr h,IntPtr a,int x,int y,int w,int z,uint f);public static IntPtr FindTauri(uint target){IntPtr found=IntPtr.Zero;EnumWindows((h,l)=>{uint pid;GetWindowThreadProcessId(h,out pid);if(pid==target){var c=new StringBuilder(256);var t=new StringBuilder(256);GetClassName(h,c,256);GetWindowText(h,t,256);if(c.ToString()=="Tauri Window"||t.ToString()=="Narrative Universe"){found=h;return false;}}return true;},IntPtr.Zero);return found;}}'; $h=[RevealWindow]::FindTauri(${app.pid}); if($h -eq [IntPtr]::Zero){throw "No Tauri window handle for pid ${app.pid}"}; if(-not [RevealWindow]::SetWindowPos($h,[IntPtr]::Zero,0,0,${Math.round(w*dpr)},${Math.round(h*dpr)},22)){throw "SetWindowPos failed"}`;
+  execFileSync('powershell.exe',['-NoProfile','-Command',script(width,height)],{windowsHide:true});await pause(350);
+  const actual=await evaluate(url,'({width:innerWidth,height:innerHeight})');
+  if(actual.width!==width||actual.height!==height){
+    execFileSync('powershell.exe',['-NoProfile','-Command',script(2*width-actual.width,2*height-actual.height)],{windowsHide:true});await pause(350);
+  }
+}
 try {
   for(let i=0;i<80;i++){try{if((await fetch('http://127.0.0.1:5173/')).ok)break;}catch{}await pause(250);}
   app=spawn(fileURLToPath(new URL('../src-tauri/target/debug/narrative-universe-desktop.exe',import.meta.url)),[],{cwd:ui,stdio:'ignore',windowsHide:true,env:{...process.env,WEBVIEW2_USER_DATA_FOLDER:webviewProfile,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9334'}});
   const url=await target();
+  await waitPageReady(url);
   const run = body => evaluate(url,`(async()=>{${imports} const wait=()=>new Promise(r=>setTimeout(r,250));const assert=(v,m)=>{if(!v)throw Error(m)}; ${body} })()`);
   const screenshot=async name=>{const png=await command(url,'Page.captureScreenshot',{format:'png'});writeFileSync(join(evidence,name),Buffer.from(png.data,'base64'));};
   await run(`document.querySelector('#database-path').value=${JSON.stringify(database)};document.querySelector('#open-form').requestSubmit();await wait();await wait();assert(window.__TAURI_INTERNALS__,'actual native bridge');`);
   const results=[];
   for(const [width,height] of [[1120,780],[800,600]]) {
-    const dpr=await evaluate(url,'devicePixelRatio');
-    const resize=`Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class RevealWindow{[DllImport("user32.dll")]public static extern bool SetWindowPos(IntPtr h,IntPtr a,int x,int y,int w,int z,uint f);}'; $p=Get-Process -Id ${app.pid}; [RevealWindow]::SetWindowPos($p.MainWindowHandle,[IntPtr]::Zero,0,0,${Math.round(width*dpr)},${Math.round(height*dpr)},6)`;
-    execFileSync('powershell.exe',['-NoProfile','-Command',resize],{windowsHide:true});await pause(350);
-    const actual=await evaluate(url,'({width:innerWidth,height:innerHeight})');
-    const fixed=resize.replace(`,${Math.round(width*dpr)},${Math.round(height*dpr)},6)`,`,${Math.round((2*width-actual.width)*dpr)},${Math.round((2*height-actual.height)*dpr)},6)`);
-    execFileSync('powershell.exe',['-NoProfile','-Command',fixed],{windowsHide:true});await pause(350);
+    await resizeWindow(url,width,height);
 
     if(width<=900) await run(`if(!document.querySelector('#library').hidden) document.querySelector('#library-toggle').click();`);
     const result=await run(`
