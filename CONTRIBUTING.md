@@ -9,7 +9,7 @@ Thanks for taking an interest in Narrative Universe. The repository currently ex
 - Keep unrelated refactors, new features, and dependency upgrades out of the same PR.
 - Do not merge your own work or begin the next increment unless the project maintainers have explicitly authorized it.
 
-The current architecture is provisional: one Rust crate, explicit SQL through `rusqlite`, synchronous operations, and no UI, MCP server, ORM, or generic repository framework.
+The current architecture consists of a synchronous Rust/SQLite core crate (`narrative-universe`, explicit SQL through `rusqlite`, `PRAGMA journal_mode = DELETE`, and no ORM or generic repository framework) plus a local Tauri v2 / TypeScript / CodeMirror 6 desktop shell (`ui/` and `ui/src-tauri/`).
 
 ## Conventions
 
@@ -19,27 +19,34 @@ Keep these rules small and consistent across human and AI contributors:
 | --- | --- |
 | **Commits** | [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/): `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`, or `ci:`. Use `type(scope): short imperative summary` when a scope helps, e.g. `feat(store): support assertion archival`. Breaking changes require an explicit explanation in the commit body. |
 | **Branches** | `feat/`, `fix/`, `docs/`, `test/`, `refactor/`, or `chore/`, followed by a GitHub issue number and a short kebab-case description: `feat/3-canon-lifecycle`, `fix/17-file-creation`. For small maintenance work without an issue, a short descriptive name is enough. |
-| **Formatting** | **Rust:** use the pinned `rustfmt` via `cargo fmt` before committing; verify with `cargo fmt --check`. No Prettier or Bun is needed for the current Rust-only crate. |
-| **Lint and tests** | Run `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked --all-targets`, along with the formatting check. Tests must cover changed behavior and relevant regressions. |
+| **Formatting** | **Rust:** use the pinned `rustfmt` via `cargo fmt` in both the root crate and `ui/src-tauri`; verify with `cargo fmt --check`. **Whitespace/EOF:** keep `git diff --check` clean across the PR diff. |
+| **Lint and tests** | Run `node scripts/verify.mjs` (same command run in `.github/workflows/ci.yml`): checks the pinned toolchain, `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked --all-targets` in both `.` and `ui/src-tauri`, `npm test`, `npm run check`, `npm run desktop:check`, `npm run desktop:frontend:build` in `ui/`, WebView2 harness guardrails, and `git diff --check`. |
 | **Code style** | Follow idiomatic Rust (currently edition 2021), prefer typed IDs/enums, explicit `Result`-based error handling, and small straightforward functions. Avoid `unwrap`/`expect` on recoverable production paths; they are appropriate in tests. Avoid `unsafe`, new dependencies, and generic abstraction layers without a clear, reviewed need. |
 | **Issues and PRs** | Work from an authorized GitHub issue, keep each PR focused, and link it with `Refs #3` or `Closes #3` **only when the PR actually completes the issue**. Never push implementation directly to `main`; stop at the agreed human review gate before merging. |
-| **UI conventions** | **Not defined yet.** When a TypeScript/Tauri interface is approved, add separate TypeScript, formatting, and design-system rules then. Do not import an unrelated dashboard design guide into this headless spike. |
+| **UI conventions** | Follow `DESIGN.md` and `ui/DESKTOP.md`. Desktop native verification scripts (`ui/scripts/webview2-*.mjs`) must use `ui/scripts/webview2-harness.mjs` (`EnumWindows`, `waitPageReady`) instead of `Process.MainWindowHandle` or copied CDP plumbing. |
 
-Keep commit titles and branch names in English. Prefer meaningful tests over enforcing naming or architectural patterns mechanically. A documentation-only PR does not need a Rust test run unless it changes executable examples or other behavior; report what was actually verified.
+Keep commit titles and branch names in English. Prefer meaningful tests over enforcing naming or architectural patterns mechanically. A documentation-only PR does not need a full local build rerun unless it changes executable examples or behavior; report what was actually verified. See `AGENTS.md` for the rule-enforcement table.
 
 ## Development environment and checks
 
-Follow the pinned `rust-toolchain.toml` and `Cargo.lock`. Windows/MSVC is the first tested environment; bundled SQLite requires the Visual Studio C/C++ build tools. Other platforms have not been verified yet.
+Follow the pinned `rust-toolchain.toml` (`1.96.0`), `Cargo.lock`, `ui/src-tauri/Cargo.lock`, and `ui/package-lock.json` (`npm ci` in `ui/`). Windows/MSVC is the first tested environment; bundled SQLite requires the Visual Studio C/C++ build tools.
 
-Run before requesting review:
+Run the shared local/CI verification suite before requesting review:
 
 ```sh
-cargo fmt --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked --all-targets
+node scripts/verify.mjs
 ```
 
-If a required command cannot run, state exactly why; do not report it as passed. When changing persistence, include tests against real SQLite files, including a close/reopen where relevant. Avoid mocks that hide database behavior.
+For changes touching `ui/` or `ui/src-tauri/` desktop behavior, also build both debug binaries (`cargo build --locked --bin spike` and `cargo build --locked --manifest-path ui/src-tauri/Cargo.toml`) and run the local native WebView2 verification scripts sequentially:
+
+```sh
+node ui/scripts/webview2-parity.mjs
+node ui/scripts/webview2-connect.mjs
+node ui/scripts/webview2-reveal.mjs
+node ui/scripts/webview2-context.mjs
+```
+
+If a required command cannot run, state exactly why; do not report it as passed. When changing persistence, include tests against real SQLite files, including close/reopen where relevant. Because the store uses `PRAGMA journal_mode = DELETE` (not WAL), write concurrency tests using deterministic two-connection interleaving or `#[cfg(test)]` rendezvous hooks (`TEST_HOOK`) rather than timing/barrier-only loops. Avoid mocks that hide database behavior.
 
 ## Domain and data rules
 
