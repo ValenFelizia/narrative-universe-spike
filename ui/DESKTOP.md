@@ -52,3 +52,31 @@ npm run desktop:build
 The native app stores the open `Store` in Rust process state. SQLite is never
 opened or queried from the webview. The editor uses the A1 adapter and
 save-session contracts and writes through `Store::save_page_edits`.
+
+## Codex workspace (PA-I6/KA1)
+
+After opening any synthetic universe (including a universe with zero pages), use
+the **Write / Codex** switcher in the top strip to open **Codex**:
+
+- **Browse and inspect:** Search by label, type, primary document, or entity
+  ID, filter by any custom type (including types with zero entities) or
+  `Untyped`, and select an entity to inspect its type, optional read-only
+  primary document metadata, stable UUID, and persisted knowledge via
+  `Store::entity_context`.
+- **Independent creation:** Choose **New type** or **New entity** (`Untyped` by
+  default). Confirmed Codex creations commit directly to SQLite through
+  `Store::create_entity_type` and `Store::create_entity`, independent of
+  document **Save** or `Ctrl+S`.
+- **Safe round-trip with Write:** Switching to Codex and back preserves unsaved
+  Write title and prose drafts, selection, undo history, and scroll position.
+  `Ctrl+S` in Codex never saves a hidden Write draft, the window close guard
+  continues protecting dirty drafts while Codex is open, and newly created Codex
+  entities appear immediately in Write's Connect (`Ctrl+K`) picker without
+  reopening the universe.
+
+For native verification beyond unit checks, build `spike` and the desktop
+binary (`cargo build --locked --bin spike` and `cargo build --locked
+--manifest-path ui/src-tauri/Cargo.toml`) and run `node
+ui/scripts/webview2-parity.mjs`, `webview2-connect.mjs`, `webview2-reveal.mjs`,
+`webview2-context.mjs`, and `webview2-codex.mjs` sequentially from the repo
+root.

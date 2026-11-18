@@ -92,6 +92,143 @@ export function prepareEntityIndex(entities: readonly EntitySummary[]): EntityOp
     return {id: row.id, caption, searchText: caption.toLocaleLowerCase(), label: split < 0 ? caption : caption.slice(0, split), suffix: split < 0 ? "" : caption.slice(split)};
   });
 }
+// Same-label identities and definitions get the shortest distinguishing ID suffix (at least 4 characters).
+export function suffixed(label: string, id: string, ids: readonly string[]): string {
+  if (ids.length < 2) return label;
+  let length = 4;
+  while (length < id.length && ids.some(other => other !== id && other.slice(-length) === id.slice(-length))) length++;
+  return `${label} · …${id.slice(-length)}`;
+}
+function formatValue(value: RevealValue, name: (identity: RevealIdentity) => string): string {
+  return value.kind === "reference" ? name(value.target) : value.kind === "text" ? value.text : value.kind === "boolean" ? (value.value ? "Yes" : "No") : "Unknown (recorded)";
+}
+function buildProvenanceDetails(
+  provenance: RevealProvenance,
+  sourceStatusRaw: string | null,
+  scopeNote: string | null,
+  onToggle?: () => void,
+  annotateEmptyMetadata = false,
+): HTMLDetailsElement {
+  const source = document.createElement("details"), summary = document.createElement("summary"), metadata = document.createElement("p");
+  const entries = Object.entries(provenance).filter(([, value]) => value !== null) as [string, string][];
+  summary.textContent = entries.length
+    ? (provenance.locator ?? entries[0]![1])
+    : (annotateEmptyMetadata && (sourceStatusRaw !== null || scopeNote !== null) ? "No source recorded · Scope/status noted" : "No source recorded");
+  const parts = [
+    ...entries.map(([key, value]) => `${PROVENANCE_LABELS[key]}: ${value}`),
+    ...(sourceStatusRaw !== null ? [`Source status: ${sourceStatusRaw}`] : []),
+    ...(scopeNote !== null ? [`Scope: ${scopeNote}`] : []),
+  ];
+  metadata.textContent = parts.length ? parts.join(" · ") : (annotateEmptyMetadata ? "No source, status, or scope metadata recorded." : "");
+  if (onToggle) source.addEventListener("toggle", onToggle);
+  source.append(summary, metadata);
+  return source;
+}
+export function renderEntityContextSections(
+  content: HTMLElement,
+  data: EntityContext,
+  knownIdentities: readonly RevealIdentity[],
+  onToggle?: () => void,
+): { entityDisplayName: string } {
+  const note = document.createElement("p"); note.className = "context-note"; note.textContent = "Persisted knowledge · point-in-time read"; content.append(note);
+  const allGroups = [...data.outgoingGroups, ...data.incomingGroups, ...data.archivedOutgoingGroups, ...data.archivedIncomingGroups];
+  const labels = new Map<string, Set<string>>();
+  const addIdentity = (identity: RevealIdentity) => { const ids = labels.get(identity.label) ?? new Set<string>(); ids.add(identity.id); labels.set(identity.label, ids); };
+  for (const identity of knownIdentities) addIdentity(identity);
+  addIdentity(data.entity);
+  for (const group of [...data.incomingGroups, ...data.archivedIncomingGroups]) addIdentity(group.subject);
+  for (const group of allGroups) for (const claim of group.claims) if (claim.value.kind === "reference") addIdentity(claim.value.target);
+  const name = (identity: RevealIdentity) => suffixed(identity.label, identity.id, [...(labels.get(identity.label) ?? [])]);
+
+  const properties = new Map<string, Set<string>>();
+  for (const group of allGroups) {
+    const label = group.definition.propertyLabel ?? "Unnamed property", ids = properties.get(label) ?? new Set<string>(); ids.add(group.definition.id); properties.set(label, ids);
+  }
+  const property = (def: ContextDefinition) => { const label = def.propertyLabel ?? "Unnamed property"; return suffixed(label, def.id, [...(properties.get(label) ?? [])]); };
+  const defMeta = (def: ContextDefinition) => `${def.ownerKind === "type" ? "Type-owned" : "Entity-owned"} · ${def.valueClass} · ${def.cardinality}`;
+
+  const renderClaim = (subject: RevealIdentity, def: ContextDefinition, claim: ContextClaim, archivedSection: boolean): HTMLElement => {
+    const row = document.createElement("div"); row.className = "fact-row"; row.dataset.assertionId = claim.id;
+    const line = document.createElement("p"); line.textContent = `${name(subject)} · ${property(def)} → ${formatValue(claim.value, name)}`;
+    const state = document.createElement("p"); state.className = "context-canon"; state.textContent = `${claim.canon} · ${CANON_GLOSS[claim.canon]}`;
+    row.append(line, state);
+    if (archivedSection) {
+      const archiveLine = document.createElement("p"); archiveLine.className = "context-archive-state";
+      archiveLine.textContent = claim.archived ? "Claim archived" : "Claim unarchived (under archived definition)";
+      row.append(archiveLine);
+    }
+    row.append(buildProvenanceDetails(claim.provenance, claim.sourceStatusRaw, claim.scopeNote, onToggle, true));
+    return row;
+  };
+
+  const renderOutgoingGroup = (group: ContextOutgoingGroup, archivedSection: boolean): HTMLElement => {
+    const article = document.createElement("article"); article.className = "context-group"; article.dataset.definitionId = group.definition.id;
+    const title = document.createElement("h4"); title.className = "context-group-title"; title.textContent = property(group.definition);
+    const meta = document.createElement("p"); meta.className = "context-meta";
+    const archivePrefix = archivedSection ? (group.definition.archived ? "Definition archived · " : "Active definition · Archived assertions · ") : "";
+    meta.textContent = `${archivePrefix}${defMeta(group.definition)}`;
+    article.append(title, meta);
+    if (!group.claims.length) {
+      const empty = document.createElement("p"); empty.className = "context-empty";
+      empty.textContent = archivedSection ? "Archived · No assertions recorded" : (group.hasArchivedClaims ? "Not recorded · Archived history available" : "Not recorded");
+      article.append(empty);
+    } else {
+      for (const claim of group.claims) article.append(renderClaim(data.entity, group.definition, claim, archivedSection));
+    }
+    return article;
+  };
+
+  const renderIncomingGroup = (group: ContextIncomingGroup, archivedSection: boolean): HTMLElement => {
+    const article = document.createElement("article"); article.className = "context-group"; article.dataset.subjectId = group.subject.id; article.dataset.definitionId = group.definition.id;
+    const title = document.createElement("h4"); title.className = "context-group-title"; title.textContent = `${name(group.subject)} · ${property(group.definition)} → ${name(data.entity)}`;
+    const meta = document.createElement("p"); meta.className = "context-meta";
+    const archivePrefix = archivedSection ? (group.definition.archived ? "Definition archived · " : "Active definition · Archived assertions · ") : "";
+    meta.textContent = `${archivePrefix}${defMeta(group.definition)}`;
+    article.append(title, meta);
+    for (const claim of group.claims) article.append(renderClaim(group.subject, group.definition, claim, archivedSection));
+    return article;
+  };
+
+  const outgoingSection = document.createElement("section");
+  const outgoingHeading = document.createElement("h3");
+  outgoingHeading.textContent = data.outgoingGroups.length ? `Outgoing properties · ${data.outgoingGroups.length}` : "Outgoing properties · No applicable active properties recorded";
+  outgoingSection.append(outgoingHeading);
+  for (const group of data.outgoingGroups) outgoingSection.append(renderOutgoingGroup(group, false));
+  content.append(outgoingSection);
+
+  const incomingSection = document.createElement("section");
+  const incomingHeading = document.createElement("h3");
+  incomingHeading.textContent = data.incomingGroups.length ? `Incoming references · ${data.incomingGroups.length}` : "Incoming references · No incoming references";
+  incomingSection.append(incomingHeading);
+  for (const group of data.incomingGroups) incomingSection.append(renderIncomingGroup(group, false));
+  content.append(incomingSection);
+
+  const archivedCount = data.archivedOutgoingGroups.length + data.archivedIncomingGroups.length;
+  const archivedDetails = document.createElement("details"); archivedDetails.className = "context-archived"; archivedDetails.open = false;
+  const archivedSummary = document.createElement("summary");
+  archivedSummary.textContent = archivedCount ? `Archived history (${archivedCount})` : "Archived history (None)";
+  const archivedNote = document.createElement("p"); archivedNote.className = "context-note";
+  archivedNote.textContent = "Stored archive state only (not a temporal revision timeline).";
+  archivedDetails.append(archivedSummary, archivedNote);
+  if (!archivedCount) {
+    const empty = document.createElement("p"); empty.className = "context-empty"; empty.textContent = "No archived properties or assertions recorded.";
+    archivedDetails.append(empty);
+  } else {
+    if (data.archivedOutgoingGroups.length) {
+      const sub = document.createElement("h3"); sub.textContent = `Archived outgoing · ${data.archivedOutgoingGroups.length}`;
+      archivedDetails.append(sub);
+      for (const group of data.archivedOutgoingGroups) archivedDetails.append(renderOutgoingGroup(group, true));
+    }
+    if (data.archivedIncomingGroups.length) {
+      const sub = document.createElement("h3"); sub.textContent = `Archived incoming · ${data.archivedIncomingGroups.length}`;
+      archivedDetails.append(sub);
+      for (const group of data.archivedIncomingGroups) archivedDetails.append(renderIncomingGroup(group, true));
+    }
+  }
+  if (onToggle) archivedDetails.addEventListener("toggle", onToggle);
+  content.append(archivedDetails);
+  return { entityDisplayName: name(data.entity) };
+}
 export function connectEditor(options: {
   session: () => SaveState | null; view: () => EditorView | null; token: () => string;
   reveal?: (token: string, entityId: string) => Promise<EntityReveal>;
@@ -166,38 +303,6 @@ export function connectEditor(options: {
     if (picker.kind !== "search" || !picker.entities.some(e => e.id === entityId) || !valid(c) || selectionContext(c.view).kind !== "link") { close(); options.message("Selection changed. Select the phrase again."); return; }
     const {from, to} = c.selection.main;
     close(); c.view.dispatch(linkSpec({id: crypto.randomUUID(), entityId, startUtf16: from, endUtf16: to})); c.view.focus();
-  }
-  // Same-label identities and definitions get the shortest distinguishing ID suffix (at least 4 characters).
-  function suffixed(label: string, id: string, ids: readonly string[]): string {
-    if (ids.length < 2) return label;
-    let length = 4;
-    while (length < id.length && ids.some(other => other !== id && other.slice(-length) === id.slice(-length))) length++;
-    return `${label} · …${id.slice(-length)}`;
-  }
-  function formatValue(value: RevealValue, name: (identity: RevealIdentity) => string): string {
-    return value.kind === "reference" ? name(value.target) : value.kind === "text" ? value.text : value.kind === "boolean" ? (value.value ? "Yes" : "No") : "Unknown (recorded)";
-  }
-  function buildProvenanceDetails(
-    provenance: RevealProvenance,
-    sourceStatusRaw: string | null,
-    scopeNote: string | null,
-    onToggle: () => void,
-    annotateEmptyMetadata = false,
-  ): HTMLDetailsElement {
-    const source = document.createElement("details"), summary = document.createElement("summary"), metadata = document.createElement("p");
-    const entries = Object.entries(provenance).filter(([, value]) => value !== null) as [string, string][];
-    summary.textContent = entries.length
-      ? (provenance.locator ?? entries[0]![1])
-      : (annotateEmptyMetadata && (sourceStatusRaw !== null || scopeNote !== null) ? "No source recorded · Scope/status noted" : "No source recorded");
-    const parts = [
-      ...entries.map(([key, value]) => `${PROVENANCE_LABELS[key]}: ${value}`),
-      ...(sourceStatusRaw !== null ? [`Source status: ${sourceStatusRaw}`] : []),
-      ...(scopeNote !== null ? [`Scope: ${scopeNote}`] : []),
-    ];
-    metadata.textContent = parts.length ? parts.join(" · ") : (annotateEmptyMetadata ? "No source, status, or scope metadata recorded." : "");
-    source.addEventListener("toggle", onToggle);
-    source.append(summary, metadata);
-    return source;
   }
   async function showFacts(capture: Capture, mention: Mention, savedLink: boolean, index: readonly EntitySummary[], caption: string, restore?: FactsSnapshot): Promise<void> {
     if ((restore ? picker.kind !== "context" : picker.kind !== "inspect") || !valid(capture) || (!restore && !options.reveal)) return;
@@ -316,107 +421,9 @@ export function connectEditor(options: {
       if (data.entity.id !== snapshot.mention.entityId) throw new Error("Identity mismatch");
 
       content.replaceChildren(); content.removeAttribute("role");
-      const note = document.createElement("p"); note.className = "context-note"; note.textContent = "Persisted knowledge · point-in-time read"; content.append(note);
-
-      const allGroups = [...data.outgoingGroups, ...data.incomingGroups, ...data.archivedOutgoingGroups, ...data.archivedIncomingGroups];
-      const labels = new Map<string, Set<string>>();
-      const addIdentity = (identity: RevealIdentity) => { const ids = labels.get(identity.label) ?? new Set<string>(); ids.add(identity.id); labels.set(identity.label, ids); };
-      for (const identity of snapshot.index) addIdentity(identity);
-      addIdentity(data.entity);
-      for (const group of [...data.incomingGroups, ...data.archivedIncomingGroups]) addIdentity(group.subject);
-      for (const group of allGroups) for (const claim of group.claims) if (claim.value.kind === "reference") addIdentity(claim.value.target);
-      const name = (identity: RevealIdentity) => suffixed(identity.label, identity.id, [...(labels.get(identity.label) ?? [])]);
-
-      const properties = new Map<string, Set<string>>();
-      for (const group of allGroups) {
-        const label = group.definition.propertyLabel ?? "Unnamed property", ids = properties.get(label) ?? new Set<string>(); ids.add(group.definition.id); properties.set(label, ids);
-      }
-      const property = (def: ContextDefinition) => { const label = def.propertyLabel ?? "Unnamed property"; return suffixed(label, def.id, [...(properties.get(label) ?? [])]); };
-      const defMeta = (def: ContextDefinition) => `${def.ownerKind === "type" ? "Type-owned" : "Entity-owned"} · ${def.valueClass} · ${def.cardinality}`;
       const repositionIfCurrent = () => { if (picker === pending && valid(capture)) position(popup, capture.view); };
-
-      heading.textContent = `${name(data.entity)}${data.typeLabel ? " · " + data.typeLabel : ""} · ${snapshot.savedLink ? "Saved link" : "Unsaved link"}`;
-
-      const renderClaim = (subject: RevealIdentity, def: ContextDefinition, claim: ContextClaim, archivedSection: boolean): HTMLElement => {
-        const row = document.createElement("div"); row.className = "fact-row"; row.dataset.assertionId = claim.id;
-        const line = document.createElement("p"); line.textContent = `${name(subject)} · ${property(def)} → ${formatValue(claim.value, name)}`;
-        const state = document.createElement("p"); state.className = "context-canon"; state.textContent = `${claim.canon} · ${CANON_GLOSS[claim.canon]}`;
-        row.append(line, state);
-        if (archivedSection) {
-          const archiveLine = document.createElement("p"); archiveLine.className = "context-archive-state";
-          archiveLine.textContent = claim.archived ? "Claim archived" : "Claim unarchived (under archived definition)";
-          row.append(archiveLine);
-        }
-        row.append(buildProvenanceDetails(claim.provenance, claim.sourceStatusRaw, claim.scopeNote, repositionIfCurrent, true));
-        return row;
-      };
-
-      const renderOutgoingGroup = (group: ContextOutgoingGroup, archivedSection: boolean): HTMLElement => {
-        const article = document.createElement("article"); article.className = "context-group"; article.dataset.definitionId = group.definition.id;
-        const title = document.createElement("h4"); title.className = "context-group-title"; title.textContent = property(group.definition);
-        const meta = document.createElement("p"); meta.className = "context-meta";
-        const archivePrefix = archivedSection ? (group.definition.archived ? "Definition archived · " : "Active definition · Archived assertions · ") : "";
-        meta.textContent = `${archivePrefix}${defMeta(group.definition)}`;
-        article.append(title, meta);
-        if (!group.claims.length) {
-          const empty = document.createElement("p"); empty.className = "context-empty";
-          empty.textContent = archivedSection ? "Archived · No assertions recorded" : (group.hasArchivedClaims ? "Not recorded · Archived history available" : "Not recorded");
-          article.append(empty);
-        } else {
-          for (const claim of group.claims) article.append(renderClaim(data.entity, group.definition, claim, archivedSection));
-        }
-        return article;
-      };
-
-      const renderIncomingGroup = (group: ContextIncomingGroup, archivedSection: boolean): HTMLElement => {
-        const article = document.createElement("article"); article.className = "context-group"; article.dataset.subjectId = group.subject.id; article.dataset.definitionId = group.definition.id;
-        const title = document.createElement("h4"); title.className = "context-group-title"; title.textContent = `${name(group.subject)} · ${property(group.definition)} → ${name(data.entity)}`;
-        const meta = document.createElement("p"); meta.className = "context-meta";
-        const archivePrefix = archivedSection ? (group.definition.archived ? "Definition archived · " : "Active definition · Archived assertions · ") : "";
-        meta.textContent = `${archivePrefix}${defMeta(group.definition)}`;
-        article.append(title, meta);
-        for (const claim of group.claims) article.append(renderClaim(group.subject, group.definition, claim, archivedSection));
-        return article;
-      };
-
-      const outgoingSection = document.createElement("section");
-      const outgoingHeading = document.createElement("h3");
-      outgoingHeading.textContent = data.outgoingGroups.length ? `Outgoing properties · ${data.outgoingGroups.length}` : "Outgoing properties · No applicable active properties recorded";
-      outgoingSection.append(outgoingHeading);
-      for (const group of data.outgoingGroups) outgoingSection.append(renderOutgoingGroup(group, false));
-      content.append(outgoingSection);
-
-      const incomingSection = document.createElement("section");
-      const incomingHeading = document.createElement("h3");
-      incomingHeading.textContent = data.incomingGroups.length ? `Incoming references · ${data.incomingGroups.length}` : "Incoming references · No incoming references";
-      incomingSection.append(incomingHeading);
-      for (const group of data.incomingGroups) incomingSection.append(renderIncomingGroup(group, false));
-      content.append(incomingSection);
-
-      const archivedCount = data.archivedOutgoingGroups.length + data.archivedIncomingGroups.length;
-      const archivedDetails = document.createElement("details"); archivedDetails.className = "context-archived"; archivedDetails.open = false;
-      const archivedSummary = document.createElement("summary");
-      archivedSummary.textContent = archivedCount ? `Archived history (${archivedCount})` : "Archived history (None)";
-      const archivedNote = document.createElement("p"); archivedNote.className = "context-note";
-      archivedNote.textContent = "Stored archive state only (not a temporal revision timeline).";
-      archivedDetails.append(archivedSummary, archivedNote);
-      if (!archivedCount) {
-        const empty = document.createElement("p"); empty.className = "context-empty"; empty.textContent = "No archived properties or assertions recorded.";
-        archivedDetails.append(empty);
-      } else {
-        if (data.archivedOutgoingGroups.length) {
-          const sub = document.createElement("h3"); sub.textContent = `Archived outgoing · ${data.archivedOutgoingGroups.length}`;
-          archivedDetails.append(sub);
-          for (const group of data.archivedOutgoingGroups) archivedDetails.append(renderOutgoingGroup(group, true));
-        }
-        if (data.archivedIncomingGroups.length) {
-          const sub = document.createElement("h3"); sub.textContent = `Archived incoming · ${data.archivedIncomingGroups.length}`;
-          archivedDetails.append(sub);
-          for (const group of data.archivedIncomingGroups) archivedDetails.append(renderIncomingGroup(group, true));
-        }
-      }
-      archivedDetails.addEventListener("toggle", repositionIfCurrent);
-      content.append(archivedDetails);
+      const { entityDisplayName } = renderEntityContextSections(content, data, snapshot.index, repositionIfCurrent);
+      heading.textContent = `${entityDisplayName}${data.typeLabel ? " · " + data.typeLabel : ""} · ${snapshot.savedLink ? "Saved link" : "Unsaved link"}`;
     } catch (error) {
       if (picker !== pending) return;
       if (!valid(capture)) { close(); return; }

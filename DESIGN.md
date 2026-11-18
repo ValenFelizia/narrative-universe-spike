@@ -278,6 +278,35 @@ reversible via `Back to facts` without refetching `entity_reveal`.
   references grouped by `(subject, definition)` in their stored `subject →
   predicate → target` direction, literal canon states with human glosses,
   plain-text provenance/scope disclosure, and a closed-by-default **Archived
-  history** section preserving definition and assertion archive bits
+  history** section preserving entity, definition, and assertion archive bits
   independently. No incompatibility flags, occurrence lists, clickable sources,
   editing, or AI features are included.
+
+## PA-I6/KA1 Codex workspace exception (issue #49)
+
+The Write-only restriction and permanent-right-pane ban inside Write remain in
+force. PA-I6/KA1 explicitly authorizes switching to a companion **Codex**
+workspace from `.context-strip` (`Write` / `Codex`) over the same open
+synthetic universe (including universes with 0 documents):
+
+- **Editorial visual consistency:** Codex uses the exact same graphite dark
+  surfaces (`#17191C` entry canvas, `#1F2226` library surface, `#2A2C33` active
+  row), `#393B40` low-emphasis dividers, `#7AA89A` focus/active accent,
+  **Source Serif 4** entry titles, and **Instrument Sans** UI controls—without
+  cards, gradients, dashboard metrics, or database-admin tables.
+- **Zero disruption to Write:** Switching to Codex hides `.app-shell` and
+  `.save-controls` cleanly without altering Write's prose column width or
+  resetting unsaved title/body drafts, selection, undo history, or scroll
+  offsets. Return to Write restores the exact document surface.
+- **Two-column encyclopedia composition:** Left library (`268 px`, narrowing to
+  `232 px` at `<= 720 px` and stacking vertically below `620 px`) houses
+  `New entity`, `New type`, search, custom-type filter (preserving distinct
+  same-label types, empty 0-entity types, and `Untyped`), entity list with
+  shortest-suffix disambiguation, and independent persistence status. Right
+  entry pane (`max-width: 720 px`) shows disambiguated title, optional type and
+  read-only primary document metadata, stable UUID, and the shared read-only
+  `EntityContext` renderer (`renderEntityContextSections`).
+- **Intentional creation dialogs:** `New type` and `New entity` (`Untyped`
+  default) open focused `<dialog>` modals with explicit `Create` / `Cancel`,
+  accessible labels, Escape cancellation while idle, and inline validation
+  errors; no inline notes editor or KA2–KA5 authoring controls are present.

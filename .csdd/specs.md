@@ -246,3 +246,49 @@ page drafts, schema/exchange, or canon. Sources: R2-C0 decision memo on issue
   and scroll while valid; outside `pointerdown` closes without stealing the
   clicked control's focus. No incompatibility flags, occurrence lists,
   clickable provenance links, authoring, AI, or permanent right panel are added.
+
+## PA-I6/KA1 Codex Foundations (issue #49)
+
+Approved scope: first native Codex workspace over an open synthetic universe
+allowing worldbuilders to browse, search, create custom types and entities
+(typed or untyped), and inspect persisted entity knowledge independently of
+document saves. Sources: authorized issue #49, approved direction document
+`Codex — Product Direction & KA1 Foundations`, and `DEC-005`.
+
+- Core reads and label contract: `validate_codex_label` shares
+  `validate_label_text` (`1..=120` Unicode scalar values, no leading or trailing
+  Unicode whitespace, no control characters, exact byte preservation without
+  folding or normalization) with `DefinitionLabel` while keeping persisted
+  labels un-normalized globally. `Store::type_index` reads all custom types
+  (including zero-entity types) ordered by SQLite `COLLATE BINARY` `(label, id)`;
+  `Store::codex_entity_index` reads all entities with optional `type_id`,
+  `type_label`, and `primary_page_title`; `Store::codex_index` executes both in
+  one deferred SQLite read transaction with fail-closed UUID, text-type, and
+  foreign-key validation. Existing `Store::entity_index` remains untouched for
+  Connect compatibility.
+- Bridge contract: token-scoped Tauri commands `codex_index`,
+  `create_entity_type`, and `create_entity` delegate exclusively to
+  `Store::codex_index`, `Store::create_entity_type`, `Store::create_entity`
+  (forcing `page_id: None`), and `Store::entity_type`, mapping
+  `ValidationReason::UnknownType` to `BridgeError::TypeMissing`. Post-commit
+  type-label resolution is best-effort so a committed entity never reports a
+  false failure. Schema version remains 3 and JSON exchange format remains 3.
+- Workspace & draft isolation: `.context-strip` offers `Write` and `Codex`
+  switching for any open universe, including universes with 0 pages. Codex lists
+  entities deterministically with shortest-suffix ID disambiguation for duplicate
+  entity and type labels, filters by custom type ID (never collapsing duplicate
+  type labels) and `Untyped`, renders read-only identity/type/primary-page
+  metadata and `EntityContext` sections via shared helpers, and offers modal
+  `New type` and `New entity` flows (`Untyped` default, no auto-assigned
+  type/page, no autocreation on search, single-flight submit). Definite
+  non-commit rejections (`busy`, `invalid_input`, `duplicate_id`, `type_missing`,
+  stale universe) keep user input intact inside the modal; ambiguous/unclassified
+  outcomes close the modal and expose `Refresh Codex` without auto-retrying
+  creation. Write retains its live `EditorView` draft, title draft, selection,
+  scroll offsets, undo history, and `#guard` close/universe-switch protection
+  across Codex trips; `Ctrl+S` in Codex does not save hidden Write drafts, and
+  newly created Codex entities are immediately available to Write's Connect
+  (`Ctrl+K`) workflow without reopening the universe.
+- Non-goals preserved: no KA2–KA5 features, entity/type rename/delete/retype,
+  notes editor, assertion/property authoring, inline create-and-link, canon or
+  archive edits, graph/timeline/backlinks, AI/MCP, or real-data safety claims.

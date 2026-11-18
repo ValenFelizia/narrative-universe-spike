@@ -15,15 +15,15 @@ pub use migration::{
     VerificationError, VerificationReport,
 };
 pub use model::{
-    Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId, DefinitionLabel, Entity,
-    EntityId, EntityType, MentionId, Owner, Page, PageId, PageRevision, Provenance, TypeId,
-    UniverseId, Value, ValueClass,
+    validate_codex_label, Assertion, AssertionId, Canon, Cardinality, Definition, DefinitionId,
+    DefinitionLabel, Entity, EntityId, EntityType, MentionId, Owner, Page, PageId, PageRevision,
+    Provenance, TypeId, UniverseId, Value, ValueClass, MAX_CODEX_LABEL_SCALARS,
 };
 pub use store::{
-    ContextClaim, ContextIncomingGroup, ContextOutgoingGroup, Counts, EntityContext, EntityReveal,
-    EntitySummary, ImportOutcome, MentionOccurrence, PageDocument, PageEdit, PageSnapshot,
-    PageSummary, PossibleIncompatibility, RevealClaim, Snapshot, Store, MAX_CONTEXT_BYTES,
-    MAX_CONTEXT_GROUPS, MAX_CONTEXT_UNIQUE_ASSERTIONS,
+    CodexEntitySummary, CodexIndex, ContextClaim, ContextIncomingGroup, ContextOutgoingGroup,
+    Counts, EntityContext, EntityReveal, EntitySummary, ImportOutcome, MentionOccurrence,
+    PageDocument, PageEdit, PageSnapshot, PageSummary, PossibleIncompatibility, RevealClaim,
+    Snapshot, Store, MAX_CONTEXT_BYTES, MAX_CONTEXT_GROUPS, MAX_CONTEXT_UNIQUE_ASSERTIONS,
 };
 
 /// The storage schema this build creates, reads and verifies.
