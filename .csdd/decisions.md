@@ -200,15 +200,21 @@ accepted direction from implementation alone.
   3. Non-destructive Write <-> Codex switching via view visibility and explicit
      scroll capture: keeps the live CodeMirror `EditorView`, `SaveState`,
      draft title, selection, undo stack, and `#guard` close/universe-switch
-     protection intact when entering Codex, disables `#library-toggle` and
-     Write's `Ctrl+S` handler while in Codex, and triggers a fresh
-     `codex_index` load when entering Codex rather than mutating Write state.
+     protection intact when entering Codex, keeps `#context-name` and focus in
+     Codex when opening universes or loading background pages, disables
+     `#library-toggle` and Write's `Ctrl+S` handler while in Codex, triggers a
+     fresh `codex_index` load when entering Codex, and renders Codex entries via
+     an editorial variant (`renderCodexEntrySections`) without changing Write's
+     `renderEntityContextSections` or mutating Write state.
   4. Explicit modal creation with definite vs uncertain failure handling:
      definite pre-commit rejections (`busy`, `invalid_input`, `duplicate_id`,
      `type_missing`, stale universe) keep user input inside the open modal for
-     correction/retry, whereas ambiguous/unclassified failures close the modal
-     and surface `Refresh Codex` without auto-retrying creation so duplicate
-     UUID creations cannot occur silently after an uncertain commit.
+     correction/retry, whereas ambiguous/unclassified failures close the modal,
+     retain pending identity (`token`, `kind`, `id`, `label`), and disable
+     further `New type` / `New entity` triggers until `Refresh Codex`
+     reconciles against `codex_index` (distinguishing confirmed commit vs
+     not-saved vs still-unconfirmed, and resetting on universe switch) so
+     duplicate UUID creations cannot occur silently after an uncertain commit.
 - Rationale: Preserving Write in memory avoids forcing a premature
   save/discard prompt merely to look up or add a Codex entity mid-sentence,
   while keeping Codex writes strictly separate from Write's aggregate save

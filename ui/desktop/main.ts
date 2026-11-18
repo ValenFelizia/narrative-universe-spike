@@ -261,7 +261,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       const page = await invokeCommand<PageContent>("read_page", {pageId: id, universeToken});
       if (requestVersion !== version) return;
       clearPage();
-      selectedPageId = page.id; contextName.textContent = displayTitle(page.title);
+      selectedPageId = page.id; if (mode === "write") contextName.textContent = displayTitle(page.title);
       title.textContent = page.title; titleInput.value = page.title; titleInput.hidden = false; title.hidden = true;
       pane.scrollTop = 0;
       for (const button of list.querySelectorAll<HTMLButtonElement>("button")) button.setAttribute("aria-current", String(button.dataset.pageId === selectedPageId));
@@ -283,7 +283,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
         paint();
       }
       status.textContent = "";
-      if (narrow()) { setLibrary(false, false); if (editor) editor.focus(); else toggleLibrary.focus(); }
+      if (mode === "write" && narrow()) { setLibrary(false, false); if (editor) editor.focus(); else toggleLibrary.focus(); }
     } catch { if (requestVersion === version) status.textContent = "The page could not be read. Your current draft is preserved."; }
     finally { if (requestVersion === version) loading = false; if (guarded) transitioning = false; paint(); }
   }
@@ -304,7 +304,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   }
   titleInput.addEventListener("input", () => {
     if (!session || titleInput.readOnly) return;
-    try { session = recordTitleEdit(session, titleInput.value); contextName.textContent = displayTitle(titleInput.value); paint(); }
+    try { session = recordTitleEdit(session, titleInput.value); if (mode === "write") contextName.textContent = displayTitle(titleInput.value); paint(); }
     catch { titleInput.value = session.draftTitle; saveStatus.textContent = "This title is not supported."; }
   });
   newButton.addEventListener("click", () => void (async () => {

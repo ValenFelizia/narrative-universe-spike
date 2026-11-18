@@ -61,12 +61,16 @@ the **Write / Codex** switcher in the top strip to open **Codex**:
 - **Browse and inspect:** Search by label, type, primary document, or entity
   ID, filter by any custom type (including types with zero entities) or
   `Untyped`, and select an entity to inspect its type, optional read-only
-  primary document metadata, stable UUID, and persisted knowledge via
-  `Store::entity_context`.
+  primary document metadata, persisted knowledge (`Facts`, `Referenced by`,
+  closed `Archived`) via `Store::entity_context`, and progressive disclosures
+  (`Identifier`, `Property details`, assertion provenance/IDs) for technical
+  metadata.
 - **Independent creation:** Choose **New type** or **New entity** (`Untyped` by
   default). Confirmed Codex creations commit directly to SQLite through
   `Store::create_entity_type` and `Store::create_entity`, independent of
-  document **Save** or `Ctrl+S`.
+  document **Save** or `Ctrl+S`. If a creation outcome cannot be confirmed,
+  further creation stays locked until **Refresh Codex** verifies whether the
+  row committed.
 - **Safe round-trip with Write:** Switching to Codex and back preserves unsaved
   Write title and prose drafts, selection, undo history, and scroll position.
   `Ctrl+S` in Codex never saves a hidden Write draft, the window close guard

@@ -274,21 +274,28 @@ document saves. Sources: authorized issue #49, approved direction document
   type-label resolution is best-effort so a committed entity never reports a
   false failure. Schema version remains 3 and JSON exchange format remains 3.
 - Workspace & draft isolation: `.context-strip` offers `Write` and `Codex`
-  switching for any open universe, including universes with 0 pages. Codex lists
-  entities deterministically with shortest-suffix ID disambiguation for duplicate
+  switching for any open universe, including universes with 0 pages, and keeps
+  `#context-name` pinned to `Codex` (without stealing focus) if `open_universe`
+  or `selectPage` runs while Codex is active. Codex lists entities
+  deterministically with shortest-suffix ID disambiguation for duplicate
   entity and type labels, filters by custom type ID (never collapsing duplicate
-  type labels) and `Untyped`, renders read-only identity/type/primary-page
-  metadata and `EntityContext` sections via shared helpers, and offers modal
-  `New type` and `New entity` flows (`Untyped` default, no auto-assigned
-  type/page, no autocreation on search, single-flight submit). Definite
-  non-commit rejections (`busy`, `invalid_input`, `duplicate_id`, `type_missing`,
-  stale universe) keep user input intact inside the modal; ambiguous/unclassified
-  outcomes close the modal and expose `Refresh Codex` without auto-retrying
-  creation. Write retains its live `EditorView` draft, title draft, selection,
-  scroll offsets, undo history, and `#guard` close/universe-switch protection
-  across Codex trips; `Ctrl+S` in Codex does not save hidden Write drafts, and
-  newly created Codex entities are immediately available to Write's Connect
-  (`Ctrl+K`) workflow without reopening the universe.
+  type labels) and `Untyped`, renders an editorial entry layout via
+  `renderCodexEntrySections` (tucking full UUIDs, definition schema metadata,
+  and raw canon codes behind `Identifier` / `Property details` / assertion
+  disclosures while leaving Write's `renderEntityContextSections` unchanged),
+  and offers modal `New type` and `New entity` flows (`Untyped` default, no
+  auto-assigned type/page, no autocreation on search, single-flight submit).
+  Definite non-commit rejections (`busy`, `invalid_input`, `duplicate_id`,
+  `type_missing`, stale universe) keep user input intact inside the modal;
+  ambiguous/unclassified outcomes close the modal, retain pending operation
+  identity (`token`, `kind`, `id`, `label`), and lock new creations until
+  `Refresh Codex` verifies against `codex_index` (or universe switch resets
+  state), without auto-retrying creation. Write retains its live `EditorView`
+  draft, title draft, selection, scroll offsets, undo history, and `#guard`
+  close/universe-switch protection across Codex trips; `Ctrl+S` in Codex does
+  not save hidden Write drafts, and newly created Codex entities are
+  immediately available to Write's Connect (`Ctrl+K`) workflow without
+  reopening the universe.
 - Non-goals preserved: no KA2–KA5 features, entity/type rename/delete/retype,
   notes editor, assertion/property authoring, inline create-and-link, canon or
   archive edits, graph/timeline/backlinks, AI/MCP, or real-data safety claims.

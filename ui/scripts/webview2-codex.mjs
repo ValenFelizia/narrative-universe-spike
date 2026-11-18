@@ -105,7 +105,8 @@ try {
     document.querySelector('#codex-entity-form').requestSubmit();
     await wait();await wait();
     assert(document.querySelector('#codex-detail-title').textContent==='Ashfall Bell','created untyped entity selected');
-    assert(document.querySelector('#codex-detail-meta').textContent.includes('Type: Untyped'),'created entity is Untyped');
+    assert(document.querySelector('#codex-detail-meta .codex-meta-item').textContent==='Untyped','created entity is Untyped');
+    assert(!document.querySelector('#codex-detail-meta .codex-id-disclosure').open,'Identifier disclosure closed by default');
 
     const houseOpt=[...document.querySelectorAll('#codex-type-filter option')].find(o=>o.textContent==='House (0)');
     document.querySelector('#codex-new-entity').click();
@@ -149,6 +150,7 @@ try {
 
     document.querySelector('#mode-codex').click();
     await wait();await wait();
+    assert(document.querySelector('#codex-status').textContent==='','idle Codex status stays quiet');
     document.dispatchEvent(new KeyboardEvent('keydown',{key:'s',ctrlKey:true,bubbles:true,cancelable:true}));
     await wait();
 
@@ -157,16 +159,28 @@ try {
     maraBtn.click();
     await wait();await wait();
     assert(document.querySelector('#codex-detail-title').textContent==='Mara Vey','Mara detail title');
-    assert(document.querySelector('#codex-detail-meta').textContent.includes('Primary document: Night at the ford'),'primary document metadata shown');
-    const ctxText=document.querySelector('#codex-detail-context').textContent;
+    const metaEl=document.querySelector('#codex-detail-meta');
+    assert(metaEl.textContent.includes('Primary document: Night at the ford'),'primary document metadata shown');
+    assert(!metaEl.querySelector('.codex-id-disclosure').open,'Identifier closed by default');
+    assert(!metaEl.innerText.includes('Entity ID:'),'Entity ID hidden until Identifier is opened');
+    const ctx=document.querySelector('#codex-detail-context');
+    const ctxText=ctx.textContent;
+    assert(!ctxText.includes('Persisted knowledge'),'no persistent banner text');
+    assert(ctxText.includes('Facts')&&ctxText.includes('Referenced by'),'simplified encyclopedia sections');
     assert(ctxText.includes('member of · …0031')&&ctxText.includes('member of · …0038'),'disambiguated definitions');
     assert(ctxText.includes('oath sworn')&&ctxText.includes('Not recorded'),'zero-claim applicable property');
-    const archived=document.querySelector('#codex-detail-context .context-archived');
+    assert(!ctx.querySelector('.codex-assertion-value').textContent.includes('Mara Vey ·'),'outgoing values omit repeated entity/predicate');
+    assert(!ctx.innerText.includes('Definition ID:')&&!ctx.innerText.includes('Assertion ID:')&&!ctx.innerText.includes('Stored canon:'),'technical IDs and raw canon codes hidden until disclosed');
+    const propDisc=ctx.querySelector('.codex-prop-disclosure');
+    const claimDisc=ctx.querySelector('.codex-claim-disclosure');
+    assert(propDisc&&!propDisc.open&&claimDisc&&!claimDisc.open,'property and assertion disclosures start closed');
+    propDisc.open=true;propDisc.dispatchEvent(new Event('toggle'));
+    claimDisc.open=true;claimDisc.dispatchEvent(new Event('toggle'));
+    const archived=ctx.querySelector('.context-archived');
     assert(archived&&archived.open===false,'archived closed by default');
     archived.open=true;archived.dispatchEvent(new Event('toggle'));
-    const prov=document.querySelector('#codex-detail-context .fact-row details');
-    prov.open=true;prov.dispatchEvent(new Event('toggle'));
     await wait();
+    assert(ctx.innerText.includes('Definition ID:')&&ctx.innerText.includes('Assertion ID:')&&ctx.innerText.includes('Stored canon:'),'opening disclosures reveals Definition ID, Assertion ID, and Stored canon');
     assert(document.documentElement.scrollWidth<=innerWidth,'no horizontal overflow at 1600');
   `);
   await screenshot("codex-1600-mara.png");
@@ -193,9 +207,10 @@ try {
     const lanternBtn=[...document.querySelectorAll('.codex-entity-item')].find(b=>b.querySelector('.codex-entity-label')?.textContent==='Sable Lantern');
     assert(lanternBtn,'Sable Lantern listed after create');
     assert(document.querySelector('#codex-detail-title').textContent==='Sable Lantern','Sable Lantern selected');
-    assert(document.querySelector('#codex-detail-meta').textContent.includes('Type: Chronicle'),'Sable Lantern typed as Chronicle');
+    assert(document.querySelector('#codex-detail-meta .codex-meta-item').textContent==='Chronicle','Sable Lantern typed as Chronicle');
     return {sableLanternId:lanternBtn.dataset.entityId};
   `);
+  await screenshot("codex-1600-created-entity.png");
 
   // Inspect Ashfall Order at 1120x780 via search.
   await resizeWindow(url, app.pid, 1120, 780, { verify: true });
@@ -208,13 +223,14 @@ try {
     assert(ashfallBtn,'search finds Ashfall Order');
     ashfallBtn.click();
     await wait();await wait();
-    const text=document.querySelector('#codex-detail-context').textContent;
-    assert(text.includes('Incoming references')&&text.includes('Mara Vey · member of · …0031 → Ashfall Order'),'Ashfall Order incoming references shown');
+    const ctx=document.querySelector('#codex-detail-context');
+    const text=ctx.textContent;
+    assert(text.includes('Referenced by')&&text.includes('member of · …0031')&&text.includes('Mara Vey → Ashfall Order'),'Ashfall Order incoming references shown');
     assert(document.documentElement.scrollWidth<=innerWidth,'no horizontal overflow at 1120');
   `);
   await screenshot("codex-1120-ashfall.png");
 
-  // Responsive check at 800x600 with filter active.
+  // Responsive check at 800x600 with filter check then Mara Vey facts visible at narrow width.
   const win800 = await resizeWindow(url, app.pid, 800, 600, { verify: true });
   await run(`
     const search=document.querySelector('#codex-search');
@@ -226,8 +242,12 @@ try {
     await wait();
     const rows=[...document.querySelectorAll('.codex-entity-item')];
     assert(rows.length===1&&rows[0].dataset.entityId===${JSON.stringify(entityCreated.sableLanternId)},'type filter narrows to Chronicle');
-    rows[0].click();
+    filter.value='__all__';
+    filter.dispatchEvent(new Event('change'));
     await wait();
+    const maraBtn=[...document.querySelectorAll('.codex-entity-item')].find(b=>b.querySelector('.codex-entity-label')?.textContent==='Mara Vey');
+    maraBtn.click();
+    await wait();await wait();
     assert(document.documentElement.scrollWidth<=innerWidth,'no horizontal overflow at 800x600');
   `);
   await screenshot("codex-800-stacked.png");
@@ -271,7 +291,7 @@ try {
     return {linkedMentionCount:view.state.field(mentionField).length,mentionIds:view.state.field(mentionField).map(m=>m.entityId)};
   `);
 
-  // Relaunch desktop binary to verify SQLite persistence of type, entity, and linked Write page.
+  // Relaunch desktop binary to verify SQLite persistence of type, entity, linked Write page, and header stability on universe switch in Codex.
   await stopAppAndWait(app);
   app = spawnDesktopApp({ port, userDataDir: webviewProfile, cwd: uiDir });
   url = await waitForTarget(port);
@@ -298,7 +318,15 @@ try {
       assert(lantern,'relaunch keeps exact entity UUID');
       lantern.click();
       await wait();
-      assert(document.querySelector('#codex-detail-meta').textContent.includes(${JSON.stringify(entityCreated.sableLanternId)}),'detail header displays exact persisted entity ID');
+      const idDisc=document.querySelector('#codex-detail-meta .codex-id-disclosure');
+      assert(idDisc&&!idDisc.open,'Identifier disclosure starts closed');
+      assert(idDisc.textContent.includes(${JSON.stringify(entityCreated.sableLanternId)}),'Identifier disclosure holds exact persisted entity ID');
+
+      // Opening another universe while Codex is active keeps context-name set to Codex.
+      document.querySelector('#database-path').value=${JSON.stringify(emptyDb)};
+      document.querySelector('#open-form').requestSubmit();
+      await wait();await wait();
+      assert(document.querySelector('#context-name').textContent==='Codex','opening universe while Codex active preserves Codex header');
       return {userAgent:navigator.userAgent,persistedTypeId:${JSON.stringify(created.chronicleId)},persistedEntityId:${JSON.stringify(entityCreated.sableLanternId)}};
     })()`,
   );
@@ -319,13 +347,15 @@ try {
       "codex-1120-empty.png",
       "codex-1600-mara.png",
       "codex-1600-entity-dialog.png",
+      "codex-1600-created-entity.png",
       "codex-1120-ashfall.png",
       "codex-800-stacked.png",
     ],
     checks: [
       "empty-document synthetic database opens Codex with 0 pages and supports creating custom types and untyped/typed/duplicate entities",
       "client-side label validation rejects blank labels without closing dialog",
-      "EntityContext inspection in Codex shows disambiguated definitions, zero-claim applicable properties, incoming references, and closed-by-default archives",
+      "EntityContext inspection in Codex uses editorial hierarchy, progressive UUID/schema/provenance disclosures, one human canon gloss, subject-first incoming references, and closed-by-default archives",
+      "opening another universe while Codex is active keeps #context-name set to Codex",
       "Write dirty title/prose/scroll/undo survives Codex creation and Ctrl+S guard",
       "Connect (Ctrl+K / contextual action) immediately offers Codex-created entity in Write",
       "full native process relaunch preserves exact type ID, entity ID, saved page prose, and mention link",

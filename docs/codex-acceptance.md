@@ -18,7 +18,7 @@ is untouched; no real lore was used.
 - PASS: Tauri `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`,
   and `cargo test --locked --all-targets` (`25` bridge tests, including
   `codex_bridge_reads_creates_persists_and_enforces_validation_and_lock`).
-- PASS: UI `npm test` (`130` tests across `adapter`, `save-session`, `mentions`,
+- PASS: UI `npm test` (`131` tests across `adapter`, `save-session`, `mentions`,
   `mention-history`, `desktop`, and `codex`), `npm run check`,
   `npm run desktop:check`, and `npm run desktop:frontend:build`.
 - PASS: `node scripts/verify.mjs --diff-base origin/main` (including WebView2
@@ -27,16 +27,27 @@ is untouched; no real lore was used.
 Bridge and frontend tests additionally verify:
 
 - Opening any synthetic universe (including `0`-page empty databases) enables
-  switching between `Write` and `Codex` without creating a document.
+  switching between `Write` and `Codex` without creating a document, and
+  opening another universe or loading background pages while `Codex` is active
+  keeps `#context-name` pinned to `Codex` without stealing focus.
 - Search filters by entity label, type label, primary document title, or entity
   ID; custom type filters keep duplicate type labels distinct by `typeId`, show
   zero-entity types, and include `Untyped`.
+- Codex entry inspection places entity identity, type/primary-document metadata,
+  value-first two-column `Facts` (`Not recorded`, `Unknown (recorded)`, `No`,
+  competing assertions with one human canon label per assertion), and
+  subject-first `Referenced by` groups upfront, while tucking full UUIDs,
+  technical definition metadata, raw canon codes, and provenance/scope details
+  behind progressive `Identifier`, `Property details`, and assertion disclosures
+  and keeping `Archived (N)` closed by default.
 - `New type` and `New entity` dialogs default new entities to `Untyped`, trim
   and validate labels (`1..=120` scalars, single line, no control chars) before
   IPC, block double-submission, keep user input intact on definite non-commit
   rejections (`busy`, `invalid_input`, `duplicate_id`, `type_missing`, stale
-  universe), and close + surface `Refresh Codex` without auto-retrying creation
-  on ambiguous failures.
+  universe), and on ambiguous failures close + retain pending operation
+  identity and lock new creations until `Refresh Codex` verifies against
+  `codex_index` (distinguishing committed vs not-saved vs still-unconfirmed and
+  resetting on universe switch) without auto-retrying creation.
 - `Write <-> Codex` preserves dirty Write title, body, selection, undo history,
   scroll offset, and `#guard` close/universe-switch protection; `Ctrl+S` in
   Codex never saves hidden Write drafts; `#library-toggle` is disabled in Codex;
@@ -59,42 +70,45 @@ temporary v3 SQLite databases:
 Captured KA1 WebView2 checks (`docs/evidence/codex-native/`):
 
 - **Zero-page empty universe (`1120 × 780`, DPR 1):** Opens an empty v3 synthetic
-  database (`0` pages, `0` types, `0` entities), switches cleanly into Codex,
-  rejects blank type creation in-place, creates custom type `House (0)`, creates
-  `Untyped` (`Ashfall Bell`) and duplicate-label (`Mara Vey · …c498`,
-  `Mara Vey · …12e7`) entities without creating any pages, and returns to Write
-  with `0` pages untouched.
-- **Knowledge inspection & editorial fidelity (`1600 × 900`, DPR 1):** Dirties
+  database (`0` pages, `0` types, `0` entities), switches cleanly into Codex with
+  a quiet idle sidebar, rejects blank type creation in-place, creates custom type
+  `House (0)`, creates `Untyped` (`Ashfall Bell`) and duplicate-label (`Mara Vey
+  · …6303`, `Mara Vey · …c0b5`) entities without creating any pages, and returns
+  to Write with `0` pages untouched.
+- **Knowledge inspection & editorial hierarchy (`1600 × 900`, DPR 1):** Dirties
   Write's title/body and scrolls to `220`, switches to Codex, verifies `Ctrl+S`
-  keeps Write dirty, inspects `Mara Vey` via `Store::entity_context` (including
+  keeps Write dirty, inspects `Mara Vey` via `Store::entity_context` (omitting
+  full UUIDs and repeated subject/predicate prefixes upfront, disclosing
+  `Property details` and assertion provenance/stored canon on demand, preserving
   disambiguated `member of · …0031` / `…0038`, zero-claim `oath sworn` ->
-  `Not recorded`, provenance expansion, and closed-by-default `Archived history`).
+  `Not recorded`, and closed-by-default `Archived`).
 - **Custom type & entity creation (`1600 × 900` & `800 × 600`):** Creates type
-  `Chronicle (0)` and entity `Sable Lantern`, inspects type filter narrowing at
-  `800 × 600` stacked layout with zero horizontal overflow, and inspects `Ashfall
-  Order` search and subject-first incoming references at `1120 × 780`.
+  `Chronicle (0)` and entity `Sable Lantern`, captures the newly created entity
+  entry view, verifies narrow `800 × 600` responsiveness on `Mara Vey` with
+  zero horizontal overflow, and inspects `Ashfall Order` search and
+  subject-first `Referenced by` orientation at `1120 × 780`.
 - **Write <-> Codex round-trip, Connect, Save & Relaunch:** Returning to Write
   restores exact dirty title, prose, `scrollTop = 220`, Undo/Redo (`Ctrl+Z` /
   `Ctrl+Y`), and dirty save state; Connect (`Ctrl+K` / contextual action) offers
   newly created `Sable Lantern (Chronicle)` immediately; saving and fully
   relaunching the native desktop binary preserves exact type/entity UUIDs,
-  saved prose, and the new mention link.
+  saved prose, and the new mention link, and opening another universe while
+  Codex is active preserves `#context-name === "Codex"`.
 
 Evidence: [1120 empty universe](evidence/codex-native/codex-1120-empty.png),
 [1600 Mara Vey context](evidence/codex-native/codex-1600-mara.png),
 [1600 New entity dialog](evidence/codex-native/codex-1600-entity-dialog.png),
+[1600 Created entity entry](evidence/codex-native/codex-1600-created-entity.png),
 [1120 Ashfall search](evidence/codex-native/codex-1120-ashfall.png),
-[800 stacked filter](evidence/codex-native/codex-800-stacked.png).
+[800 narrow layout](evidence/codex-native/codex-800-stacked.png).
 
 ## Independent review
 
-Gemini 4 Argon (`thinking_level: high`) independently reviewed the full diff
-against `origin/main`, `.csdd/specs.md`, `.csdd/decisions.md` (`DEC-005`),
-`DESIGN.md`, `ui/DESKTOP.md`, and issue #49, and returned **APPROVE** with zero
-P1, P2, or P3 findings. It also independently ran
-`node scripts/verify.mjs --diff-base origin/main` (`371` root tests, `25` Tauri
-tests, `130` UI tests, TypeScript/Vite checks, WebView2 harness check, and
-`git diff --check`). Valen and Ari retain final product and merge authority.
+Gemini 4 Argon (`thinking_level: high`) independently reviewed the updated diff
+on `feat/49-codex-foundations` against `origin/main`, `.csdd/specs.md`,
+`.csdd/decisions.md` (`DEC-005`), `DESIGN.md`, `ui/DESKTOP.md`, and issue #49,
+and returned **PASS** with zero P1, P2, or P3 findings (and re-verified the
+131-test UI suite). Valen and Ari retain final product and merge authority.
 
 ## Remaining human acceptance (Windows)
 

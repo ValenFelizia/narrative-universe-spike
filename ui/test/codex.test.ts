@@ -158,7 +158,10 @@ test("empty-document universe opens Codex without creating a page and supports c
   // Created entity is untyped, selected, and inspected immediately; no pages were created.
   assert.equal(entities[0]!.typeId, null);
   assert.equal(ui.doc.querySelector("#codex-detail-title")!.textContent, "Ashfall Bell");
-  assert.match(ui.doc.querySelector("#codex-detail-meta")!.textContent!, /Type: Untyped/);
+  assert.equal(ui.doc.querySelector("#codex-detail-meta .codex-meta-item")!.textContent, "Untyped");
+  const untypedIdDisclosure = ui.doc.querySelector<HTMLDetailsElement>("#codex-detail-meta .codex-id-disclosure")!;
+  assert.equal(untypedIdDisclosure.open, false);
+  assert.match(untypedIdDisclosure.querySelector(".codex-disclosure-body")!.textContent!, new RegExp(entities[0]!.id));
   assert.equal(calls.includes("create_page"), false);
 
   // Create typed entity
@@ -172,17 +175,27 @@ test("empty-document universe opens Codex without creating a page and supports c
 
   assert.equal(entities[1]!.typeId, types[0]!.id);
   assert.equal(ui.doc.querySelector("#codex-detail-title")!.textContent, "Mara Vey");
-  assert.match(ui.doc.querySelector("#codex-detail-meta")!.textContent!, /Type: House/);
+  assert.equal(ui.doc.querySelector("#codex-detail-meta .codex-meta-item")!.textContent, "House");
+  const typedIdDisclosure = ui.doc.querySelector<HTMLDetailsElement>("#codex-detail-meta .codex-id-disclosure")!;
+  assert.equal(typedIdDisclosure.open, false);
+  assert.match(typedIdDisclosure.querySelector(".codex-disclosure-body")!.textContent!, new RegExp(types[0]!.id));
   ui.close();
 });
 
-test("search, duplicate type/entity identity disambiguation, and EntityContext inspection work cleanly", async () => {
+test("search, duplicate disambiguation, editorial Codex entry hierarchy, and progressive disclosures work cleanly", async () => {
   const TYPE_A = "33333333-3333-4333-8333-333333333331";
   const TYPE_B = "33333333-3333-4333-8333-333333333332";
   const TYPE_EMPTY = "33333333-3333-4333-8333-333333333333";
   const ENT_A = "55555555-5555-4555-8555-555555555551";
   const ENT_B = "55555555-5555-4555-8555-555555555552";
   const ENT_C = "55555555-5555-4555-8555-555555555553";
+  const DEF_ALLEGIANCE = "44444444-4444-4444-8444-000000000001";
+  const DEF_OATH = "44444444-4444-4444-8444-000000000003";
+  const DEF_MENTION = "44444444-4444-4444-8444-000000000004";
+  const CLAIM_WARDENS = "66666666-6666-4666-8666-000000000001";
+  const CLAIM_MYSTERY = "66666666-6666-4666-8666-000000000002";
+  const CLAIM_NO = "66666666-6666-4666-8666-000000000003";
+  const CLAIM_INCOMING = "66666666-6666-4666-8666-000000000004";
   const inspected: string[] = [];
 
   const ui = setup(async (cmd, args) => {
@@ -211,7 +224,7 @@ test("search, duplicate type/entity identity disambiguation, and EntityContext i
         outgoingGroups: [
           {
             definition: {
-              id: "44444444-4444-4444-8444-000000000001",
+              id: DEF_ALLEGIANCE,
               ownerKind: "type",
               ownerId: TYPE_A,
               propertyLabel: "Allegiance",
@@ -221,11 +234,56 @@ test("search, duplicate type/entity identity disambiguation, and EntityContext i
             },
             claims: [
               {
-                id: "66666666-6666-4666-8666-000000000001",
+                id: CLAIM_WARDENS,
                 value: { kind: "text", text: "Wardens" },
                 canon: "ACORDADO",
-                sourceStatusRaw: null,
+                sourceStatusRaw: "draft-note",
                 provenance: { externalRef: "Ledger", locator: "p.4", fragment: null, sourceRevision: null },
+                scopeNote: "Harbor chapters",
+                archived: false,
+              },
+              {
+                id: CLAIM_MYSTERY,
+                value: { kind: "unknown" },
+                canon: "MISTERIO_INTENCIONAL",
+                sourceStatusRaw: null,
+                provenance: { externalRef: null, locator: null, fragment: null, sourceRevision: null },
+                scopeNote: null,
+                archived: false,
+              },
+            ],
+            hasArchivedClaims: false,
+          },
+          {
+            definition: {
+              id: DEF_OATH,
+              ownerKind: "entity",
+              ownerId: ENT_A,
+              propertyLabel: "Oath sworn",
+              valueClass: "boolean",
+              cardinality: "singular",
+              archived: false,
+            },
+            claims: [],
+            hasArchivedClaims: false,
+          },
+          {
+            definition: {
+              id: DEF_MENTION,
+              ownerKind: "entity",
+              ownerId: ENT_A,
+              propertyLabel: "Broke seal",
+              valueClass: "boolean",
+              cardinality: "singular",
+              archived: false,
+            },
+            claims: [
+              {
+                id: CLAIM_NO,
+                value: { kind: "boolean", value: false },
+                canon: "PROVISIONAL",
+                sourceStatusRaw: null,
+                provenance: { externalRef: null, locator: null, fragment: null, sourceRevision: null },
                 scopeNote: null,
                 archived: false,
               },
@@ -233,7 +291,31 @@ test("search, duplicate type/entity identity disambiguation, and EntityContext i
             hasArchivedClaims: false,
           },
         ],
-        incomingGroups: [],
+        incomingGroups: [
+          {
+            subject: { id: ENT_C, label: "Ash Lantern" },
+            definition: {
+              id: "44444444-4444-4444-8444-000000000005",
+              ownerKind: "entity",
+              ownerId: ENT_C,
+              propertyLabel: "Bearer",
+              valueClass: "entity",
+              cardinality: "singular",
+              archived: false,
+            },
+            claims: [
+              {
+                id: CLAIM_INCOMING,
+                value: { kind: "reference", target: { id: ENT_A, label: "Mara Vey" } },
+                canon: "ABIERTO",
+                sourceStatusRaw: null,
+                provenance: { externalRef: null, locator: null, fragment: null, sourceRevision: null },
+                scopeNote: null,
+                archived: false,
+              },
+            ],
+          },
+        ],
         archivedOutgoingGroups: [
           {
             definition: {
@@ -260,6 +342,9 @@ test("search, duplicate type/entity identity disambiguation, and EntityContext i
   ui.doc.querySelector<HTMLButtonElement>("#mode-codex")!.click();
   await tick();
 
+  // Quiet idle status on initial load
+  assert.equal(ui.doc.querySelector("#codex-status")!.textContent, "");
+
   // Duplicate entity and type labels both disambiguated deterministically.
   const rows = [...ui.doc.querySelectorAll<HTMLButtonElement>(".codex-entity-item")];
   assert.equal(rows.length, 3);
@@ -284,7 +369,7 @@ test("search, duplicate type/entity identity disambiguation, and EntityContext i
   typeSelect.value = TYPE_EMPTY;
   typeSelect.dispatchEvent(new ui.win.Event("change"));
   assert.equal(ui.doc.querySelector<HTMLElement>("#codex-list-empty")!.hidden, false);
-  assert.match(ui.doc.querySelector("#codex-list-empty-text")!.textContent!, /No entities belong to this type/);
+  assert.match(ui.doc.querySelector("#codex-list-empty-text")!.textContent!, /No entities in this type/);
 
   // Clear filters and search with Enter key (must not create anything).
   ui.doc.querySelector<HTMLButtonElement>("#codex-clear-filters")!.click();
@@ -297,14 +382,50 @@ test("search, duplicate type/entity identity disambiguation, and EntityContext i
     [ENT_A],
   );
 
-  // Inspect ENT_A: read-only Primary document metadata, grouped claims, and collapsed archived section.
+  // Inspect ENT_A: read-only metadata, value-first assertions, one human canon gloss, hidden full UUIDs until opened.
   ui.doc.querySelector<HTMLButtonElement>(`.codex-entity-item[data-entity-id="${ENT_A}"]`)!.click();
   await tick();
   assert.equal(ui.doc.querySelector("#codex-detail-title")!.textContent, "Mara Vey · …5551");
-  assert.match(ui.doc.querySelector("#codex-detail-meta")!.textContent!, /Primary document: Harbor Note/);
-  assert.match(ui.doc.querySelector("#codex-detail-context")!.textContent!, /Allegiance/);
-  assert.match(ui.doc.querySelector("#codex-detail-context")!.textContent!, /Wardens/);
-  assert.equal(ui.doc.querySelector<HTMLDetailsElement>(".context-archived")!.open, false);
+  const metaEl = ui.doc.querySelector("#codex-detail-meta")!;
+  assert.match(metaEl.textContent!, /Primary document: Harbor Note/);
+
+  const ctx = ui.doc.querySelector("#codex-detail-context")!;
+  // Banner removed; section names simplified; outgoing assertions don't repeat entity/predicate on every row
+  assert.doesNotMatch(ctx.textContent!, /Persisted knowledge · point-in-time read/);
+  assert.match(ctx.textContent!, /Facts/);
+  assert.match(ctx.textContent!, /Referenced by/);
+  const allegianceGroup = ctx.querySelector<HTMLElement>(`.codex-prop-group[data-definition-id="${DEF_ALLEGIANCE}"]`)!;
+  const valueText = allegianceGroup.querySelector(".codex-assertion-value")!.textContent!;
+  assert.equal(valueText, "Wardens");
+  assert.equal(allegianceGroup.querySelector(".codex-canon-tag")!.textContent, "Agreed");
+
+  // Full UUIDs, stored canon codes, and technical schema metadata stay tucked inside closed disclosures by default
+  const idDisclosure = metaEl.querySelector<HTMLDetailsElement>(".codex-id-disclosure")!;
+  const propDisclosure = allegianceGroup.querySelector<HTMLDetailsElement>(".codex-prop-disclosure")!;
+  const claimDisclosure = allegianceGroup.querySelector<HTMLDetailsElement>(".codex-claim-disclosure")!;
+  assert.equal(idDisclosure.open, false);
+  assert.equal(propDisclosure.open, false);
+  assert.equal(claimDisclosure.open, false);
+  assert.match(propDisclosure.querySelector(".codex-disclosure-body")!.textContent!, new RegExp(`Type-owned · text · singular · Definition ID: ${DEF_ALLEGIANCE}`));
+  assert.match(claimDisclosure.querySelector(".codex-disclosure-body")!.textContent!, /Source: Ledger · Locator: p\.4 · Source status: draft-note · Scope: Harbor chapters · Stored canon: ACORDADO/);
+  assert.match(claimDisclosure.querySelector(".codex-disclosure-body")!.textContent!, new RegExp(CLAIM_WARDENS));
+
+  // Distinguish Not recorded vs Unknown (recorded) vs No
+  const oathGroup = ctx.querySelector<HTMLElement>(`.codex-prop-group[data-definition-id="${DEF_OATH}"]`)!;
+  assert.equal(oathGroup.querySelector(".codex-unrecorded")!.textContent, "Not recorded");
+  assert.ok([...allegianceGroup.querySelectorAll(".codex-assertion-value")].some(n => n.textContent === "Unknown (recorded)"));
+  const boolGroup = ctx.querySelector<HTMLElement>(`.codex-prop-group[data-definition-id="${DEF_MENTION}"]`)!;
+  assert.equal(boolGroup.querySelector(".codex-assertion-value")!.textContent, "No");
+  assert.equal(boolGroup.querySelector(".codex-canon-tag")!.textContent, "Provisional");
+
+  // Incoming reference preserves subject -> target orientation
+  const incomingGroup = ctx.querySelector<HTMLElement>(".codex-incoming-group")!;
+  assert.equal(incomingGroup.querySelector(".codex-prop-name")!.textContent, "Bearer");
+  assert.equal(incomingGroup.querySelector(".codex-assertion-value")!.textContent, "Ash Lantern → Mara Vey · …5551");
+  assert.equal(incomingGroup.querySelector(".codex-canon-tag")!.textContent, "Open");
+
+  assert.equal(ctx.querySelector<HTMLDetailsElement>(".context-archived")!.open, false);
+  assert.match(ctx.querySelector(".context-archived > summary")!.textContent!, /Archived \(1\)/);
 
   // Inspect ENT_B: bounded context error shown honestly without partial claims.
   ui.doc.querySelector<HTMLButtonElement>("#codex-clear-filters")!.click();
@@ -315,27 +436,60 @@ test("search, duplicate type/entity identity disambiguation, and EntityContext i
   ui.close();
 });
 
-test("validation rejects blank/oversized labels without IPC and preserves form input on backend error", async () => {
+test("validation rejects invalid labels and ambiguous create failures lock creation until verified against codex_index", async () => {
   let typeCreates = 0;
   let entityCreates = 0;
-  let indexReads = 0;
+  let failNextIndex = false;
+  const serverTypes: { id: string; label: string }[] = [];
+  const serverEntities: {
+    id: string;
+    label: string;
+    typeId: string | null;
+    typeLabel: string | null;
+    primaryPageTitle: string | null;
+  }[] = [];
+  let entityOutcome: "ambiguous_committed" | "ambiguous_uncommitted" = "ambiguous_committed";
+  let typeOutcome: "definite_busy" | "ambiguous_committed" = "definite_busy";
 
   const ui = setup(async (cmd, args) => {
     if (cmd === "page_index") return [];
     if (cmd === "codex_index") {
-      indexReads++;
-      if (indexReads === 2) throw { kind: "busy" };
-      return { types: [], entities: [] };
+      if (failNextIndex) {
+        failNextIndex = false;
+        throw { kind: "busy" };
+      }
+      return { types: [...serverTypes], entities: [...serverEntities] };
     }
     if (cmd === "create_entity_type") {
       typeCreates++;
-      if (typeCreates === 1) throw { kind: "busy" };
-      return { id: String(args!.typeId), label: String(args!.label) };
+      if (typeOutcome === "definite_busy") throw { kind: "busy" };
+      // Ambiguous failure AFTER server actually committed the row (response lost!)
+      serverTypes.push({ id: String(args!.typeId), label: String(args!.label) });
+      throw {};
     }
     if (cmd === "create_entity") {
       entityCreates++;
-      // Ambiguous transport drop after persistence
+      if (entityOutcome === "ambiguous_committed") {
+        serverEntities.push({
+          id: String(args!.entityId),
+          label: String(args!.label),
+          typeId: null,
+          typeLabel: null,
+          primaryPageTitle: null,
+        });
+      }
       throw {};
+    }
+    if (cmd === "entity_context") {
+      const found = serverEntities.find(e => e.id === args!.entityId)!;
+      return {
+        entity: { id: found.id, label: found.label },
+        typeLabel: found.typeLabel,
+        outgoingGroups: [],
+        incomingGroups: [],
+        archivedOutgoingGroups: [],
+        archivedIncomingGroups: [],
+      };
     }
     return undefined;
   });
@@ -345,8 +499,13 @@ test("validation rejects blank/oversized labels without IPC and preserves form i
   ui.doc.querySelector<HTMLButtonElement>("#mode-codex")!.click();
   await tick();
 
+  const newTypeBtn = ui.doc.querySelector<HTMLButtonElement>("#codex-new-type")!;
+  const newEntityBtn = ui.doc.querySelector<HTMLButtonElement>("#codex-new-entity")!;
+  const refreshBtn = ui.doc.querySelector<HTMLButtonElement>("#codex-refresh")!;
+  const statusEl = ui.doc.querySelector("#codex-status")!;
+
   // Client-side validation rejects blank and >120 scalars before IPC.
-  ui.doc.querySelector<HTMLButtonElement>("#codex-new-type")!.click();
+  newTypeBtn.click();
   const typeDialog = ui.doc.querySelector<HTMLDialogElement>("#codex-type-dialog")!;
   const typeInput = ui.doc.querySelector<HTMLInputElement>("#codex-type-label-input")!;
   typeInput.value = "   \u00a0  ";
@@ -362,7 +521,7 @@ test("validation rejects blank/oversized labels without IPC and preserves form i
   assert.equal(typeCreates, 0);
   assert.match(ui.doc.querySelector("#codex-type-error")!.textContent!, /120/);
 
-  // Backend busy keeps dialog open and entered value intact; second submit succeeds, then refresh failure shows non-destructive recovery without retrying create.
+  // Definite non-commit keeps dialog open and entered value intact without locking creations.
   typeInput.value = "Faction";
   ui.doc.querySelector<HTMLFormElement>("#codex-type-form")!.dispatchEvent(new ui.win.Event("submit", { cancelable: true }));
   await tick();
@@ -371,27 +530,137 @@ test("validation rejects blank/oversized labels without IPC and preserves form i
   assert.equal(typeInput.value, "Faction");
   assert.match(ui.doc.querySelector("#codex-type-error")!.textContent!, /busy/i);
 
+  // Ambiguous type outcome after commit locks BOTH create buttons until verified!
+  typeOutcome = "ambiguous_committed";
+  failNextIndex = true;
   ui.doc.querySelector<HTMLFormElement>("#codex-type-form")!.dispatchEvent(new ui.win.Event("submit", { cancelable: true }));
   await tick();
   assert.equal(typeCreates, 2);
   assert.equal(typeDialog.open, false);
-  assert.equal(ui.doc.querySelector<HTMLButtonElement>("#codex-refresh")!.hidden, false);
-  assert.match(ui.doc.querySelector("#codex-status")!.textContent!, /Refresh Codex/);
+  assert.equal(newTypeBtn.disabled, true);
+  assert.equal(newEntityBtn.disabled, true);
+  assert.equal(refreshBtn.hidden, false);
+  assert.match(statusEl.textContent!, /Refresh Codex/);
 
-  // Ambiguous entity creation outcome exposes Refresh Codex without retrying create_entity.
-  ui.doc.querySelector<HTMLButtonElement>("#codex-new-entity")!.click();
+  // Failed verification keeps pending creation locked and reports "still unconfirmed" without auto-retrying
+  refreshBtn.click();
+  await tick();
+  assert.equal(typeCreates, 2);
+  assert.equal(newTypeBtn.disabled, true);
+  assert.equal(newEntityBtn.disabled, true);
+  assert.match(statusEl.textContent!, /still unconfirmed/);
+
+  // Successful verification confirms the committed-but-response-lost type and unlocks creation
+  refreshBtn.click();
+  await tick();
+  assert.equal(typeCreates, 2);
+  assert.equal(newTypeBtn.disabled, false);
+  assert.equal(newEntityBtn.disabled, false);
+  assert.equal(refreshBtn.hidden, true);
+  assert.match(statusEl.textContent!, /Confirmed type "Faction" was saved\./);
+  assert.ok([...ui.doc.querySelectorAll<HTMLOptionElement>("#codex-type-filter option")].some(o => o.textContent === "Faction (0)"));
+
+  // Ambiguous entity NOT saved: locks until verified, then unlocks and reports "was not saved"
+  entityOutcome = "ambiguous_uncommitted";
+  newEntityBtn.click();
   const entityDialog = ui.doc.querySelector<HTMLDialogElement>("#codex-entity-dialog")!;
   ui.doc.querySelector<HTMLInputElement>("#codex-entity-label-input")!.value = "Uncertain Bell";
   ui.doc.querySelector<HTMLFormElement>("#codex-entity-form")!.dispatchEvent(new ui.win.Event("submit", { cancelable: true }));
   await tick();
   assert.equal(entityCreates, 1);
   assert.equal(entityDialog.open, false);
-  assert.equal(ui.doc.querySelector<HTMLButtonElement>("#codex-refresh")!.hidden, false);
-  assert.match(ui.doc.querySelector("#codex-status")!.textContent!, /Refresh Codex/);
+  assert.equal(newEntityBtn.disabled, true);
+  assert.equal(newTypeBtn.disabled, true);
+  assert.equal(refreshBtn.hidden, false);
 
-  ui.doc.querySelector<HTMLButtonElement>("#codex-refresh")!.click();
+  refreshBtn.click();
   await tick();
   assert.equal(entityCreates, 1);
+  assert.equal(newEntityBtn.disabled, false);
+  assert.equal(newTypeBtn.disabled, false);
+  assert.equal(refreshBtn.hidden, true);
+  assert.match(statusEl.textContent!, /was not saved/);
+
+  // Committed-but-response-lost entity: locks until verified, then confirms, selects, and inspects it!
+  entityOutcome = "ambiguous_committed";
+  newEntityBtn.click();
+  ui.doc.querySelector<HTMLInputElement>("#codex-entity-label-input")!.value = "Lantern Echo";
+  ui.doc.querySelector<HTMLFormElement>("#codex-entity-form")!.dispatchEvent(new ui.win.Event("submit", { cancelable: true }));
+  await tick();
+  assert.equal(entityCreates, 2);
+  assert.equal(newEntityBtn.disabled, true);
+
+  refreshBtn.click();
+  await tick();
+  assert.equal(entityCreates, 2);
+  assert.equal(newEntityBtn.disabled, false);
+  assert.equal(refreshBtn.hidden, true);
+  assert.match(statusEl.textContent!, /Confirmed entity "Lantern Echo" was saved\./);
+  assert.equal(ui.doc.querySelector("#codex-detail-title")!.textContent, "Lantern Echo");
+
+  // Switching universes clears unresolved pendingCreate and never leaks across tokens
+  newEntityBtn.click();
+  ui.doc.querySelector<HTMLInputElement>("#codex-entity-label-input")!.value = "Other Echo";
+  ui.doc.querySelector<HTMLFormElement>("#codex-entity-form")!.dispatchEvent(new ui.win.Event("submit", { cancelable: true }));
+  await tick();
+  assert.equal(newEntityBtn.disabled, true);
+
+  ui.open("second.sqlite");
+  await tick();
+  assert.equal(newEntityBtn.disabled, false);
+  assert.equal(newTypeBtn.disabled, false);
+  assert.equal(refreshBtn.hidden, true);
+  ui.close();
+});
+
+test("opening a universe while in Codex preserves Codex workspace header and focus", async () => {
+  let currentDb = "first.sqlite";
+  const ui = setup(async (cmd, args) => {
+    if (cmd === "open_universe") {
+      currentDb = String(args!.databasePath);
+      return undefined;
+    }
+    if (cmd === "page_index") {
+      return currentDb === "first.sqlite"
+        ? [{ id: "p1", title: "Chapter One" }]
+        : [{ id: "p2", title: "Second Chronicle" }];
+    }
+    if (cmd === "read_page") {
+      return currentDb === "first.sqlite"
+        ? { id: "p1", title: "Chapter One", body: "Alpha.", revision: 0, mentions: [] }
+        : { id: "p2", title: "Second Chronicle", body: "Beta.", revision: 0, mentions: [] };
+    }
+    if (cmd === "codex_index") {
+      return {
+        types: [],
+        entities: [{ id: "e-next", label: currentDb, typeId: null, typeLabel: null, primaryPageTitle: null }],
+      };
+    }
+    return undefined;
+  });
+
+  // Narrow viewport (<900px) so selectPage would call editor.focus() / toggleLibrary.focus() if unguarded
+  Object.defineProperty(ui.win, "innerWidth", { value: 780, configurable: true });
+
+  ui.open("first.sqlite");
+  await tick();
+  ui.doc.querySelector<HTMLButtonElement>("#mode-codex")!.click();
+  await tick();
+  assert.equal(ui.doc.querySelector("#context-name")!.textContent, "Codex");
+
+  const searchInput = ui.doc.querySelector<HTMLInputElement>("#codex-search")!;
+  searchInput.focus();
+
+  ui.open("second.sqlite");
+  await tick();
+  assert.equal(ui.doc.querySelector("#context-name")!.textContent, "Codex");
+  assert.equal(ui.doc.querySelector("#mode-codex")!.getAttribute("aria-pressed"), "true");
+  assert.equal(ui.doc.activeElement, searchInput);
+
+  // Switching back to Write restores the opened universe's selected document title cleanly.
+  ui.doc.querySelector<HTMLButtonElement>("#mode-write")!.click();
+  await tick();
+  assert.equal(ui.doc.querySelector("#context-name")!.textContent, "Second Chronicle");
   ui.close();
 });
 

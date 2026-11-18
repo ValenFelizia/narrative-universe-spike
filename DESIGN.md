@@ -302,10 +302,14 @@ synthetic universe (including universes with 0 documents):
   `232 px` at `<= 720 px` and stacking vertically below `620 px`) houses
   `New entity`, `New type`, search, custom-type filter (preserving distinct
   same-label types, empty 0-entity types, and `Untyped`), entity list with
-  shortest-suffix disambiguation, and independent persistence status. Right
-  entry pane (`max-width: 720 px`) shows disambiguated title, optional type and
-  read-only primary document metadata, stable UUID, and the shared read-only
-  `EntityContext` renderer (`renderEntityContextSections`).
+  shortest-suffix disambiguation, and quiet on-demand status. Right entry pane
+  (`max-width: 720 px`) shows disambiguated title, optional type and read-only
+  primary document metadata, value-first two-column `Facts` and `Referenced by`
+  groups with one human canon label per assertion, closed `Archived (N)`
+  history, and progressive disclosures (`Identifier`, `Property details`, and
+  provenance/assertion details) for UUIDs, technical schema metadata, and raw
+  canon codes via `renderCodexEntrySections` (leaving Write's
+  `renderEntityContextSections` unchanged).
 - **Intentional creation dialogs:** `New type` and `New entity` (`Untyped`
   default) open focused `<dialog>` modals with explicit `Create` / `Cancel`,
   accessible labels, Escape cancellation while idle, and inline validation

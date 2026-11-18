@@ -1,4 +1,4 @@
-import { renderEntityContextSections, suffixed, type EntityContext } from "./connect.ts";
+import { renderCodexEntrySections, suffixed, type EntityContext } from "./connect.ts";
 
 export type TypeIndexEntry = { id: string; label: string };
 export type CodexEntityEntry = {
@@ -11,6 +11,13 @@ export type CodexEntityEntry = {
 export type CodexIndex = {
   types: TypeIndexEntry[];
   entities: CodexEntityEntry[];
+};
+
+type PendingCodexCreate = {
+  token: string;
+  kind: "type" | "entity";
+  id: string;
+  label: string;
 };
 
 const MAX_CODEX_LABEL_SCALARS = 120;
@@ -63,7 +70,7 @@ function isDefiniteNonCommit(error: unknown): boolean {
   }
 }
 
-function describeCreateError(error: unknown, target: "type" | "entity"): string {
+function describeCreateError(error: unknown, target: "type" | "entity", label?: string): string {
   switch (errorKind(error)) {
     case "busy":
       return "Database is busy. Nothing was saved; try again.";
@@ -78,10 +85,10 @@ function describeCreateError(error: unknown, target: "type" | "entity"): string 
     case "universe_changed":
     case "universe_not_open":
       return "The active universe changed. Reopen the universe before creating records.";
-    default:
-      return target === "type"
-        ? "Type creation could not be confirmed; check Refresh Codex before creating another."
-        : "Entity creation could not be confirmed; check Refresh Codex before creating another.";
+    default: {
+      const subject = label ? `${target === "type" ? "Type" : "Entity"} "${label}" creation` : `${target === "type" ? "Type" : "Entity"} creation`;
+      return `${subject} could not be confirmed. Use Refresh Codex before creating another.`;
+    }
   }
 }
 
@@ -145,9 +152,11 @@ export function createCodexController(options: {
   let indexLoaded = false;
   let loadingIndex = false;
   let indexVersion = 0;
+  let universeEpoch = 0;
   let contextVersion = 0;
   let creatingType = false;
   let creatingEntity = false;
+  let pendingCreate: PendingCodexCreate | null = null;
   let pendingRefreshAfterWrite: string | null = null;
 
   function sortIndexData(raw: CodexIndex): CodexIndex {
@@ -215,9 +224,10 @@ export function createCodexController(options: {
   function setControlsDisabled(): void {
     const hasToken = !!options.activeToken();
     const busy = loadingIndex || creatingType || creatingEntity;
-    newEntityButton.disabled = !hasToken || !indexLoaded || busy;
-    newTypeButton.disabled = !hasToken || !indexLoaded || busy;
-    refreshButton.disabled = !hasToken || loadingIndex || creatingType || creatingEntity;
+    const creationLocked = busy || !!pendingCreate;
+    newEntityButton.disabled = !hasToken || !indexLoaded || creationLocked;
+    newTypeButton.disabled = !hasToken || !indexLoaded || creationLocked;
+    refreshButton.disabled = !hasToken || busy;
     searchInput.disabled = !hasToken || !indexLoaded;
     typeFilterSelect.disabled = !hasToken || !indexLoaded;
   }
@@ -272,13 +282,13 @@ export function createCodexController(options: {
       const hasFilters = searchQuery.trim().length > 0 || typeFilter !== "__all__";
       clearFiltersButton.hidden = !hasFilters;
       if (!entities.length) {
-        listEmptyText.textContent = "No entities in this universe yet. Use New entity to add one.";
+        listEmptyText.textContent = "No entities yet.";
       } else if (searchQuery.trim().length > 0) {
-        listEmptyText.textContent = "No entities match your current search or filter.";
+        listEmptyText.textContent = "No matching entities.";
       } else if (typeFilter === "__untyped__") {
-        listEmptyText.textContent = "No untyped entities in this universe.";
+        listEmptyText.textContent = "No untyped entities.";
       } else {
-        listEmptyText.textContent = "No entities belong to this type yet.";
+        listEmptyText.textContent = "No entities in this type.";
       }
       return;
     }
@@ -318,13 +328,13 @@ export function createCodexController(options: {
     const prompt = document.createElement("p");
     prompt.className = "codex-detail-placeholder";
     if (!indexLoaded) {
-      prompt.textContent = loadingIndex ? "Loading Codex library…" : "Open a universe to browse its Codex.";
+      prompt.textContent = loadingIndex ? "Loading Codex…" : "Open a universe to browse the Codex.";
     } else if (!entities.length) {
-      prompt.textContent = "No entities recorded yet. Create an entity or custom type on the left without affecting documents.";
+      prompt.textContent = "No entities yet. Use New entity or New type to start building this universe.";
     } else if (!filteredEntities().length) {
-      prompt.textContent = "No entities match the current filter. Adjust the search or type filter on the left.";
+      prompt.textContent = "No matching entities. Adjust search or type filter.";
     } else {
-      prompt.textContent = "Choose an entity on the left to inspect its identity and persisted knowledge.";
+      prompt.textContent = "Select an entity to inspect its entry.";
     }
     detailContext.append(prompt);
   }
@@ -340,21 +350,40 @@ export function createCodexController(options: {
     detailMeta.replaceChildren();
 
     const typeSpan = document.createElement("span");
-    typeSpan.className = "codex-meta-pill";
-    typeSpan.textContent = `Type: ${formatEntityTypeText(entity, typeGroups)}`;
+    typeSpan.className = entity.typeId ? "codex-meta-item" : "codex-meta-item codex-meta-untyped";
+    typeSpan.textContent = formatEntityTypeText(entity, typeGroups);
     detailMeta.append(typeSpan);
 
     if (entity.primaryPageTitle !== null) {
+      const sep = document.createElement("span");
+      sep.className = "codex-meta-sep";
+      sep.setAttribute("aria-hidden", "true");
+      sep.textContent = "·";
       const pageSpan = document.createElement("span");
-      pageSpan.className = "codex-meta-pill";
+      pageSpan.className = "codex-meta-item";
       pageSpan.textContent = `Primary document: ${entity.primaryPageTitle}`;
-      detailMeta.append(pageSpan);
+      detailMeta.append(sep, pageSpan);
     }
 
-    const idSpan = document.createElement("span");
-    idSpan.className = "entity-id";
-    idSpan.textContent = `ID: ${entity.id}`;
-    detailMeta.append(idSpan);
+    const idDisclosure = document.createElement("details");
+    idDisclosure.className = "codex-disclosure codex-id-disclosure";
+    const idSummary = document.createElement("summary");
+    idSummary.textContent = "Identifier";
+    const idBody = document.createElement("p");
+    idBody.className = "codex-disclosure-body";
+    const entityIdSpan = document.createElement("span");
+    entityIdSpan.className = "entity-id";
+    entityIdSpan.textContent = `Entity ID: ${entity.id}`;
+    idBody.append(entityIdSpan);
+    if (entity.typeId) {
+      const sep = document.createTextNode(" · ");
+      const typeIdSpan = document.createElement("span");
+      typeIdSpan.className = "entity-id";
+      typeIdSpan.textContent = `Type ID: ${entity.typeId}`;
+      idBody.append(sep, typeIdSpan);
+    }
+    idDisclosure.append(idSummary, idBody);
+    detailMeta.append(idDisclosure);
   }
 
   async function loadSelectedContext(entity: CodexEntityEntry): Promise<void> {
@@ -365,8 +394,8 @@ export function createCodexController(options: {
     detailContext.replaceChildren();
     const loadingMsg = document.createElement("p");
     loadingMsg.setAttribute("role", "status");
-    loadingMsg.className = "context-note";
-    loadingMsg.textContent = "Loading persisted knowledge…";
+    loadingMsg.className = "codex-detail-placeholder";
+    loadingMsg.textContent = "Loading entry…";
     detailContext.append(loadingMsg);
     try {
       const data = await options.loadContext(token, entity.id);
@@ -380,7 +409,7 @@ export function createCodexController(options: {
       }
       if (data.entity.id !== entity.id) throw new Error("Entity identity mismatch");
       detailContext.replaceChildren();
-      renderEntityContextSections(detailContext, data, entities);
+      renderCodexEntrySections(detailContext, data, entities);
     } catch (error) {
       if (
         reqVersion !== contextVersion ||
@@ -446,6 +475,7 @@ export function createCodexController(options: {
     const token = options.activeToken();
     if (!token) return;
     const reqVersion = ++indexVersion;
+    const epoch = universeEpoch;
     loadingIndex = true;
     setControlsDisabled();
     if (!indexLoaded) {
@@ -454,7 +484,7 @@ export function createCodexController(options: {
     }
     try {
       const raw = await options.loadIndex(token);
-      if (reqVersion !== indexVersion || options.activeToken() !== token) return;
+      if (reqVersion !== indexVersion || epoch !== universeEpoch || options.activeToken() !== token) return;
       const sorted = sortIndexData(raw);
       loadedToken = token;
       types = sorted.types;
@@ -462,13 +492,40 @@ export function createCodexController(options: {
       indexLoaded = true;
       pendingRefreshAfterWrite = null;
       refreshButton.hidden = true;
-      statusEl.textContent =
-        preserveStatus ?? "Creations save immediately and stay independent of document drafts.";
 
-      if (preferSelectId && entities.some(e => e.id === preferSelectId)) {
-        selectedEntityId = preferSelectId;
-        const createdEntity = entities.find(e => e.id === preferSelectId)!;
-        const matchesCurrentFilter = filteredEntities().some(e => e.id === preferSelectId);
+      const reconciling = pendingCreate && pendingCreate.token === token ? pendingCreate : null;
+      if (pendingCreate && pendingCreate.token !== token) {
+        pendingCreate = null;
+      }
+
+      let reconciledEntityId: string | undefined;
+      if (reconciling) {
+        pendingCreate = null;
+        if (reconciling.kind === "entity") {
+          const matchedEntity = entities.find(e => e.id === reconciling.id);
+          if (matchedEntity) {
+            reconciledEntityId = matchedEntity.id;
+            statusEl.textContent = `Confirmed entity "${matchedEntity.label}" was saved.`;
+          } else {
+            statusEl.textContent = `Verified Codex index: entity "${reconciling.label}" was not saved. You may try creating it again.`;
+          }
+        } else {
+          const matchedType = types.find(t => t.id === reconciling.id);
+          if (matchedType) {
+            statusEl.textContent = `Confirmed type "${matchedType.label}" was saved.`;
+          } else {
+            statusEl.textContent = `Verified Codex index: type "${reconciling.label}" was not saved. You may try creating it again.`;
+          }
+        }
+      } else {
+        statusEl.textContent = preserveStatus ?? "";
+      }
+
+      const targetSelectId = preferSelectId ?? reconciledEntityId;
+      if (targetSelectId && entities.some(e => e.id === targetSelectId)) {
+        selectedEntityId = targetSelectId;
+        const createdEntity = entities.find(e => e.id === targetSelectId)!;
+        const matchesCurrentFilter = filteredEntities().some(e => e.id === targetSelectId);
         if (!matchesCurrentFilter) {
           searchQuery = "";
           searchInput.value = "";
@@ -489,10 +546,17 @@ export function createCodexController(options: {
         }
       }
     } catch (error) {
-      if (reqVersion !== indexVersion || options.activeToken() !== token) return;
+      if (reqVersion !== indexVersion || epoch !== universeEpoch || options.activeToken() !== token) return;
       const kind = errorKind(error);
       refreshButton.hidden = false;
-      if (pendingRefreshAfterWrite) {
+      const pendingForToken = pendingCreate && pendingCreate.token === token ? pendingCreate : null;
+      if (pendingForToken) {
+        const noun = pendingForToken.kind === "type" ? "type" : "entity";
+        statusEl.textContent =
+          kind === "busy"
+            ? `Database is busy; ${noun} "${pendingForToken.label}" creation is still unconfirmed. Use Refresh Codex to verify.`
+            : `Verification failed; ${noun} "${pendingForToken.label}" creation is still unconfirmed. Use Refresh Codex to verify.`;
+      } else if (pendingRefreshAfterWrite) {
         statusEl.textContent = `${pendingRefreshAfterWrite} Use Refresh Codex to reload the list.`;
       } else if (!indexLoaded) {
         statusEl.textContent =
@@ -514,7 +578,7 @@ export function createCodexController(options: {
             : "Codex could not be refreshed; showing the last loaded list.";
       }
     } finally {
-      if (reqVersion === indexVersion) {
+      if (reqVersion === indexVersion && epoch === universeEpoch) {
         loadingIndex = false;
         setControlsDisabled();
       }
@@ -538,7 +602,7 @@ export function createCodexController(options: {
   }
 
   function openTypeDialog(): void {
-    if (!indexLoaded || creatingType || creatingEntity || loadingIndex) return;
+    if (!indexLoaded || creatingType || creatingEntity || loadingIndex || pendingCreate) return;
     typeLabelInput.value = "";
     typeErrorEl.textContent = "";
     typeErrorEl.hidden = true;
@@ -556,7 +620,7 @@ export function createCodexController(options: {
   }
 
   function openEntityDialog(): void {
-    if (!indexLoaded || creatingType || creatingEntity || loadingIndex) return;
+    if (!indexLoaded || creatingType || creatingEntity || loadingIndex || pendingCreate) return;
     entityLabelInput.value = "";
     populateEntityTypeSelect();
     entityErrorEl.textContent = "";
@@ -612,7 +676,7 @@ export function createCodexController(options: {
 
   typeForm.addEventListener("submit", event => {
     event.preventDefault();
-    if (creatingType) return;
+    if (creatingType || pendingCreate) return;
     const validation = validateCodexInput(typeLabelInput.value);
     if (!validation.ok) {
       typeErrorEl.textContent = validation.message;
@@ -622,6 +686,7 @@ export function createCodexController(options: {
     }
     const token = options.activeToken();
     if (!token) return;
+    const epoch = universeEpoch;
     const typeId = crypto.randomUUID();
     creatingType = true;
     typeErrorEl.hidden = true;
@@ -632,43 +697,47 @@ export function createCodexController(options: {
     void (async () => {
       try {
         const created = await options.createType(token, typeId, validation.label);
-        if (options.activeToken() !== token) {
+        if (epoch !== universeEpoch || options.activeToken() !== token) {
           typeDialog.close();
           return;
         }
         if (created.id !== typeId) {
           throw new Error("Created type identity mismatch");
         }
+        pendingCreate = null;
         typeDialog.close();
         pendingRefreshAfterWrite = `Type "${created.label}" was saved, but Codex failed to refresh.`;
         await refreshIndex(undefined, `Created type "${created.label}".`);
       } catch (error) {
-        if (options.activeToken() !== token) {
+        if (epoch !== universeEpoch || options.activeToken() !== token) {
           typeDialog.close();
           return;
         }
-        const message = describeCreateError(error, "type");
+        const message = describeCreateError(error, "type", validation.label);
         if (isDefiniteNonCommit(error)) {
           typeErrorEl.textContent = message;
           typeErrorEl.hidden = false;
           typeLabelInput.focus();
         } else {
+          pendingCreate = { token, kind: "type", id: typeId, label: validation.label };
           typeDialog.close();
           refreshButton.hidden = false;
           statusEl.textContent = message;
         }
       } finally {
-        creatingType = false;
-        typeSubmitButton.disabled = false;
-        typeCancelButton.disabled = false;
-        setControlsDisabled();
+        if (epoch === universeEpoch) {
+          creatingType = false;
+          typeSubmitButton.disabled = false;
+          typeCancelButton.disabled = false;
+          setControlsDisabled();
+        }
       }
     })();
   });
 
   entityForm.addEventListener("submit", event => {
     event.preventDefault();
-    if (creatingEntity) return;
+    if (creatingEntity || pendingCreate) return;
     const validation = validateCodexInput(entityLabelInput.value);
     if (!validation.ok) {
       entityErrorEl.textContent = validation.message;
@@ -678,6 +747,7 @@ export function createCodexController(options: {
     }
     const token = options.activeToken();
     if (!token) return;
+    const epoch = universeEpoch;
     const entityId = crypto.randomUUID();
     const chosenTypeId = entityTypeSelect.value ? entityTypeSelect.value : null;
     creatingEntity = true;
@@ -689,36 +759,40 @@ export function createCodexController(options: {
     void (async () => {
       try {
         const created = await options.createEntity(token, entityId, validation.label, chosenTypeId);
-        if (options.activeToken() !== token) {
+        if (epoch !== universeEpoch || options.activeToken() !== token) {
           entityDialog.close();
           return;
         }
         if (created.id !== entityId) {
           throw new Error("Created entity identity mismatch");
         }
+        pendingCreate = null;
         entityDialog.close();
         pendingRefreshAfterWrite = `Entity "${created.label}" was saved, but Codex failed to refresh.`;
         await refreshIndex(created.id, `Created entity "${created.label}".`);
       } catch (error) {
-        if (options.activeToken() !== token) {
+        if (epoch !== universeEpoch || options.activeToken() !== token) {
           entityDialog.close();
           return;
         }
-        const message = describeCreateError(error, "entity");
+        const message = describeCreateError(error, "entity", validation.label);
         if (isDefiniteNonCommit(error)) {
           entityErrorEl.textContent = message;
           entityErrorEl.hidden = false;
           entityLabelInput.focus();
         } else {
+          pendingCreate = { token, kind: "entity", id: entityId, label: validation.label };
           entityDialog.close();
           refreshButton.hidden = false;
           statusEl.textContent = message;
         }
       } finally {
-        creatingEntity = false;
-        entitySubmitButton.disabled = false;
-        entityCancelButton.disabled = false;
-        setControlsDisabled();
+        if (epoch === universeEpoch) {
+          creatingEntity = false;
+          entitySubmitButton.disabled = false;
+          entityCancelButton.disabled = false;
+          setControlsDisabled();
+        }
       }
     })();
   });
@@ -735,6 +809,7 @@ export function createCodexController(options: {
       contextVersion++;
     },
     resetForUniverse(_token: string): void {
+      universeEpoch++;
       indexVersion++;
       contextVersion++;
       loadedToken = "";
@@ -746,9 +821,16 @@ export function createCodexController(options: {
       selectedEntityId = null;
       indexLoaded = false;
       loadingIndex = false;
+      creatingType = false;
+      creatingEntity = false;
+      pendingCreate = null;
       pendingRefreshAfterWrite = null;
       refreshButton.hidden = true;
-      statusEl.textContent = "Open a universe to browse its Codex.";
+      statusEl.textContent = "";
+      typeSubmitButton.disabled = false;
+      typeCancelButton.disabled = false;
+      entitySubmitButton.disabled = false;
+      entityCancelButton.disabled = false;
       if (typeDialog.open) typeDialog.close();
       if (entityDialog.open) entityDialog.close();
       renderAll();
