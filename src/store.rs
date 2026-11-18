@@ -3671,7 +3671,18 @@ mod tests {
             Entity, EntityId, Owner, Provenance, Snapshot, Value, ValueClass,
         };
         use std::sync::{mpsc, Arc};
+        use std::time::Duration;
 
+        struct HookReset;
+        impl Drop for HookReset {
+            fn drop(&mut self) {
+                super::TEST_HOOK.with(|cell| {
+                    *cell.borrow_mut() = None;
+                });
+            }
+        }
+
+        const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("overlap.sqlite");
         let universe = UniverseId::parse("11111111-1111-4111-8111-111111111111").expect("universe");
@@ -3699,6 +3710,7 @@ mod tests {
         let e1_reader = e1.clone();
         let path_reader = path.clone();
         let reader_thread = std::thread::spawn(move || {
+            let _reset = HookReset;
             let rx = std::sync::Mutex::new(writer_ready_rx);
             super::TEST_HOOK.with(|cell| {
                 *cell.borrow_mut() = Some(Arc::new(move |point| {
@@ -3706,22 +3718,22 @@ mod tests {
                         reader_paused_tx.send(()).expect("signal reader paused");
                         rx.lock()
                             .expect("lock rx")
-                            .recv()
+                            .recv_timeout(WAIT_TIMEOUT)
                             .expect("wait writer ready");
                     }
                 }));
             });
             let mid_read = reader_store.entity_context(&e1_reader).expect("mid read");
-            super::TEST_HOOK.with(|cell| {
-                *cell.borrow_mut() = None;
-            });
             reader_done_tx.send(()).expect("signal reader done");
             (mid_read, reader_store, path_reader)
         });
 
         // Ensure reader is inside read_entity_context (past definitions, holding SHARED lock).
-        reader_paused_rx.recv().expect("wait reader paused");
+        reader_paused_rx
+            .recv_timeout(WAIT_TIMEOUT)
+            .expect("wait reader paused");
 
+        let _writer_reset = HookReset;
         let rx_writer = std::sync::Mutex::new(reader_done_rx);
         super::TEST_HOOK.with(|cell| {
             *cell.borrow_mut() = Some(Arc::new(move |point| {
@@ -3730,7 +3742,7 @@ mod tests {
                     rx_writer
                         .lock()
                         .expect("lock rx")
-                        .recv()
+                        .recv_timeout(WAIT_TIMEOUT)
                         .expect("wait reader done");
                 }
             }));
@@ -3762,9 +3774,7 @@ mod tests {
                 }],
             })
             .expect("atomic import");
-        super::TEST_HOOK.with(|cell| {
-            *cell.borrow_mut() = None;
-        });
+        drop(_writer_reset);
         assert_eq!(outcome.inserted, 2);
 
         let (mid_read, reader_store, _) = reader_thread.join().expect("join reader");

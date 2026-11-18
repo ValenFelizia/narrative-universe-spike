@@ -2566,6 +2566,546 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn context_wire_size_helpers_match_serde_json_exactly() {
+        fn assert_wire_parity<T: serde::Serialize>(
+            label: &str,
+            value: &T,
+            computed: Option<usize>,
+        ) {
+            let actual = serde_json::to_vec(value).unwrap().len();
+            assert_eq!(computed, Some(actual), "{label}");
+        }
+
+        // 1. String helper: empty, plain ASCII, slash, quote, backslash, every ASCII control byte
+        // (0x00..=0x1f, including NUL and 2-byte vs 6-byte escapes), 0x7f, BMP and non-BMP Unicode.
+        let mut all_controls = String::new();
+        for byte in 0u8..=0x7f {
+            let single = char::from(byte).to_string();
+            assert_wire_parity(
+                &format!("ascii byte 0x{byte:02x}"),
+                &single,
+                super::json_str_wire_bytes(&single),
+            );
+            if byte <= 0x1f {
+                all_controls.push(char::from(byte));
+            }
+        }
+        for (name, sample) in [
+            ("empty", ""),
+            ("plain", "Mara Vey"),
+            ("slash", "a/b/c"),
+            ("quotes_and_backslash", r#""quoted"\path\"end""#),
+            ("nul_and_controls", all_controls.as_str()),
+            ("bmp_and_non_bmp", "café — \u{2028}\u{2029} 𐍈 𝄞 🧪"),
+            (
+                "mixed_escapes_and_non_bmp",
+                "\"\0\\\x08\t\n\x0c\r\x1f 𐍈 \"line\"",
+            ),
+        ] {
+            assert_wire_parity(name, &sample, super::json_str_wire_bytes(sample));
+            assert_wire_parity(
+                &format!("opt some {name}"),
+                &Some(sample),
+                super::json_opt_str_wire_bytes(Some(sample)),
+            );
+        }
+        assert_wire_parity(
+            "opt none",
+            &Option::<&str>::None,
+            super::json_opt_str_wire_bytes(None),
+        );
+
+        // 2. Array helper: 0, 1, and multiple elements.
+        for (name, items) in [
+            ("empty array", vec![]),
+            ("single array", vec!["one"]),
+            ("multi array", vec!["", "\"two\"\\", "\0𝄞"]),
+        ] {
+            assert_wire_parity(
+                name,
+                &items,
+                super::json_array_wire_bytes(&items, |item| super::json_str_wire_bytes(item)),
+            );
+        }
+
+        // 3. RevealIdentity: empty, ordinary, and escaped/control/non-BMP labels.
+        let id_main = EntityId::parse(PLACE).unwrap().as_str().to_owned();
+        let id_other = EntityId::parse(HOUSE).unwrap().as_str().to_owned();
+        let make_self = || super::RevealIdentity {
+            id: id_main.clone(),
+            label: "Self \"Ref\" \\\0𝄞".into(),
+        };
+        let make_other = || super::RevealIdentity {
+            id: id_other.clone(),
+            label: "Other 𐍈".into(),
+        };
+        for (name, label) in [
+            ("identity empty", ""),
+            ("identity plain", "Valdoria"),
+            ("identity escaped unicode", "Mara \"Vey\" \\\0\x1f 𐍈"),
+        ] {
+            let identity = super::RevealIdentity {
+                id: id_main.clone(),
+                label: label.to_owned(),
+            };
+            assert_wire_parity(
+                name,
+                &identity,
+                super::reveal_identity_wire_bytes(&identity),
+            );
+        }
+
+        // 4. ContextDefinition: owner kinds, optional propertyLabel, value classes, cardinalities, archived.
+        let def_cases = [
+            (
+                "type owner unnamed text singular active",
+                "type",
+                None,
+                "text",
+                "singular",
+                false,
+            ),
+            (
+                "entity owner named boolean multiple archived",
+                "entity",
+                Some("oath \"sworn\" \\\0\n𐍈"),
+                "boolean",
+                "multiple",
+                true,
+            ),
+            (
+                "type owner named reference multiple active",
+                "type",
+                Some("allies"),
+                "reference",
+                "multiple",
+                false,
+            ),
+        ];
+        let make_def = |idx: usize| {
+            let (_, owner_kind, prop_label, value_class, cardinality, archived) =
+                def_cases[idx % def_cases.len()];
+            super::ContextDefinition {
+                id: "44444444-4444-4444-8444-000000000001".into(),
+                owner_kind,
+                owner_id: id_main.clone(),
+                property_label: prop_label.map(str::to_owned),
+                value_class: value_class.into(),
+                cardinality: cardinality.into(),
+                archived,
+            }
+        };
+        for (idx, (name, ..)) in def_cases.iter().enumerate() {
+            let def = make_def(idx);
+            assert_wire_parity(name, &def, super::context_definition_wire_bytes(&def));
+        }
+
+        // 5. ContextClaim: all RevealValue variants, all Canon literals, archived bits,
+        // and each optional field flipped independently (plus combined escaping/non-BMP).
+        let base_claim = || super::ContextClaim {
+            id: "55555555-5555-4555-8555-000000000001".into(),
+            value: super::RevealValue::Unknown,
+            canon: "ACORDADO".into(),
+            source_status_raw: None,
+            provenance: super::RevealSource {
+                external_ref: None,
+                locator: None,
+                fragment: None,
+                source_revision: None,
+            },
+            scope_note: None,
+            archived: false,
+        };
+        let make_claim = |idx: usize| -> (&'static str, super::ContextClaim) {
+            match idx {
+                0 => ("unknown all-none acordado", base_claim()),
+                1 => (
+                    "text empty provisional archived",
+                    super::ContextClaim {
+                        value: super::RevealValue::Text {
+                            text: String::new(),
+                        },
+                        canon: "PROVISIONAL".into(),
+                        archived: true,
+                        ..base_claim()
+                    },
+                ),
+                2 => (
+                    "text escaped controls non-bmp abierto",
+                    super::ContextClaim {
+                        value: super::RevealValue::Text {
+                            text: "\"line1\"\n\\path\\\0\x01\x1f 𐍈 𝄞".into(),
+                        },
+                        canon: "ABIERTO".into(),
+                        ..base_claim()
+                    },
+                ),
+                3 => (
+                    "boolean false misterio",
+                    super::ContextClaim {
+                        value: super::RevealValue::Boolean { value: false },
+                        canon: "MISTERIO_INTENCIONAL".into(),
+                        ..base_claim()
+                    },
+                ),
+                4 => (
+                    "boolean true archived",
+                    super::ContextClaim {
+                        value: super::RevealValue::Boolean { value: true },
+                        archived: true,
+                        ..base_claim()
+                    },
+                ),
+                5 => (
+                    "reference self",
+                    super::ContextClaim {
+                        value: super::RevealValue::Reference {
+                            target: make_self(),
+                        },
+                        ..base_claim()
+                    },
+                ),
+                6 => (
+                    "reference other",
+                    super::ContextClaim {
+                        value: super::RevealValue::Reference {
+                            target: make_other(),
+                        },
+                        ..base_claim()
+                    },
+                ),
+                7 => (
+                    "only source_status_raw",
+                    super::ContextClaim {
+                        source_status_raw: Some("draft \"1\"\0".into()),
+                        ..base_claim()
+                    },
+                ),
+                8 => (
+                    "only external_ref",
+                    super::ContextClaim {
+                        provenance: super::RevealSource {
+                            external_ref: Some("chronicle\\a\t𝄞".into()),
+                            ..base_claim().provenance
+                        },
+                        ..base_claim()
+                    },
+                ),
+                9 => (
+                    "only locator",
+                    super::ContextClaim {
+                        provenance: super::RevealSource {
+                            locator: Some("folio\n3\x08".into()),
+                            ..base_claim().provenance
+                        },
+                        ..base_claim()
+                    },
+                ),
+                10 => (
+                    "only fragment",
+                    super::ContextClaim {
+                        provenance: super::RevealSource {
+                            fragment: Some("para \"2\"".into()),
+                            ..base_claim().provenance
+                        },
+                        ..base_claim()
+                    },
+                ),
+                11 => (
+                    "only source_revision",
+                    super::ContextClaim {
+                        provenance: super::RevealSource {
+                            source_revision: Some("rev-1\x1b𐍈".into()),
+                            ..base_claim().provenance
+                        },
+                        ..base_claim()
+                    },
+                ),
+                12 => (
+                    "only scope_note",
+                    super::ContextClaim {
+                        scope_note: Some("note\0\r\n\\".into()),
+                        ..base_claim()
+                    },
+                ),
+                13 => (
+                    "all optionals populated",
+                    super::ContextClaim {
+                        value: super::RevealValue::Text {
+                            text: "body \"text\" 𝄞".into(),
+                        },
+                        canon: "PROVISIONAL".into(),
+                        source_status_raw: Some("canon-draft".into()),
+                        provenance: super::RevealSource {
+                            external_ref: Some("ext\"1".into()),
+                            locator: Some("loc\\2".into()),
+                            fragment: Some("frag\x003".into()),
+                            source_revision: Some("rev\x04".into()),
+                        },
+                        scope_note: Some("scope 𐍈".into()),
+                        archived: true,
+                        ..base_claim()
+                    },
+                ),
+                14 => (
+                    "control 0x7f unescaped",
+                    super::ContextClaim {
+                        value: super::RevealValue::Text {
+                            text: "\x7f".into(),
+                        },
+                        ..base_claim()
+                    },
+                ),
+                _ => (
+                    "repeated reference claim",
+                    super::ContextClaim {
+                        id: "55555555-5555-4555-8555-000000000002".into(),
+                        value: super::RevealValue::Reference {
+                            target: make_self(),
+                        },
+                        archived: true,
+                        ..base_claim()
+                    },
+                ),
+            }
+        };
+        for idx in 0..16 {
+            let (name, claim) = make_claim(idx);
+            assert_wire_parity(name, &claim, super::context_claim_wire_bytes(&claim));
+        }
+
+        // 6. Outgoing & incoming groups: 0, 1, and multiple claims across hasArchivedClaims bits.
+        let make_claims = |indices: &[usize]| -> Vec<super::ContextClaim> {
+            indices.iter().map(|&idx| make_claim(idx).1).collect()
+        };
+        for (idx, (claim_indices, has_arch)) in [
+            (&[][..], false),
+            (&[][..], true),
+            (&[2][..], false),
+            (&[1, 13][..], true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let out_group = super::ContextOutgoingGroup {
+                definition: make_def(idx),
+                claims: make_claims(claim_indices),
+                has_archived_claims: has_arch,
+            };
+            assert_wire_parity(
+                &format!("outgoing group {idx}"),
+                &out_group,
+                super::context_outgoing_group_wire_bytes(&out_group),
+            );
+            let in_group = super::ContextIncomingGroup {
+                subject: make_self(),
+                definition: make_def(idx + 1),
+                claims: make_claims(claim_indices),
+            };
+            assert_wire_parity(
+                &format!("incoming group {idx}"),
+                &in_group,
+                super::context_incoming_group_wire_bytes(&in_group),
+            );
+        }
+
+        // 7. Complete EntityContext: optional type_label, empty vs single vs multiple groups,
+        // active & archived outgoing/incoming, and self-reference / repeated identities.
+        let make_out_empty = || super::ContextOutgoingGroup {
+            definition: make_def(0),
+            claims: vec![],
+            has_archived_claims: false,
+        };
+        let make_out_multi = || super::ContextOutgoingGroup {
+            definition: make_def(2),
+            claims: make_claims(&[5, 15]),
+            has_archived_claims: true,
+        };
+        let make_in_single = || super::ContextIncomingGroup {
+            subject: make_self(),
+            definition: make_def(2),
+            claims: make_claims(&[5]),
+        };
+        let make_in_multi = || super::ContextIncomingGroup {
+            subject: make_other(),
+            definition: make_def(1),
+            claims: make_claims(&[6, 13]),
+        };
+        for (name, ctx) in [
+            (
+                "empty untyped entity context",
+                super::EntityContext {
+                    entity: make_self(),
+                    type_label: None,
+                    outgoing_groups: vec![],
+                    incoming_groups: vec![],
+                    archived_outgoing_groups: vec![],
+                    archived_incoming_groups: vec![],
+                },
+            ),
+            (
+                "single-group typed entity context",
+                super::EntityContext {
+                    entity: make_self(),
+                    type_label: Some("Person \"𐍈\"\\".into()),
+                    outgoing_groups: vec![make_out_empty()],
+                    incoming_groups: vec![make_in_single()],
+                    archived_outgoing_groups: vec![make_out_multi()],
+                    archived_incoming_groups: vec![make_in_multi()],
+                },
+            ),
+            (
+                "multi-group self-referential entity context",
+                super::EntityContext {
+                    entity: make_self(),
+                    type_label: Some("House\0\n".into()),
+                    outgoing_groups: vec![make_out_empty(), make_out_multi()],
+                    incoming_groups: vec![make_in_single(), make_in_multi()],
+                    archived_outgoing_groups: vec![make_out_multi()],
+                    archived_incoming_groups: vec![make_in_multi()],
+                },
+            ),
+        ] {
+            assert_wire_parity(name, &ctx, super::context_dto_wire_bytes(&ctx));
+        }
+    }
+
+    /// Core (`Store::entity_context`) budgets every outgoing group wrapper using
+    /// `CONTEXT_OUTGOING_GROUP_WRAPPER_BYTES` (53 bytes, counting `"hasArchivedClaims":false`
+    /// as 5 bytes). Because `"hasArchivedClaims":true` serializes in 4 bytes, core intentionally
+    /// overestimates by exactly 1 byte for each outgoing group (in `outgoingGroups` or
+    /// `archivedOutgoingGroups`) where `hasArchivedClaims == true`.
+    ///
+    /// As a result:
+    /// - Core never underestimates the camelCase DTO wire length, so every accepted `EntityContext`
+    ///   projection is guaranteed to serialize within `MAX_CONTEXT_BYTES`.
+    /// - Bridge `context_dto_wire_bytes` remains exact (`== serde_json::to_vec(&dto).len()`).
+    #[test]
+    fn core_conservative_has_archived_claims_allowance_never_underestimates_wire_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let universe = UniverseId::parse(UNIVERSE).unwrap();
+        let e1 = EntityId::parse(PLACE).unwrap();
+        let d_id = narrative_universe::DefinitionId::parse("44444444-4444-4444-8444-000000000010")
+            .unwrap();
+
+        let make_assertion =
+            |suffix: u8, text: String, archived: bool| narrative_universe::Assertion {
+                id: narrative_universe::AssertionId::parse(&format!(
+                    "55555555-5555-4555-8555-0000000000{suffix:02x}"
+                ))
+                .unwrap(),
+                subject_id: e1.clone(),
+                definition_id: d_id.clone(),
+                value: narrative_universe::Value::Text(text),
+                canon: narrative_universe::Canon::Acordado,
+                source_status_raw: None,
+                provenance: narrative_universe::Provenance::absent(),
+                scope_note: None,
+                archived,
+            };
+
+        let run_case = |label: &str,
+                        def_archived: bool,
+                        extra_archived_claim: bool,
+                        payload_active: bool,
+                        expected_allowance: usize| {
+            let build = |name: &str, text: String| {
+                let path = dir.path().join(name);
+                let mut assertions = vec![make_assertion(1, text, !payload_active)];
+                if extra_archived_claim {
+                    assertions.push(make_assertion(2, "arch".into(), true));
+                }
+                Store::import_new(
+                    &path,
+                    narrative_universe::Snapshot {
+                        universe_id: universe.clone(),
+                        pages: vec![],
+                        types: vec![],
+                        entities: vec![Entity {
+                            id: e1.clone(),
+                            label: "Bounded".into(),
+                            type_id: None,
+                            page_id: None,
+                        }],
+                        definitions: vec![narrative_universe::Definition {
+                            id: d_id.clone(),
+                            owner: narrative_universe::Owner::Entity(e1.clone()),
+                            value_class: narrative_universe::ValueClass::Text,
+                            cardinality: narrative_universe::Cardinality::Multiple,
+                            label: Some(
+                                narrative_universe::DefinitionLabel::parse("notes").unwrap(),
+                            ),
+                            archived: def_archived,
+                        }],
+                        assertions,
+                    },
+                )
+                .unwrap()
+                .0
+            };
+
+            let base_active = Some(super::ActiveUniverse {
+                token: "k".into(),
+                store: build(&format!("{label}-base.sqlite"), String::new()),
+            });
+            let base_dto = super::context_active(&base_active, "k", PLACE).unwrap();
+            let true_groups = base_dto
+                .outgoing_groups
+                .iter()
+                .chain(base_dto.archived_outgoing_groups.iter())
+                .filter(|g| g.has_archived_claims)
+                .count();
+            assert_eq!(true_groups, expected_allowance, "{label} true group count");
+            let base_len = serde_json::to_vec(&base_dto).unwrap().len();
+            assert_eq!(super::context_dto_wire_bytes(&base_dto), Some(base_len));
+
+            let headroom = narrative_universe::MAX_CONTEXT_BYTES - base_len;
+            let max_core_fit = headroom - expected_allowance;
+
+            let fit_active = Some(super::ActiveUniverse {
+                token: "k".into(),
+                store: build(&format!("{label}-fit.sqlite"), "x".repeat(max_core_fit)),
+            });
+            let fit_dto = super::context_active(&fit_active, "k", PLACE).unwrap();
+            let fit_len = serde_json::to_vec(&fit_dto).unwrap().len();
+            assert_eq!(super::context_dto_wire_bytes(&fit_dto), Some(fit_len));
+            assert!(
+                fit_len <= narrative_universe::MAX_CONTEXT_BYTES,
+                "{label} accepted wire len {fit_len} exceeded MAX_CONTEXT_BYTES"
+            );
+            assert_eq!(
+                fit_len,
+                narrative_universe::MAX_CONTEXT_BYTES - expected_allowance,
+                "{label} exact core acceptance boundary"
+            );
+
+            // One extra byte hits core's ContextTooLarge ceiling (even when actual wire bytes
+            // would be <= MAX_CONTEXT_BYTES if expected_allowance > 0).
+            let over_active = Some(super::ActiveUniverse {
+                token: "k".into(),
+                store: build(
+                    &format!("{label}-over.sqlite"),
+                    "x".repeat(max_core_fit + 1),
+                ),
+            });
+            assert!(
+                matches!(
+                    super::context_active(&over_active, "k", PLACE),
+                    Err(BridgeError::ContextTooLarge)
+                ),
+                "{label} expected ContextTooLarge at core boundary + 1"
+            );
+        };
+
+        // k = 0: active definition + active claim -> hasArchivedClaims is false (exact 2 MiB fit).
+        run_case("k0", false, false, true, 0);
+        // k = 1: archived definition + archived claim -> 1 archived outgoing group with hasArchivedClaims=true.
+        run_case("k1", true, false, false, 1);
+        // k = 2: active definition + active claim + archived claim -> both active & archived outgoing groups have hasArchivedClaims=true.
+        run_case("k2", false, true, true, 2);
+    }
+
     #[derive(serde::Deserialize)]
     struct Fixture {
         cases: Vec<FixtureCase>,
