@@ -8,6 +8,7 @@ import { applyReply, beginSave, isDirty, openSession, reconcileBusy, recordTitle
 
 import { mentionHistory, mentionEffects, recordTransaction } from "../src/mention-history.ts";
 import { connectEditor, type EntityContext, type EntityReveal, type EntitySummary } from "./connect.ts";
+import { createCodexController, type CodexEntityEntry, type CodexIndex, type TypeIndexEntry } from "./codex.ts";
 
 type PageIndexEntry = { id: string; title: string };
 type OpenedUniverse = { token: string; pages: PageIndexEntry[] };
@@ -15,6 +16,11 @@ type PageContent = { id: string; title: string; body: string; revision: number |
 type SaveResponse = { pageId: string; sessionId: string; requestId: number; body: string; title: string; mentions: Mention[]; revision: number };
 
 export function initDesktop(invokeCommand: typeof invoke): { requestClose: (token: string) => void } {
+  const appShell = document.querySelector<HTMLElement>(".app-shell")!;
+  const saveControls = document.querySelector<HTMLElement>(".save-controls")!;
+  const modeWrite = document.querySelector<HTMLButtonElement>("#mode-write")!;
+  const modeCodex = document.querySelector<HTMLButtonElement>("#mode-codex")!;
+  const codexWorkspace = document.querySelector<HTMLElement>("#codex-workspace")!;
   const form = document.querySelector<HTMLFormElement>("#open-form")!;
   const input = document.querySelector<HTMLInputElement>("#database-path")!;
   const name = document.querySelector<HTMLElement>("#universe-name")!;
@@ -50,8 +56,10 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       else toggleLibrary.focus();
     }
   }
-  toggleLibrary.addEventListener("click", () => { const opening = library.hidden; setLibrary(opening, !opening && narrow()); paint(); });
-  document.addEventListener("keydown", event => { if (event.key === "Escape" && narrow() && !library.hidden && !dialog.open) { event.preventDefault(); setLibrary(false, true); } });
+  let mode: "write" | "codex" = "write";
+  let writeScroll: { paneTop: number; paneLeft: number; editorTop: number; editorLeft: number } | null = null;
+  toggleLibrary.addEventListener("click", () => { if (mode !== "write") return; const opening = library.hidden; setLibrary(opening, !opening && narrow()); paint(); });
+  document.addEventListener("keydown", event => { if (mode === "write" && event.key === "Escape" && narrow() && !library.hidden && !dialog.open) { event.preventDefault(); setLibrary(false, true); } });
   let universeToken = "";
   let session: SaveState | null = null;
   let selectedPageId: string | null = null;
@@ -69,15 +77,80 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   // An empty stored title is valid. Only its labels fall back; the title itself is never rewritten.
   const displayTitle = (value: string): string => value || "Untitled document";
 
+  const codex = createCodexController({
+    root: codexWorkspace,
+    activeToken: () => universeToken,
+    isCodexActive: () => mode === "codex",
+    loadIndex: token => invokeCommand<CodexIndex>("codex_index", { universeToken: token }),
+    loadContext: (token, entityId) => invokeCommand<EntityContext>("entity_context", { universeToken: token, entityId }),
+    createType: (token, typeId, label) => invokeCommand<TypeIndexEntry>("create_entity_type", { typeId, label, universeToken: token }),
+    createEntity: (token, entityId, label, typeId) => invokeCommand<CodexEntityEntry>("create_entity", { entityId, label, typeId, universeToken: token }),
+  });
+
   const connect = connectEditor({session: () => session, view: () => editor, token: () => universeToken,
-    allowed: () => !(narrow() && !library.hidden) && !!session && !loading && !deciding && !transitioning && !verifying && !uncertain && !session.inFlight && session.baseRevision < MAX_SUPPORTED_REVISION && ["clean", "dirty"].includes(session.status),
+    allowed: () => mode === "write" && !(narrow() && !library.hidden) && !!session && !loading && !deciding && !transitioning && !verifying && !uncertain && !session.inFlight && session.baseRevision < MAX_SUPPORTED_REVISION && ["clean", "dirty"].includes(session.status),
     reveal: (token, entityId) => invokeCommand<EntityReveal>("entity_reveal", {universeToken: token, entityId}),
     context: (token, entityId) => invokeCommand<EntityContext>("entity_context", {universeToken: token, entityId}),
     entities: token => invokeCommand<EntitySummary[]>("entity_index", {universeToken: token}),
     message: text => { saveStatus.textContent = text; }, host: pane});
 
+  function setMode(next: "write" | "codex"): void {
+    if (next === mode) return;
+    if (next === "codex" && !universeToken) return;
+    if (loading || deciding || transitioning || verifying || !!saving) return;
+    if (mode === "codex" && codex.isBusy()) return;
+    mode = next;
+    if (mode === "codex") {
+      writeScroll = {
+        paneTop: pane.scrollTop,
+        paneLeft: pane.scrollLeft,
+        editorTop: editor?.scrollDOM.scrollTop ?? 0,
+        editorLeft: editor?.scrollDOM.scrollLeft ?? 0,
+      };
+      appShell.hidden = true;
+      saveControls.hidden = true;
+      codexWorkspace.hidden = false;
+      contextName.textContent = "Codex";
+      modeWrite.setAttribute("aria-pressed", "false");
+      modeCodex.setAttribute("aria-pressed", "true");
+      toggleLibrary.disabled = true;
+      paint();
+      void codex.activate(universeToken);
+    } else {
+      codex.deactivate();
+      codexWorkspace.hidden = true;
+      appShell.hidden = false;
+      saveControls.hidden = false;
+      toggleLibrary.disabled = false;
+      modeWrite.setAttribute("aria-pressed", "true");
+      modeCodex.setAttribute("aria-pressed", "false");
+      contextName.textContent = session
+        ? displayTitle(session.draftTitle)
+        : selectedPageId
+          ? displayTitle(title.textContent ?? "")
+          : "No document selected";
+      if (editor) {
+        editor.requestMeasure();
+      }
+      if (writeScroll) {
+        pane.scrollTop = writeScroll.paneTop;
+        pane.scrollLeft = writeScroll.paneLeft;
+        if (editor) {
+          editor.scrollDOM.scrollTop = writeScroll.editorTop;
+          editor.scrollDOM.scrollLeft = writeScroll.editorLeft;
+        }
+      }
+      paint();
+    }
+  }
+  modeWrite.addEventListener("click", () => setMode("write"));
+  modeCodex.addEventListener("click", () => setMode("codex"));
+
   function paint(): void {
     connect.refresh();
+    const busyAsync = loading || deciding || transitioning || verifying || !!saving;
+    modeWrite.disabled = busyAsync;
+    modeCodex.disabled = !universeToken || busyAsync;
     newButton.disabled = !universeToken || !!pendingCreate || transitioning || loading || deciding || verifying || !!saving;
     verifyCreate.hidden = !pendingCreate;
     titleInput.readOnly = !session || loading || deciding || transitioning || session.baseRevision >= MAX_SUPPORTED_REVISION;
@@ -188,7 +261,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       const page = await invokeCommand<PageContent>("read_page", {pageId: id, universeToken});
       if (requestVersion !== version) return;
       clearPage();
-      selectedPageId = page.id; contextName.textContent = displayTitle(page.title);
+      selectedPageId = page.id; if (mode === "write") contextName.textContent = displayTitle(page.title);
       title.textContent = page.title; titleInput.value = page.title; titleInput.hidden = false; title.hidden = true;
       pane.scrollTop = 0;
       for (const button of list.querySelectorAll<HTMLButtonElement>("button")) button.setAttribute("aria-current", String(button.dataset.pageId === selectedPageId));
@@ -210,7 +283,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
         paint();
       }
       status.textContent = "";
-      if (narrow()) { setLibrary(false, false); if (editor) editor.focus(); else toggleLibrary.focus(); }
+      if (mode === "write" && narrow()) { setLibrary(false, false); if (editor) editor.focus(); else toggleLibrary.focus(); }
     } catch { if (requestVersion === version) status.textContent = "The page could not be read. Your current draft is preserved."; }
     finally { if (requestVersion === version) loading = false; if (guarded) transitioning = false; paint(); }
   }
@@ -231,7 +304,7 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   }
   titleInput.addEventListener("input", () => {
     if (!session || titleInput.readOnly) return;
-    try { session = recordTitleEdit(session, titleInput.value); contextName.textContent = displayTitle(titleInput.value); paint(); }
+    try { session = recordTitleEdit(session, titleInput.value); if (mode === "write") contextName.textContent = displayTitle(titleInput.value); paint(); }
     catch { titleInput.value = session.draftTitle; saveStatus.textContent = "This title is not supported."; }
   });
   newButton.addEventListener("click", () => void (async () => {
@@ -274,16 +347,18 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
       const opened = await invokeCommand<OpenedUniverse>("open_universe", {databasePath: path});
       universeToken = opened.token; pendingCreate = null; pages = opened.pages;
       selectedPageId = null;
+      codex.resetForUniverse(universeToken);
+      if (mode === "codex") void codex.activate(universeToken);
       clearPage(); renderPages();
       name.textContent = path.split(/[\\/]/).at(-1) || path; windowUniverse.textContent = ` · ${name.textContent}`;
       if (pages.length) { loading = false; await selectPage(pages[0]!.id, false); }
-      else { title.hidden = false; titleInput.hidden = true; contextName.textContent = "No document selected"; title.textContent = "No document selected"; body.textContent = "This universe has no pages."; }
+      else { title.hidden = false; titleInput.hidden = true; if (mode === "write") contextName.textContent = "No document selected"; title.textContent = "No document selected"; body.textContent = "This universe has no pages."; }
     } catch { status.textContent = "The universe could not be opened."; }
     finally { loading = false; transitioning = false; paint(); }
   });
   saveButton.addEventListener("click", () => void save());
   verifyButton.addEventListener("click", () => void verifyBusy());
-  document.addEventListener("keydown", event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); } });
+  document.addEventListener("keydown", event => { if (mode === "write" && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); } });
   return {requestClose: (token: string) => { void (async () => {
     if (transitioning) { await invokeCommand("cancel_close", {token}); return; }
     transitioning = true;

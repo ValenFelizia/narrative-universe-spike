@@ -1,0 +1,69 @@
+{
+  "synthetic": true,
+  "native": true,
+  "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36 Edg/157.0.0.0",
+  "viewports": {
+    "win1600": {
+      "width": 1600,
+      "height": 900,
+      "dpr": 1
+    },
+    "win1120": {
+      "width": 1120,
+      "height": 780,
+      "dpr": 1
+    },
+    "win800": {
+      "width": 800,
+      "height": 600,
+      "dpr": 1
+    }
+  },
+  "emptyUniverse": {
+    "emptyLabels": [
+      "Ashfall Bell",
+      "Mara Vey · …6303",
+      "Mara Vey · …c0b5"
+    ],
+    "emptyFilterOpts": [
+      "All types (0)",
+      "House (0)",
+      "Untyped (0)"
+    ]
+  },
+  "createdIds": {
+    "chronicleId": "01fd2301-fb1a-4bbe-97f8-6d5aab60f97e",
+    "sableLanternId": "24bdadc1-6d27-4f82-b52f-8ab6c34bc731"
+  },
+  "writeVerify": {
+    "linkedMentionCount": 3,
+    "mentionIds": [
+      "00000000-0000-4000-8000-000000000011",
+      "00000000-0000-4000-8000-000000000013",
+      "24bdadc1-6d27-4f82-b52f-8ab6c34bc731"
+    ]
+  },
+  "relaunchVerify": {
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36 Edg/157.0.0.0",
+    "persistedTypeId": "01fd2301-fb1a-4bbe-97f8-6d5aab60f97e",
+    "persistedEntityId": "24bdadc1-6d27-4f82-b52f-8ab6c34bc731"
+  },
+  "screenshots": [
+    "codex-1120-empty.png",
+    "codex-1600-mara.png",
+    "codex-1600-entity-dialog.png",
+    "codex-1600-created-entity.png",
+    "codex-1120-ashfall.png",
+    "codex-800-stacked.png"
+  ],
+  "checks": [
+    "empty-document synthetic database opens Codex with 0 pages and supports creating custom types and untyped/typed/duplicate entities",
+    "client-side label validation rejects blank labels without closing dialog",
+    "EntityContext inspection in Codex uses editorial hierarchy, progressive UUID/schema/provenance disclosures, one human canon gloss, subject-first incoming references, and closed-by-default archives",
+    "opening another universe while Codex is active keeps #context-name set to Codex",
+    "Write dirty title/prose/scroll/undo survives Codex creation and Ctrl+S guard",
+    "Connect (Ctrl+K / contextual action) immediately offers Codex-created entity in Write",
+    "full native process relaunch preserves exact type ID, entity ID, saved page prose, and mention link",
+    "responsive layout fits 1600x900, 1120x780, and 800x600 without horizontal overflow"
+  ]
+}

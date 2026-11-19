@@ -112,6 +112,24 @@ pub struct EntitySummary {
     pub primary_page_title: Option<String>,
 }
 
+/// One entity for the Codex library: identity, label, optional custom type
+/// identity and label, and optional read-only primary document title.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodexEntitySummary {
+    pub id: EntityId,
+    pub label: String,
+    pub type_id: Option<TypeId>,
+    pub type_label: Option<String>,
+    pub primary_page_title: Option<String>,
+}
+
+/// Consistent point-in-time snapshot of all custom types and entities for Codex.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodexIndex {
+    pub types: Vec<EntityType>,
+    pub entities: Vec<CodexEntitySummary>,
+}
+
 /// A point-in-time, read-only projection. Claims keep their original orientation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntityReveal {
@@ -354,6 +372,32 @@ impl Store {
             });
         }
         Ok(entities)
+    }
+
+    /// Lists every custom entity type in stable label-then-id order (SQLite
+    /// BINARY, so duplicate labels remain separate and ordered by id).
+    pub fn type_index(&self) -> Result<Vec<EntityType>> {
+        read_type_index(&self.conn)
+    }
+
+    /// Lists every entity in stable label-then-id order (SQLite BINARY) with
+    /// optional type identity/label and optional primary document title.
+    pub fn codex_entity_index(&self) -> Result<Vec<CodexEntitySummary>> {
+        read_codex_entity_index(&self.conn)
+    }
+
+    /// Reads the custom entity types and entity library summaries from a single
+    /// consistent SQLite snapshot.
+    pub fn codex_index(&self) -> Result<CodexIndex> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| map_sql("begin codex index", err))?;
+        let types = read_type_index(&tx)?;
+        let entities = read_codex_entity_index(&tx)?;
+        tx.commit()
+            .map_err(|err| map_sql("commit codex index", err))?;
+        Ok(CodexIndex { types, entities })
     }
 
     /// Reads identity and all active claims from a single SQLite snapshot.
@@ -2708,6 +2752,133 @@ fn read_bounded_short_str<'a>(
             message: format!("invalid stored {field}"),
         }),
     }
+}
+
+fn read_stored_text_str<'a>(
+    row: &'a rusqlite::Row<'_>,
+    idx: usize,
+    field: &str,
+) -> Result<&'a str> {
+    match row.get_ref(idx).map_err(|err| map_sql(field, err))? {
+        rusqlite::types::ValueRef::Text(bytes) => {
+            std::str::from_utf8(bytes).map_err(|_| Error::Storage {
+                message: format!("invalid stored {field}"),
+            })
+        }
+        _ => Err(Error::Storage {
+            message: format!("invalid stored {field}"),
+        }),
+    }
+}
+
+fn require_null_column(row: &rusqlite::Row<'_>, idx: usize, field: &str) -> Result<()> {
+    match row.get_ref(idx).map_err(|err| map_sql(field, err))? {
+        rusqlite::types::ValueRef::Null => Ok(()),
+        _ => Err(Error::Storage {
+            message: format!("invalid stored {field}"),
+        }),
+    }
+}
+
+fn read_type_index(conn: &Connection) -> Result<Vec<EntityType>> {
+    let mut statement = conn
+        .prepare("SELECT id, label FROM types ORDER BY label COLLATE BINARY, id COLLATE BINARY")
+        .map_err(|err| map_sql("prepare type index", err))?;
+    let mut rows = statement
+        .query([])
+        .map_err(|err| map_sql("read type index", err))?;
+    let mut types = Vec::new();
+    while let Some(row) = rows.next().map_err(|err| map_sql("read type index", err))? {
+        let id = read_bounded_id(row, 0, "type", TypeId::parse)?;
+        let label = read_stored_text_str(row, 1, "type label")?.to_owned();
+        types.push(EntityType { id, label });
+    }
+    Ok(types)
+}
+
+fn read_codex_entity_index(conn: &Connection) -> Result<Vec<CodexEntitySummary>> {
+    let mut statement = conn
+        .prepare(
+            "SELECT e.id, e.label, e.type_id, t.id, t.label, e.page_id, p.id, p.title
+             FROM entities AS e
+             LEFT JOIN types AS t ON t.id = e.type_id
+             LEFT JOIN pages AS p ON p.id = e.page_id
+             ORDER BY e.label COLLATE BINARY, e.id COLLATE BINARY",
+        )
+        .map_err(|err| map_sql("prepare codex entity index", err))?;
+    let mut rows = statement
+        .query([])
+        .map_err(|err| map_sql("read codex entity index", err))?;
+    let mut entities = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .map_err(|err| map_sql("read codex entity index", err))?
+    {
+        let id = read_bounded_id(row, 0, "entity", EntityId::parse)?;
+        let label = read_stored_text_str(row, 1, "entity label")?.to_owned();
+        let type_id = read_bounded_opt_id(row, 2, "entity type", TypeId::parse)?;
+        let joined_type_id = read_bounded_opt_id(row, 3, "type", TypeId::parse)?;
+        let type_label = match &type_id {
+            Some(tid) => {
+                match joined_type_id {
+                    Some(ref jid) if jid == tid => {}
+                    Some(_) => {
+                        return Err(Error::Storage {
+                            message: format!("mismatched type on entity {}", id.as_str()),
+                        });
+                    }
+                    None => {
+                        return Err(Error::validation(
+                            ValidationReason::UnknownType,
+                            "type_id",
+                            Some(tid.as_str()),
+                        ));
+                    }
+                }
+                Some(read_stored_text_str(row, 4, "type label")?.to_owned())
+            }
+            None => {
+                require_null_column(row, 3, "type")?;
+                require_null_column(row, 4, "type label")?;
+                None
+            }
+        };
+        let page_id = read_bounded_opt_id(row, 5, "entity page", PageId::parse)?;
+        let joined_page_id = read_bounded_opt_id(row, 6, "page", PageId::parse)?;
+        let primary_page_title = match &page_id {
+            Some(pid) => {
+                match joined_page_id {
+                    Some(ref jid) if jid == pid => {}
+                    Some(_) => {
+                        return Err(Error::Storage {
+                            message: format!("mismatched page on entity {}", id.as_str()),
+                        });
+                    }
+                    None => {
+                        return Err(Error::validation(
+                            ValidationReason::UnknownPage,
+                            "page_id",
+                            Some(pid.as_str()),
+                        ));
+                    }
+                }
+                Some(read_stored_text_str(row, 7, "page title")?.to_owned())
+            }
+            None => {
+                require_null_column(row, 6, "page")?;
+                require_null_column(row, 7, "page title")?;
+                None
+            }
+        };
+        entities.push(CodexEntitySummary {
+            id,
+            label,
+            type_id,
+            type_label,
+            primary_page_title,
+        });
+    }
+    Ok(entities)
 }
 
 fn read_bounded_flag(row: &rusqlite::Row<'_>, idx: usize, field: &str) -> Result<bool> {

@@ -3,8 +3,9 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use narrative_universe::{
-    apply_mention_edit, EntityId, Error, Mention, MentionEdit, MentionId, Page, PageEdit, PageId,
-    PageRevision, PageSummary, Store, ValidationReason,
+    apply_mention_edit, validate_codex_label, Entity, EntityId, EntityType, Error, Mention,
+    MentionEdit, MentionId, Page, PageEdit, PageId, PageRevision, PageSummary, Store, TypeId,
+    ValidationReason,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
@@ -37,6 +38,7 @@ enum BridgeError {
     UniverseChanged,
     PageMissing,
     EntityMissing,
+    TypeMissing,
     ContextTooLarge,
     ReadFailed,
     StateUnavailable,
@@ -105,6 +107,30 @@ struct EntityIndexEntry {
     label: String,
     type_label: Option<String>,
     primary_page_title: Option<String>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct TypeIndexEntry {
+    id: String,
+    label: String,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct CodexEntityEntry {
+    id: String,
+    label: String,
+    type_id: Option<String>,
+    type_label: Option<String>,
+    primary_page_title: Option<String>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct CodexIndex {
+    types: Vec<TypeIndexEntry>,
+    entities: Vec<CodexEntityEntry>,
 }
 
 const MAX_JS_REVISION: i64 = 9_007_199_254_740_991;
@@ -332,6 +358,164 @@ fn entity_entries(store: &Store) -> Result<Vec<EntityIndexEntry>, BridgeError> {
             primary_page_title: entity.primary_page_title,
         })
         .collect())
+}
+
+fn codex_entries(store: &Store) -> Result<CodexIndex, BridgeError> {
+    let index = store.codex_index().map_err(|error| match error {
+        Error::Busy => BridgeError::Busy,
+        Error::Io { .. } => BridgeError::Io,
+        other => map_read_error(other, false),
+    })?;
+    Ok(CodexIndex {
+        types: index
+            .types
+            .into_iter()
+            .map(|entity_type| TypeIndexEntry {
+                id: entity_type.id.as_str().to_owned(),
+                label: entity_type.label,
+            })
+            .collect(),
+        entities: index
+            .entities
+            .into_iter()
+            .map(|entity| CodexEntityEntry {
+                id: entity.id.as_str().to_owned(),
+                label: entity.label,
+                type_id: entity.type_id.map(|id| id.as_str().to_owned()),
+                type_label: entity.type_label,
+                primary_page_title: entity.primary_page_title,
+            })
+            .collect(),
+    })
+}
+
+fn codex_write_error(error: Error) -> BridgeError {
+    match error {
+        Error::Busy => BridgeError::Busy,
+        Error::Validation {
+            reason: ValidationReason::DuplicateId,
+            ..
+        } => BridgeError::DuplicateId,
+        Error::Validation {
+            reason: ValidationReason::UnknownType,
+            ..
+        } => BridgeError::TypeMissing,
+        Error::Validation { .. } | Error::InvalidDocument { .. } => BridgeError::InvalidInput,
+        Error::Io { .. } => BridgeError::Io,
+        _ => BridgeError::Storage,
+    }
+}
+
+#[tauri::command(async)]
+fn codex_index(
+    universe_token: String,
+    state: State<'_, DesktopState>,
+) -> Result<CodexIndex, BridgeError> {
+    let active = state
+        .store
+        .lock()
+        .map_err(|_| BridgeError::StateUnavailable)?;
+    codex_entries(active_store(&active, &universe_token)?)
+}
+
+fn create_type_active(
+    active: &mut Option<ActiveUniverse>,
+    token: &str,
+    type_id: &str,
+    label: &str,
+) -> Result<TypeIndexEntry, BridgeError> {
+    let universe = active.as_mut().ok_or(BridgeError::UniverseNotOpen)?;
+    if universe.token != token {
+        return Err(BridgeError::UniverseChanged);
+    }
+    let id = TypeId::parse(type_id).map_err(|_| BridgeError::InvalidInput)?;
+    let valid_label = validate_codex_label(label).map_err(|_| BridgeError::InvalidInput)?;
+    let created = universe
+        .store
+        .create_entity_type(EntityType {
+            id,
+            label: valid_label.to_owned(),
+        })
+        .map_err(codex_write_error)?;
+    Ok(TypeIndexEntry {
+        id: created.id.as_str().to_owned(),
+        label: created.label,
+    })
+}
+
+#[tauri::command(async)]
+fn create_entity_type(
+    type_id: String,
+    label: String,
+    universe_token: String,
+    state: State<'_, DesktopState>,
+) -> Result<TypeIndexEntry, BridgeError> {
+    let mut active = state
+        .store
+        .lock()
+        .map_err(|_| BridgeError::StateUnavailable)?;
+    create_type_active(&mut active, &universe_token, &type_id, &label)
+}
+
+fn create_entity_active(
+    active: &mut Option<ActiveUniverse>,
+    token: &str,
+    entity_id: &str,
+    label: &str,
+    type_id: Option<&str>,
+) -> Result<CodexEntityEntry, BridgeError> {
+    let universe = active.as_mut().ok_or(BridgeError::UniverseNotOpen)?;
+    if universe.token != token {
+        return Err(BridgeError::UniverseChanged);
+    }
+    let id = EntityId::parse(entity_id).map_err(|_| BridgeError::InvalidInput)?;
+    let valid_label = validate_codex_label(label).map_err(|_| BridgeError::InvalidInput)?;
+    let parsed_type_id = type_id
+        .map(TypeId::parse)
+        .transpose()
+        .map_err(|_| BridgeError::InvalidInput)?;
+    let created = universe
+        .store
+        .create_entity(Entity {
+            id,
+            label: valid_label.to_owned(),
+            type_id: parsed_type_id,
+            page_id: None,
+        })
+        .map_err(codex_write_error)?;
+    let type_label = created
+        .type_id
+        .as_ref()
+        .and_then(|tid| universe.store.entity_type(tid).ok())
+        .map(|entity_type| entity_type.label);
+    Ok(CodexEntityEntry {
+        id: created.id.as_str().to_owned(),
+        label: created.label,
+        type_id: created.type_id.map(|tid| tid.as_str().to_owned()),
+        type_label,
+        primary_page_title: None,
+    })
+}
+
+#[tauri::command(async)]
+fn create_entity(
+    entity_id: String,
+    label: String,
+    type_id: Option<String>,
+    universe_token: String,
+    state: State<'_, DesktopState>,
+) -> Result<CodexEntityEntry, BridgeError> {
+    let mut active = state
+        .store
+        .lock()
+        .map_err(|_| BridgeError::StateUnavailable)?;
+    create_entity_active(
+        &mut active,
+        &universe_token,
+        &entity_id,
+        &label,
+        type_id.as_deref(),
+    )
 }
 
 #[derive(Debug, Serialize)]
@@ -1082,6 +1266,9 @@ pub fn run() {
             page_index,
             read_page,
             entity_index,
+            codex_index,
+            create_entity_type,
+            create_entity,
             entity_reveal,
             entity_context,
             save_page,
@@ -1097,10 +1284,11 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        active_store, consume_close_request, create_active, entity_entries, map_open_error,
-        map_read_error, page_content, prepare_universe, save_active, save_to_store, wire_mentions,
-        ActiveUniverse, BridgeError, DesktopState, SaveFailure, SaveOp, SaveRequest, SaveResponse,
-        WireMention,
+        active_store, codex_entries, consume_close_request, create_active, create_entity_active,
+        create_type_active, entity_entries, map_open_error, map_read_error, page_content,
+        prepare_universe, save_active, save_to_store, wire_mentions, ActiveUniverse, BridgeError,
+        CodexEntityEntry, DesktopState, SaveFailure, SaveOp, SaveRequest, SaveResponse,
+        TypeIndexEntry, WireMention,
     };
     use narrative_universe::{
         apply_mention_edit, Entity, EntityId, EntityType, Error, Mention, MentionEdit, MentionId,
@@ -3284,5 +3472,165 @@ mod tests {
             map_read_error(storage, true),
             BridgeError::ReadFailed
         ));
+    }
+
+    #[test]
+    fn codex_bridge_reads_creates_persists_and_enforces_validation_and_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("codex-bridge.sqlite");
+        let mut store = Store::create(&path, UniverseId::parse(UNIVERSE).unwrap()).unwrap();
+        let page_id = PageId::parse(PAGE).unwrap();
+        store
+            .create_page(Page {
+                id: page_id.clone(),
+                title: "Harbor Ledger".into(),
+                body: "Untouched prose.".into(),
+            })
+            .unwrap();
+        let mut active = Some(ActiveUniverse {
+            token: "tok-1".into(),
+            store,
+        });
+
+        let empty = codex_entries(active_store(&active, "tok-1").unwrap()).unwrap();
+        assert!(empty.types.is_empty());
+        assert!(empty.entities.is_empty());
+
+        // Stale universe token rejected on all Codex bridge paths.
+        assert!(matches!(
+            active_store(&active, "wrong"),
+            Err(BridgeError::UniverseChanged)
+        ));
+        assert!(matches!(
+            create_type_active(&mut active, "wrong", HOUSE, "House"),
+            Err(BridgeError::UniverseChanged)
+        ));
+        assert!(matches!(
+            create_entity_active(&mut active, "wrong", PLACE, "Valdoria", None),
+            Err(BridgeError::UniverseChanged)
+        ));
+
+        // Invalid IDs and invalid nonblank labels rejected without mutating DB.
+        assert!(matches!(
+            create_type_active(&mut active, "tok-1", "bad-id", "House"),
+            Err(BridgeError::InvalidInput)
+        ));
+        for bad_label in ["", "   ", "\u{00a0}", " House", "House ", "House\nTwo"] {
+            assert!(
+                matches!(
+                    create_type_active(&mut active, "tok-1", HOUSE, bad_label),
+                    Err(BridgeError::InvalidInput)
+                ),
+                "bad type label {bad_label:?}"
+            );
+            assert!(
+                matches!(
+                    create_entity_active(&mut active, "tok-1", PLACE, bad_label, None),
+                    Err(BridgeError::InvalidInput)
+                ),
+                "bad entity label {bad_label:?}"
+            );
+        }
+        let too_long = "x".repeat(narrative_universe::MAX_CODEX_LABEL_SCALARS + 1);
+        assert!(matches!(
+            create_entity_active(&mut active, "tok-1", PLACE, &too_long, None),
+            Err(BridgeError::InvalidInput)
+        ));
+
+        // Missing or malformed type_id rejected cleanly.
+        assert!(matches!(
+            create_entity_active(&mut active, "tok-1", PLACE, "Valdoria", Some("not-uuid")),
+            Err(BridgeError::InvalidInput)
+        ));
+        assert!(matches!(
+            create_entity_active(&mut active, "tok-1", PLACE, "Valdoria", Some(HOUSE)),
+            Err(BridgeError::TypeMissing)
+        ));
+
+        // Valid custom type creation (including duplicate type label under distinct ID).
+        let t1 = create_type_active(&mut active, "tok-1", HOUSE, "House").unwrap();
+        assert_eq!(
+            t1,
+            TypeIndexEntry {
+                id: HOUSE.into(),
+                label: "House".into()
+            }
+        );
+        let house_2 = "33333333-3333-4333-8333-333333333339";
+        let t2 = create_type_active(&mut active, "tok-1", house_2, "House").unwrap();
+        assert_eq!(t2.id, house_2);
+        assert!(matches!(
+            create_type_active(&mut active, "tok-1", HOUSE, "House"),
+            Err(BridgeError::DuplicateId)
+        ));
+
+        // Valid untyped + typed + duplicate-label entities.
+        let e1 =
+            create_entity_active(&mut active, "tok-1", PLACE, "Valdoria", Some(HOUSE)).unwrap();
+        assert_eq!(
+            e1,
+            CodexEntityEntry {
+                id: PLACE.into(),
+                label: "Valdoria".into(),
+                type_id: Some(HOUSE.into()),
+                type_label: Some("House".into()),
+                primary_page_title: None,
+            }
+        );
+        let dup_id = "33333333-3333-4333-8333-333333333340";
+        let e2 = create_entity_active(&mut active, "tok-1", dup_id, "Valdoria", None).unwrap();
+        assert_eq!(e2.type_id, None);
+        assert_eq!(e2.type_label, None);
+        assert!(matches!(
+            create_entity_active(&mut active, "tok-1", PLACE, "Valdoria", None),
+            Err(BridgeError::DuplicateId)
+        ));
+
+        // Busy lock returns BridgeError::Busy without retrying.
+        let lock = rusqlite::Connection::open(&path).unwrap();
+        lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        assert!(matches!(
+            create_type_active(
+                &mut active,
+                "tok-1",
+                "33333333-3333-4333-8333-333333333341",
+                "Guild"
+            ),
+            Err(BridgeError::Busy)
+        ));
+        assert!(matches!(
+            create_entity_active(
+                &mut active,
+                "tok-1",
+                "33333333-3333-4333-8333-333333333342",
+                "Guild Hall",
+                None
+            ),
+            Err(BridgeError::Busy)
+        ));
+        lock.execute_batch("ROLLBACK").unwrap();
+
+        let index = codex_entries(active_store(&active, "tok-1").unwrap()).unwrap();
+        assert_eq!(index.types.len(), 2);
+        assert_eq!(index.entities.len(), 2);
+        // Write's entity_index immediately sees Codex-created entities too.
+        assert_eq!(
+            entity_entries(active_store(&active, "tok-1").unwrap())
+                .unwrap()
+                .len(),
+            2
+        );
+
+        // Unrelated page remains untouched; reopen restores exact types & entities.
+        let doc = active_store(&active, "tok-1")
+            .unwrap()
+            .page_document(&page_id)
+            .unwrap();
+        assert_eq!(doc.body.body, "Untouched prose.");
+        assert_eq!(doc.revision, PageRevision::ZERO);
+        drop(active);
+
+        let reopened = Store::open(&path).unwrap();
+        assert_eq!(codex_entries(&reopened).unwrap(), index);
     }
 }

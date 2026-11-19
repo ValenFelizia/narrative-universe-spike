@@ -23,6 +23,7 @@
                     "test/**/*.ts"
                 ],
     "exclude":  [
-                    "test/desktop.test.ts"
+                    "test/desktop.test.ts",
+                    "test/codex.test.ts"
                 ]
 }

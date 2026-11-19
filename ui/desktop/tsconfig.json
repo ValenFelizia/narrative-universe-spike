@@ -10,5 +10,5 @@
     "noUncheckedIndexedAccess": true,
     "types": ["vite/client", "node"]
   },
-  "include": ["./main.ts", "./vite.config.ts"]
+  "include": ["./main.ts", "./codex.ts", "./connect.ts", "./vite.config.ts"]
 }

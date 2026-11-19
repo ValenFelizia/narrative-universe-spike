@@ -169,3 +169,60 @@ accepted direction from implementation alone.
   group, assertion, or 2 MiB byte limits advise the writer to use compact facts.
   Incompatibility warnings, backlinks/occurrence lists, clickable provenance
   navigation, and authoring remain out of scope for R2-A.
+
+## DEC-005 — PA-I6/KA1 Codex workspace, identity-preserving reads, and Write draft retention
+
+- Status: accepted within authorized issue #49 (`Codex — Product Direction & KA1
+  Foundations`); awaiting independent review, CI, and Valen/Ari physical
+  Windows acceptance.
+- Date: 2026-11-18
+- Context: Issue #49 authorizes PA-I6/KA1 Codex Foundations so worldbuilders can
+  browse, search, create custom types and entities, and inspect existing
+  knowledge independently of document saves without introducing schema bumps,
+  inline authoring, or Write regressions.
+- Decision:
+  1. Separate read-only Codex index (`Store::codex_index`, `Store::type_index`,
+     `Store::codex_entity_index`) and shared nonblank input validator
+     (`validate_codex_label` / `validate_label_text`, `MAX_CODEX_LABEL_SCALARS
+     = 120`): preserves `Store::entity_index` untouched for Connect while adding
+     validated type identities (including 0-entity types) and optional
+     `type_id`/`type_label`/`primary_page_title` metadata in one deferred
+     read transaction with fail-closed row validation. Frontend input trims
+     leading/trailing whitespace before submission, checks nonblank/control-char
+     /120-scalar bounds prior to IPC, and never globally normalizes or
+     deduplicates persisted labels.
+  2. Token-scoped Codex bridge (`codex_index`, `create_entity_type`,
+     `create_entity`) backed directly by `Store::create_entity_type` and
+     `Store::create_entity` (`page_id: None`, explicit `TypeMissing` error
+     mapping, best-effort post-commit `type_label` lookup): prevents duplicated
+     SQL write paths in Tauri and ensures an already-committed entity never
+     reports a spurious failure on post-commit metadata lookup.
+  3. Non-destructive Write <-> Codex switching via view visibility and explicit
+     scroll capture: keeps the live CodeMirror `EditorView`, `SaveState`,
+     draft title, selection, undo stack, and `#guard` close/universe-switch
+     protection intact when entering Codex, keeps `#context-name` and focus in
+     Codex when opening universes or loading background pages, disables
+     `#library-toggle` and Write's `Ctrl+S` handler while in Codex, triggers a
+     fresh `codex_index` load when entering Codex, and renders Codex entries via
+     an editorial variant (`renderCodexEntrySections`) without changing Write's
+     `renderEntityContextSections` or mutating Write state.
+  4. Explicit modal creation with definite vs uncertain failure handling:
+     definite pre-commit rejections (`busy`, `invalid_input`, `duplicate_id`,
+     `type_missing`, stale universe) keep user input inside the open modal for
+     correction/retry, whereas ambiguous/unclassified failures close the modal,
+     retain pending identity (`token`, `kind`, `id`, `label`), and disable
+     further `New type` / `New entity` triggers until `Refresh Codex`
+     reconciles against `codex_index` (distinguishing confirmed commit vs
+     not-saved vs still-unconfirmed, and resetting on universe switch) so
+     duplicate UUID creations cannot occur silently after an uncertain commit.
+- Rationale: Preserving Write in memory avoids forcing a premature
+  save/discard prompt merely to look up or add a Codex entity mid-sentence,
+  while keeping Codex writes strictly separate from Write's aggregate save
+  ledger and Undo history. Keeping `entity_index` untouched avoids breaking
+  accepted Connect contracts while letting Write's Connect picker see new Codex
+  entities on its very next read.
+- Consequences: `SCHEMA_VERSION` and JSON exchange format remain `3`. Duplicate
+  labels remain legal and are disambiguated by shortest ID suffix for both
+  entities and types. Editing/deleting types or entities, entity notes,
+  property/assertion authoring, and inline create-and-link remain explicitly
+  deferred to future authorized increments.

@@ -366,32 +366,51 @@ pub struct Entity {
 /// and logical verification cannot drift apart. The SQLite column check is only
 /// a backstop for the type and for emptiness; `length(trim(...))` would accept a
 /// tab, a non-breaking space or a BLOB.
+/// Maximum scalar length accepted for Codex entity and type creation labels.
+pub const MAX_CODEX_LABEL_SCALARS: usize = 120;
+
+fn validate_label_text(raw: &str, max_scalars: usize) -> Result<()> {
+    let scalars = raw.chars().count();
+    if scalars == 0 || scalars > max_scalars {
+        return Err(Error::validation(
+            ValidationReason::InvalidLabel,
+            "label",
+            None,
+        ));
+    }
+    if raw.chars().any(char::is_control)
+        || raw.chars().next().is_some_and(char::is_whitespace)
+        || raw.chars().next_back().is_some_and(char::is_whitespace)
+    {
+        return Err(Error::validation(
+            ValidationReason::InvalidLabel,
+            "label",
+            None,
+        ));
+    }
+    Ok(())
+}
+
+/// Validates human-authored Codex entity and entity-type creation labels.
+///
+/// Enforces the domain nonblank label rule (1 to 120 Unicode scalar values,
+/// no leading/trailing Unicode whitespace, no control characters) without
+/// trimming, case folding, or normalizing accepted bytes. Existing persisted
+/// records in SQLite are not constrained by this creation-time input rule.
+pub fn validate_codex_label(raw: &str) -> Result<&str> {
+    validate_label_text(raw, MAX_CODEX_LABEL_SCALARS)?;
+    Ok(raw)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DefinitionLabel(String);
 
 impl DefinitionLabel {
     /// The longest accepted label, counted in Unicode scalar values.
-    pub const MAX_SCALARS: usize = 120;
+    pub const MAX_SCALARS: usize = MAX_CODEX_LABEL_SCALARS;
 
     pub fn parse(raw: &str) -> Result<Self> {
-        let scalars = raw.chars().count();
-        if scalars == 0 || scalars > Self::MAX_SCALARS {
-            return Err(Error::validation(
-                ValidationReason::InvalidLabel,
-                "label",
-                None,
-            ));
-        }
-        if raw.chars().any(char::is_control)
-            || raw.chars().next().is_some_and(char::is_whitespace)
-            || raw.chars().next_back().is_some_and(char::is_whitespace)
-        {
-            return Err(Error::validation(
-                ValidationReason::InvalidLabel,
-                "label",
-                None,
-            ));
-        }
+        validate_label_text(raw, Self::MAX_SCALARS)?;
         Ok(Self(raw.to_string()))
     }
 
