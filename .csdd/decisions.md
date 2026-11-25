@@ -226,3 +226,72 @@ accepted direction from implementation alone.
   entities and types. Editing/deleting types or entities, entity notes,
   property/assertion authoring, and inline create-and-link remain explicitly
   deferred to future authorized increments.
+
+## DEC-006 — PA-I7/KA2-A Knowledge Authoring, atomic composite persistence, and session-fenced reconciliation
+
+- Status: accepted within authorized issue #52 (`PA-I7/KA2-A: Knowledge
+  authoring — properties, assertions and atomic persistence`); awaiting
+  independent review, CI, and Valen/Ari physical Windows acceptance.
+- Date: 2026-11-25
+- Context: Issue #52 approves KA2-A implementation following the C0 decision
+  memo on #51 so worldbuilders can create entity-owned or type-owned properties
+  and record text, boolean, entity-reference, or explicit Unknown assertions
+  with explicit canon and optional provenance/scope directly from Codex without
+  schema, exchange, or dependency changes.
+- Decision:
+  1. Atomic composite core write (`Store::create_definition_with_assertion`) and
+     single-snapshot PK probe (`Store::probe_knowledge_records`): creates a new
+     property definition and its initial assertion inside one `IMMEDIATE` SQLite
+     transaction, requiring `assertion.definition_id == definition.id` and
+     reusing existing owner/applicability/archive/value/target validation so any
+     second-step failure rolls back both rows without compensating deletion.
+     Intentionally empty properties use `Store::create_definition`; adding a
+     fact to an existing active property uses `Store::create_assertion`.
+     `probe_knowledge_records` reads optional definition and/or assertion rows
+     by primary key in one deferred read transaction independent of bounded
+     `entity_context` limits (`128` groups / `500` unique assertions / `2 MiB`).
+  2. Narrow token-scoped Tauri authoring bridge (`create_definition`,
+     `create_assertion`, `create_definition_with_assertion`,
+     `reconcile_codex_write`) with authoring-only byte/control bounds: rejects
+     unknown JSON fields, rejects invalid property labels rather than silently
+     trimming them (preserving accepted bytes), enforces `<= 16,384` UTF-8 bytes
+     on nonblank LF/tab-safe authored text, `<= 1,024` bytes on single-line
+     optional metadata (`externalRef`, `locator`, `sourceRevision`,
+     `sourceStatusRaw`), and `<= 4,096` bytes on multiline optional metadata
+     (`fragment`, `scopeNote`), mapping blank/whitespace-only optional fields to
+     `NULL` while preserving nonblank bytes verbatim. Existing legacy/imported
+     data and `Store` / JSON exchange remain unrestricted.
+  3. Session-scoped operation fencing for terminal absence guarantees:
+     `ActiveUniverse` tracks `cancelled_ops: BTreeSet<String>` under the same
+     `Mutex<Option<ActiveUniverse>>` that serializes all store access.
+     `reconcile_codex_write` inserts `operation_id` into `cancelled_ops` before
+     probing SQLite; every KA2 write command rejects a fenced `operation_id`
+     with `BridgeError::OperationCancelled` before touching SQLite. Thus an
+     absent probe with `finalized: true` proves no delayed original write for
+     that operation can later commit in the session. Partial composite state or
+     any field/association mismatch is treated as a non-destructive integrity
+     anomaly that keeps writes locked for the session without auto-repair or
+     deletion.
+  4. Compact native `<dialog>` modals (`New property` in `Facts`, `Add value` on
+     active applicable outgoing groups only, including unnamed and zero-claim
+     definitions) sharing the KA1/KA2 write exclusion gate: defaults to entity
+     ownership (fixed for untyped entities), `Text`, `Usually one`, `Record a
+     first fact now` checked, explicit `Yes`/`No` without preselection,
+     searchable exact-ID reference picker with shortest-suffix disambiguation
+     and self-reference, class-independent `Record as Unknown`, visible
+     `Provisional` canon default, and collapsed `Source & scope (optional)`.
+     Commit confirmation stays separate from post-write `entity_context` refresh
+     so `context_too_large` or transient read failures never misreport a saved
+     write.
+- Rationale: Atomic composite transactions eliminate orphan empty properties on
+  second-step failure without deletion compensation. Session-scoped operation
+  fencing under the store mutex closes the delayed-IPC race where a read mutex
+  alone could report absence before a queued write executes. Compact `<dialog>`
+  modals stay uniform with KA1, avoid a second dirty-navigation guard inside
+  Codex, and preserve Write's untouched `renderEntityContextSections` and
+  `entity_reveal`.
+- Consequences: `SCHEMA_VERSION` and `FORMAT_VERSION` remain `3`; no new
+  dependencies are introduced. Session-scoped fencing and pending verification
+  live in memory only (no durable crash-recovery guarantee across process
+  termination). Editing/deleting existing facts, canon mutation, archive/restore,
+  KA3 notes, and inline Write authoring remain out of scope.

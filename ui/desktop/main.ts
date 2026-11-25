@@ -8,7 +8,15 @@ import { applyReply, beginSave, isDirty, openSession, reconcileBusy, recordTitle
 
 import { mentionHistory, mentionEffects, recordTransaction } from "../src/mention-history.ts";
 import { connectEditor, type EntityContext, type EntityReveal, type EntitySummary } from "./connect.ts";
-import { createCodexController, type CodexEntityEntry, type CodexIndex, type TypeIndexEntry } from "./codex.ts";
+import {
+  createCodexController,
+  type CodexEntityEntry,
+  type CodexIndex,
+  type CreateDefinitionWithAssertionResponse,
+  type PersistedAssertion,
+  type ReconcileCodexWriteResponse,
+  type TypeIndexEntry,
+} from "./codex.ts";
 
 type PageIndexEntry = { id: string; title: string };
 type OpenedUniverse = { token: string; pages: PageIndexEntry[] };
@@ -85,6 +93,12 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
     loadContext: (token, entityId) => invokeCommand<EntityContext>("entity_context", { universeToken: token, entityId }),
     createType: (token, typeId, label) => invokeCommand<TypeIndexEntry>("create_entity_type", { typeId, label, universeToken: token }),
     createEntity: (token, entityId, label, typeId) => invokeCommand<CodexEntityEntry>("create_entity", { entityId, label, typeId, universeToken: token }),
+    createDefinition: request => invokeCommand("create_definition", { request }),
+    createAssertion: request => invokeCommand<PersistedAssertion>("create_assertion", { request }),
+    createDefinitionWithAssertion: request =>
+      invokeCommand<CreateDefinitionWithAssertionResponse>("create_definition_with_assertion", { request }),
+    reconcileWrite: request =>
+      invokeCommand<ReconcileCodexWriteResponse>("reconcile_codex_write", { request }),
   });
 
   const connect = connectEditor({session: () => session, view: () => editor, token: () => universeToken,

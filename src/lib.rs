@@ -21,9 +21,10 @@ pub use model::{
 };
 pub use store::{
     CodexEntitySummary, CodexIndex, ContextClaim, ContextIncomingGroup, ContextOutgoingGroup,
-    Counts, EntityContext, EntityReveal, EntitySummary, ImportOutcome, MentionOccurrence,
-    PageDocument, PageEdit, PageSnapshot, PageSummary, PossibleIncompatibility, RevealClaim,
-    Snapshot, Store, MAX_CONTEXT_BYTES, MAX_CONTEXT_GROUPS, MAX_CONTEXT_UNIQUE_ASSERTIONS,
+    Counts, EntityContext, EntityReveal, EntitySummary, ImportOutcome, KnowledgeRecordProbe,
+    MentionOccurrence, PageDocument, PageEdit, PageSnapshot, PageSummary, PossibleIncompatibility,
+    RevealClaim, Snapshot, Store, MAX_CONTEXT_BYTES, MAX_CONTEXT_GROUPS,
+    MAX_CONTEXT_UNIQUE_ASSERTIONS,
 };
 
 /// The storage schema this build creates, reads and verifies.
