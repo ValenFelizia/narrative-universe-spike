@@ -78,9 +78,36 @@ the **Write / Codex** switcher in the top strip to open **Codex**:
   entities appear immediately in Write's Connect (`Ctrl+K`) picker without
   reopening the universe.
 
+## Knowledge authoring in Codex (PA-I7/KA2-A)
+
+Inside any loaded Codex entry:
+
+- **New property (`Facts` header):** Create an entity-owned property (default)
+  or a type-owned property (`All <Type> entities`, unavailable for `Untyped`
+  entities) with a required nonblank label (1–120 Unicode scalars, no
+  surrounding whitespace or control characters; invalid labels are rejected
+  rather than trimmed), value kind (`Text`, `Yes / No`, or `Link to another
+  entity`), and narrative cardinality (`Usually one` or `Multiple`). With
+  **Record a first fact now** checked (default), property and first assertion
+  commit atomically in one SQLite `IMMEDIATE` transaction; unchecking creates an
+  intentionally empty property.
+- **Add value (per active outgoing property):** Record additional text, explicit
+  `Yes`/`No`, exact-ID entity reference (including self-reference), or explicit
+  `Unknown` assertions with a visible **Provisional** canon default (all four
+  canon states available) and optional collapsed **Source & scope** metadata.
+  Competing claims on singular properties are preserved without replacing
+  earlier claims.
+- **Reconciliation & bounds:** Uncertain writes lock KA1 and KA2 creation
+  controls until **Verify write** probes SQLite by primary key in one snapshot
+  (independent of bounded `entity_context` limits) and fences the earlier
+  operation ID so delayed writes cannot commit after confirmed absence. Partial
+  or mismatched records keep session writes locked as an integrity anomaly
+  without auto-repair or deletion. Newly authored facts appear immediately in
+  Write's Reveal (`Show facts` / `Explore context`) on the next deliberate read.
+
 For native verification beyond unit checks, build `spike` and the desktop
 binary (`cargo build --locked --bin spike` and `cargo build --locked
 --manifest-path ui/src-tauri/Cargo.toml`) and run `node
-ui/scripts/webview2-parity.mjs`, `webview2-connect.mjs`, `webview2-reveal.mjs`,
-`webview2-context.mjs`, and `webview2-codex.mjs` sequentially from the repo
-root.
+ui/scripts/webview2-authoring.mjs`, `webview2-codex.mjs`, `webview2-parity.mjs`,
+`webview2-connect.mjs`, `webview2-reveal.mjs`, and `webview2-context.mjs`
+sequentially from the repo root.

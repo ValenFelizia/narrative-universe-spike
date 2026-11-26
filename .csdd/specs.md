@@ -299,3 +299,56 @@ document saves. Sources: authorized issue #49, approved direction document
 - Non-goals preserved: no KA2–KA5 features, entity/type rename/delete/retype,
   notes editor, assertion/property authoring, inline create-and-link, canon or
   archive edits, graph/timeline/backlinks, AI/MCP, or real-data safety claims.
+
+## PA-I7/KA2-A Knowledge Authoring (issue #52)
+
+Approved scope: construct structured narrative knowledge directly from Codex
+(create entity-owned or type-owned properties with or without a first fact, and
+record text, boolean, entity-reference, or explicit Unknown assertions with
+explicit canon and optional source/scope metadata) over synthetic universes with
+no schema, exchange, or dependency changes. Sources: authorized issue #52,
+approved C0 memo on #51, and `DEC-006`.
+
+- Core write & probe contracts: `Store::create_definition_with_assertion` runs
+  in one `IMMEDIATE` transaction, requires `assertion.definition_id ==
+  definition.id`, reuses existing owner/applicability/archive/value/target
+  validation, and rolls back both rows on any failure without compensating
+  deletion. Intentionally empty properties use `Store::create_definition`;
+  adding values to existing active properties uses `Store::create_assertion`.
+  `Store::probe_knowledge_records` reads optional definition and/or assertion
+  rows by primary key in one deferred read snapshot independent of bounded
+  `entity_context` limits.
+- Bridge & validation contracts: token-scoped `create_definition`,
+  `create_assertion`, `create_definition_with_assertion`, and
+  `reconcile_codex_write` reject unknown fields (`deny_unknown_fields`), reject
+  invalid property names without silently trimming (`DefinitionLabel`), enforce
+  authoring-only byte/control bounds (`<= 16,384` UTF-8 bytes nonblank LF/tab
+  text, `<= 1,024` bytes single-line metadata, `<= 4,096` bytes multiline
+  `fragment`/`scopeNote`, blank optional metadata -> `NULL`, nonblank bytes
+  preserved verbatim), and return exact committed records with no post-commit
+  context/index read dependency.
+- Ambiguous write reconciliation & terminal absence: `ActiveUniverse` fences
+  `operation_id`s in `cancelled_ops` under the store mutex during
+  `reconcile_codex_write`, and every KA2 write rejects fenced `operation_id`s
+  with `BridgeError::OperationCancelled` before touching SQLite. Exact
+  full-record match confirms commit; absence is definitive noncommit only when
+  `finalized === true`; partial composite state or any field/association
+  mismatch triggers a non-destructive integrity anomaly that keeps KA1 and KA2
+  writes locked for the session without auto-repair or deletion. Stale async
+  callbacks cannot close newer dialogs or unlock newer pending state. No durable
+  crash-recovery claim is made across process termination.
+- UI & read-after-write boundaries: compact native `<dialog>` modals for `New
+  property` (in `Facts`) and `Add value` (on active applicable outgoing groups
+  only, including unnamed and zero-claim definitions; never on incoming or
+  archived groups). Visible `Provisional` canon default, explicit `Yes`/`No`
+  without preselection, exact-ID reference search with disambiguation and
+  self-reference, class-independent `Record as Unknown`, competing-claim note
+  for singular properties, collapsed `Source & scope (optional)`, and accessible
+  cancel/focus return. Commit confirmation stays separate from post-write
+  `entity_context` refresh (`128 / 500 / 2 MiB` bounds unchanged; unreadable
+  initial context disables authoring on that entry). Write Reveal,
+  `renderEntityContextSections`, Write draft/selection/scroll/Undo, and `#guard`
+  remain untouched.
+- Non-goals preserved: no schema/exchange bump (`v3`), no new dependencies, no
+  editing/deleting existing facts or canon changes, no archive/restore, no KA3
+  notes, no Write inline authoring, and no real-data safety/backup claim.

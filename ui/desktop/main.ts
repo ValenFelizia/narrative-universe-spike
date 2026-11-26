@@ -8,7 +8,15 @@ import { applyReply, beginSave, isDirty, openSession, reconcileBusy, recordTitle
 
 import { mentionHistory, mentionEffects, recordTransaction } from "../src/mention-history.ts";
 import { connectEditor, type EntityContext, type EntityReveal, type EntitySummary } from "./connect.ts";
-import { createCodexController, type CodexEntityEntry, type CodexIndex, type TypeIndexEntry } from "./codex.ts";
+import {
+  createCodexController,
+  type CodexEntityEntry,
+  type CodexIndex,
+  type CreateDefinitionWithAssertionResponse,
+  type PersistedAssertion,
+  type ReconcileCodexWriteResponse,
+  type TypeIndexEntry,
+} from "./codex.ts";
 
 type PageIndexEntry = { id: string; title: string };
 type OpenedUniverse = { token: string; pages: PageIndexEntry[] };
@@ -40,6 +48,10 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   const keep = document.querySelector<HTMLButtonElement>("#continue")!;
   const saveProceed = document.querySelector<HTMLButtonElement>("#save-proceed")!;
   const discard = document.querySelector<HTMLButtonElement>("#discard")!;
+  const codexCloseDialog = document.querySelector<HTMLDialogElement>("#codex-close-guard")!;
+  const codexCloseText = document.querySelector<HTMLElement>("#codex-close-guard-text")!;
+  const codexCloseStay = document.querySelector<HTMLButtonElement>("#codex-close-stay")!;
+  const codexCloseLeave = document.querySelector<HTMLButtonElement>("#codex-close-leave")!;
   const library = document.querySelector<HTMLElement>("#library")!;
   const toggleLibrary = document.querySelector<HTMLButtonElement>("#library-toggle")!;
   const contextName = document.querySelector<HTMLElement>("#context-name")!;
@@ -85,6 +97,12 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
     loadContext: (token, entityId) => invokeCommand<EntityContext>("entity_context", { universeToken: token, entityId }),
     createType: (token, typeId, label) => invokeCommand<TypeIndexEntry>("create_entity_type", { typeId, label, universeToken: token }),
     createEntity: (token, entityId, label, typeId) => invokeCommand<CodexEntityEntry>("create_entity", { entityId, label, typeId, universeToken: token }),
+    createDefinition: request => invokeCommand("create_definition", { request }),
+    createAssertion: request => invokeCommand<PersistedAssertion>("create_assertion", { request }),
+    createDefinitionWithAssertion: request =>
+      invokeCommand<CreateDefinitionWithAssertionResponse>("create_definition_with_assertion", { request }),
+    reconcileWrite: request =>
+      invokeCommand<ReconcileCodexWriteResponse>("reconcile_codex_write", { request }),
   });
 
   const connect = connectEditor({session: () => session, view: () => editor, token: () => universeToken,
@@ -359,13 +377,51 @@ export function initDesktop(invokeCommand: typeof invoke): { requestClose: (toke
   saveButton.addEventListener("click", () => void save());
   verifyButton.addEventListener("click", () => void verifyBusy());
   document.addEventListener("keydown", event => { if (mode === "write" && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); } });
+  async function confirmUnresolvedCodexClose(warning: string): Promise<boolean> {
+    codexCloseText.textContent = warning;
+    return new Promise<boolean>(resolve => {
+      let settled = false;
+      const done = (leave: boolean) => {
+        if (settled) return;
+        settled = true;
+        codexCloseDialog.onclose = null;
+        if (codexCloseDialog.open) codexCloseDialog.close();
+        resolve(leave);
+      };
+      codexCloseStay.onclick = () => done(false);
+      codexCloseLeave.onclick = () => done(true);
+      codexCloseDialog.oncancel = event => {
+        event.preventDefault();
+        done(false);
+      };
+      codexCloseDialog.onclose = () => done(false);
+      codexCloseDialog.showModal();
+      codexCloseStay.focus();
+    });
+  }
+
   return {requestClose: (token: string) => { void (async () => {
-    if (transitioning) { await invokeCommand("cancel_close", {token}); return; }
+    if (transitioning || codex.hasInFlightWrite()) {
+      await invokeCommand("cancel_close", {token});
+      return;
+    }
     transitioning = true;
     paint();
     try {
-      if (await mayLeave()) await invokeCommand("close_window", {token});
-      else await invokeCommand("cancel_close", {token});
+      if (!(await mayLeave())) {
+        await invokeCommand("cancel_close", {token});
+        return;
+      }
+      if (codex.hasInFlightWrite()) {
+        await invokeCommand("cancel_close", {token});
+        return;
+      }
+      const warning = codex.unresolvedCloseWarning();
+      if (warning && !(await confirmUnresolvedCodexClose(warning))) {
+        await invokeCommand("cancel_close", {token});
+        return;
+      }
+      await invokeCommand("close_window", {token});
     } finally { transitioning = false; paint(); }
   })(); }};
 }

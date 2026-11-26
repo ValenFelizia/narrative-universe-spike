@@ -759,3 +759,658 @@ test("Write <-> Codex preserves dirty draft, title, undo, scroll, close guard, a
   assert.ok(pickerOptions.some(text => text?.includes("Red Harbor")));
   ui.close();
 });
+
+test("KA2-A authoring validates strictly, supports empty/composite/existing flows, Unknown, self-ref, competing claims, and cancel focus", async () => {
+  const TYPE_ORDER = "33333333-3333-4333-8333-000000000001";
+  const ENT_KESTREL = "55555555-5555-4555-8555-000000000001";
+  const ENT_KESTREL_DUP = "55555555-5555-4555-8555-000000000002";
+  const ENT_UNTYPED = "55555555-5555-4555-8555-000000000003";
+  const DEF_UNNAMED = "44444444-4444-4444-8444-000000000001";
+  const DEF_ARCHIVED = "44444444-4444-4444-8444-000000000002";
+  const calls: { cmd: string; args?: Record<string, unknown> }[] = [];
+
+  const defs: Array<{
+    id: string;
+    ownerKind: "type" | "entity";
+    ownerId: string;
+    propertyLabel: string | null;
+    valueClass: "text" | "boolean" | "reference";
+    cardinality: "singular" | "multiple";
+    archived: boolean;
+  }> = [
+    {
+      id: DEF_UNNAMED,
+      ownerKind: "entity",
+      ownerId: ENT_KESTREL,
+      propertyLabel: null,
+      valueClass: "text",
+      cardinality: "singular",
+      archived: false,
+    },
+    {
+      id: DEF_ARCHIVED,
+      ownerKind: "entity",
+      ownerId: ENT_KESTREL,
+      propertyLabel: "Legacy",
+      valueClass: "text",
+      cardinality: "singular",
+      archived: true,
+    },
+  ];
+  const claimsByDef = new Map<string, Array<{
+    id: string;
+    value: unknown;
+    canon: string;
+    sourceStatusRaw: string | null;
+    provenance: { externalRef: string | null; locator: string | null; fragment: string | null; sourceRevision: string | null };
+    scopeNote: string | null;
+    archived: boolean;
+  }>>();
+  claimsByDef.set(DEF_UNNAMED, [
+    {
+      id: "66666666-6666-4666-8666-000000000001",
+      value: { kind: "text", text: "Existing claim" },
+      canon: "PROVISIONAL",
+      sourceStatusRaw: null,
+      provenance: { externalRef: null, locator: null, fragment: null, sourceRevision: null },
+      scopeNote: null,
+      archived: false,
+    },
+  ]);
+
+  const ui = setup(async (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === "page_index") return [];
+    if (cmd === "codex_index") {
+      return {
+        types: [{ id: TYPE_ORDER, label: "Order" }],
+        entities: [
+          { id: ENT_KESTREL, label: "Kestrel", typeId: TYPE_ORDER, typeLabel: "Order", primaryPageTitle: null },
+          { id: ENT_KESTREL_DUP, label: "Kestrel", typeId: TYPE_ORDER, typeLabel: "Order", primaryPageTitle: "Atlas" },
+          { id: ENT_UNTYPED, label: "Ash Spire", typeId: null, typeLabel: null, primaryPageTitle: null },
+        ],
+      };
+    }
+    if (cmd === "entity_context") {
+      const entityId = String(args!.entityId);
+      const isUntyped = entityId === ENT_UNTYPED;
+      const applicable = defs.filter(d => !d.archived && (d.ownerKind === "entity" ? d.ownerId === entityId : !isUntyped));
+      const archived = defs.filter(d => d.archived && d.ownerKind === "entity" && d.ownerId === entityId);
+      return {
+        entity: { id: entityId, label: isUntyped ? "Ash Spire" : "Kestrel" },
+        typeLabel: isUntyped ? null : "Order",
+        outgoingGroups: applicable.map(d => ({
+          definition: d,
+          claims: claimsByDef.get(d.id) ?? [],
+          hasArchivedClaims: false,
+        })),
+        incomingGroups: [
+          {
+            subject: { id: ENT_UNTYPED, label: "Ash Spire" },
+            definition: defs[0],
+            claims: [],
+          },
+        ],
+        archivedOutgoingGroups: archived.map(d => ({
+          definition: d,
+          claims: [],
+          hasArchivedClaims: false,
+        })),
+        archivedIncomingGroups: [],
+      };
+    }
+    if (cmd === "create_definition") {
+      const req = args!.request as { definition: { definitionId: string; ownerKind: "type" | "entity"; ownerId: string; label: string; valueClass: "text" | "boolean" | "reference"; cardinality: "singular" | "multiple" } };
+      const d = {
+        id: req.definition.definitionId,
+        ownerKind: req.definition.ownerKind,
+        ownerId: req.definition.ownerId,
+        propertyLabel: req.definition.label,
+        valueClass: req.definition.valueClass,
+        cardinality: req.definition.cardinality,
+        archived: false,
+      };
+      defs.push(d);
+      return d;
+    }
+    if (cmd === "create_definition_with_assertion") {
+      const req = args!.request as {
+        definition: { definitionId: string; ownerKind: "type" | "entity"; ownerId: string; label: string; valueClass: "text" | "boolean" | "reference"; cardinality: "singular" | "multiple" };
+        assertion: { assertionId: string; subjectId: string; definitionId: string; value: unknown; canon: string; sourceStatusRaw: string | null; provenance: { externalRef: string | null; locator: string | null; fragment: string | null; sourceRevision: string | null }; scopeNote: string | null };
+      };
+      const d = {
+        id: req.definition.definitionId,
+        ownerKind: req.definition.ownerKind,
+        ownerId: req.definition.ownerId,
+        propertyLabel: req.definition.label,
+        valueClass: req.definition.valueClass,
+        cardinality: req.definition.cardinality,
+        archived: false,
+      };
+      defs.push(d);
+      const a = {
+        id: req.assertion.assertionId,
+        subjectId: req.assertion.subjectId,
+        definitionId: req.assertion.definitionId,
+        value: req.assertion.value,
+        canon: req.assertion.canon,
+        sourceStatusRaw: req.assertion.sourceStatusRaw,
+        provenance: req.assertion.provenance,
+        scopeNote: req.assertion.scopeNote,
+        archived: false,
+      };
+      claimsByDef.set(d.id, [
+        {
+          id: a.id,
+          value: a.value,
+          canon: a.canon,
+          sourceStatusRaw: a.sourceStatusRaw,
+          provenance: a.provenance,
+          scopeNote: a.scopeNote,
+          archived: false,
+        },
+      ]);
+      return { definition: d, assertion: a };
+    }
+    if (cmd === "create_assertion") {
+      const req = args!.request as {
+        assertion: { assertionId: string; subjectId: string; definitionId: string; value: unknown; canon: string; sourceStatusRaw: string | null; provenance: { externalRef: string | null; locator: string | null; fragment: string | null; sourceRevision: string | null }; scopeNote: string | null };
+      };
+      const a = {
+        id: req.assertion.assertionId,
+        subjectId: req.assertion.subjectId,
+        definitionId: req.assertion.definitionId,
+        value: req.assertion.value,
+        canon: req.assertion.canon,
+        sourceStatusRaw: req.assertion.sourceStatusRaw,
+        provenance: req.assertion.provenance,
+        scopeNote: req.assertion.scopeNote,
+        archived: false,
+      };
+      const list = claimsByDef.get(a.definitionId) ?? [];
+      list.push({
+        id: a.id,
+        value: a.value,
+        canon: a.canon,
+        sourceStatusRaw: a.sourceStatusRaw,
+        provenance: a.provenance,
+        scopeNote: a.scopeNote,
+        archived: false,
+      });
+      claimsByDef.set(a.definitionId, list);
+      return a;
+    }
+    return undefined;
+  });
+
+  ui.open("ka2.sqlite");
+  await tick();
+  ui.doc.querySelector<HTMLButtonElement>("#mode-codex")!.click();
+  await tick();
+
+  // Select Kestrel (typed)
+  const kestrelBtn = [...ui.doc.querySelectorAll<HTMLButtonElement>(".codex-entity-item")].find(
+    b => b.dataset.entityId === ENT_KESTREL,
+  )!;
+  kestrelBtn.click();
+  await tick();
+
+  // Active outgoing unnamed property has Add value; incoming & archived groups do NOT.
+  const addButtons = [...ui.doc.querySelectorAll<HTMLButtonElement>(".codex-add-value-btn")];
+  assert.equal(addButtons.length, 1);
+  assert.equal(addButtons[0]!.dataset.definitionId, DEF_UNNAMED);
+  assert.equal(ui.doc.querySelectorAll(".codex-incoming-group .codex-add-value-btn").length, 0);
+  assert.equal(ui.doc.querySelectorAll(".codex-archived .codex-add-value-btn").length, 0);
+
+  // Open New property dialog -> verify defaults (Provisional canon, includeFact checked, entity owner default).
+  const newPropBtn = ui.doc.querySelector<HTMLButtonElement>("#codex-new-property")!;
+  newPropBtn.click();
+  const propDialog = ui.doc.querySelector<HTMLDialogElement>("#codex-property-dialog")!;
+  assert.equal(propDialog.open, true);
+  assert.equal(ui.doc.querySelector<HTMLSelectElement>("#codex-prop-canon")!.value, "PROVISIONAL");
+  assert.equal(ui.doc.querySelector<HTMLInputElement>("#codex-prop-include-fact")!.checked, true);
+  assert.equal(ui.doc.querySelector<HTMLInputElement>("#codex-prop-owner-entity")!.checked, true);
+  assert.equal(ui.doc.querySelector<HTMLElement>("#codex-prop-owner-type-wrap")!.hidden, false);
+
+  // Leading/trailing whitespace on property label is REJECTED (never trimmed).
+  ui.doc.querySelector<HTMLInputElement>("#codex-prop-label-input")!.value = "  Motto  ";
+  ui.doc.querySelector<HTMLTextAreaElement>("#codex-prop-val-text")!.value = "Hold the lamp";
+  ui.doc.querySelector<HTMLFormElement>("#codex-prop-form")!.dispatchEvent(new ui.win.Event("submit", { cancelable: true }));
+  await tick();
+  assert.equal(propDialog.open, true);
+  assert.equal(ui.doc.querySelector<HTMLElement>("#codex-prop-error")!.hidden, false);
+  assert.equal(calls.some(c => c.cmd === "create_definition_with_assertion"), false);
+
+  // Cancel is nonmutating and restores focus to trigger.
+  ui.doc.querySelector<HTMLButtonElement>("#codex-prop-cancel")!.click();
+  assert.equal(propDialog.open, false);
+  assert.equal(ui.doc.activeElement, newPropBtn);
+
+  // Create intentionally empty type-owned Boolean property (uncheck include-fact).
+  newPropBtn.click();
+  ui.doc.querySelector<HTMLInputElement>("#codex-prop-label-input")!.value = "Sworn";
+  ui.doc.querySelector<HTMLInputElement>("#codex-prop-owner-type")!.checked = true;
+  ui.doc.querySelector<HTMLSelectElement>("#codex-prop-value-class")!.value = "boolean";
+  ui.doc.querySelector<HTMLSelectElement>("#codex-prop-value-class")!.dispatchEvent(new ui.win.Event("change"));
+  ui.doc.querySelector<HTMLInputElement>("#codex-prop-include-fact")!.checked = false;
+  ui.doc.querySelector<HTMLInputElement>("#codex-prop-include-fact")!.dispatchEvent(new ui.win.Event("change"));
+  assert.equal(ui.doc.querySelector<HTMLButtonElement>("#codex-prop-submit")!.textContent, "Create property");
+  ui.doc.querySelector<HTMLFormElement>("#codex-prop-form")!.dispatchEvent(new ui.win.Event("submit", { cancelable: true }));
+  await tick();
+  assert.equal(propDialog.open, false);
+  assert.ok(calls.some(c => c.cmd === "create_definition"));
+  assert.match(ui.doc.querySelector("#codex-entry-status")!.textContent!, /Saved empty property "Sworn"/);
+
+  // Add competing value on singular unnamed property: competing note visible, explicit Unknown works.
+  const unnamedAddBtn = ui.doc.querySelector<HTMLButtonElement>(`.codex-add-value-btn[data-definition-id="${DEF_UNNAMED}"]`)!;
+  unnamedAddBtn.click();
+  const factDialog = ui.doc.querySelector<HTMLDialogElement>("#codex-fact-dialog")!;
+  assert.equal(factDialog.open, true);
+  assert.equal(ui.doc.querySelector<HTMLElement>("#codex-fact-competing-note")!.hidden, false);
+  ui.doc.querySelector<HTMLInputElement>("#codex-fact-val-mode-unknown")!.checked = true;
+  ui.doc.querySelector<HTMLInputElement>("#codex-fact-val-mode-unknown")!.dispatchEvent(new ui.win.Event("change"));
+  ui.doc.querySelector<HTMLSelectElement>("#codex-fact-canon")!.value = "MISTERIO_INTENCIONAL";
+  ui.doc.querySelector<HTMLInputElement>("#codex-fact-src-ref")!.value = "  Bible v1  ";
+  ui.doc.querySelector<HTMLInputElement>("#codex-fact-src-status")!.value = "   ";
+  ui.doc.querySelector<HTMLFormElement>("#codex-fact-form")!.dispatchEvent(new ui.win.Event("submit", { cancelable: true }));
+  await tick();
+  assert.equal(factDialog.open, false);
+  const createAssCall = calls.find(c => c.cmd === "create_assertion")!;
+  const assPayload = (createAssCall.args!.request as { assertion: { value: { kind: string }; canon: string; sourceStatusRaw: string | null; provenance: { externalRef: string | null } } }).assertion;
+  assert.deepEqual(assPayload.value, { kind: "unknown" });
+  assert.equal(assPayload.canon, "MISTERIO_INTENCIONAL");
+  assert.equal(assPayload.sourceStatusRaw, null);
+  assert.equal(assPayload.provenance.externalRef, "  Bible v1  ");
+
+  // Create composite reference property with self-reference and disambiguated duplicate labels.
+  ui.doc.querySelector<HTMLButtonElement>("#codex-new-property")!.click();
+  ui.doc.querySelector<HTMLInputElement>("#codex-prop-label-input")!.value = "Sworn ally";
+  ui.doc.querySelector<HTMLSelectElement>("#codex-prop-value-class")!.value = "reference";
+  ui.doc.querySelector<HTMLSelectElement>("#codex-prop-value-class")!.dispatchEvent(new ui.win.Event("change"));
+  const refOpts = [...ui.doc.querySelectorAll<HTMLButtonElement>("#codex-prop-val-ref-list .codex-ref-option")];
+  assert.ok(refOpts.some(b => b.textContent!.includes("(this entity)") && b.textContent!.includes("…0001")));
+  assert.ok(refOpts.some(b => b.textContent!.includes("…0002")));
+  // Select self-reference explicitly
+  refOpts.find(b => b.dataset.entityId === ENT_KESTREL)!.click();
+  ui.doc.querySelector<HTMLFormElement>("#codex-prop-form")!.dispatchEvent(new ui.win.Event("submit", { cancelable: true }));
+  await tick();
+  assert.equal(propDialog.open, false);
+  assert.ok(calls.some(c => c.cmd === "create_definition_with_assertion"));
+
+  // Switch to untyped entity: type ownership is hidden/disabled.
+  const untypedBtn = [...ui.doc.querySelectorAll<HTMLButtonElement>(".codex-entity-item")].find(
+    b => b.dataset.entityId === ENT_UNTYPED,
+  )!;
+  untypedBtn.click();
+  await tick();
+  ui.doc.querySelector<HTMLButtonElement>("#codex-new-property")!.click();
+  assert.equal(ui.doc.querySelector<HTMLElement>("#codex-prop-owner-type-wrap")!.hidden, true);
+  assert.equal(ui.doc.querySelector<HTMLElement>("#codex-prop-owner-untyped-note")!.hidden, false);
+  ui.doc.querySelector<HTMLButtonElement>("#codex-prop-cancel")!.click();
+  ui.close();
+});
+
+test("KA2-A reconciliation enforces finalized absence, partial anomaly lock, mutual exclusion with KA1, and post-write context_too_large", async () => {
+  const ENT_A = "55555555-5555-4555-8555-000000000011";
+  let mode: "uncertain_unfinalized" | "uncertain_finalized" | "uncertain_partial" | "context_too_large" =
+    "uncertain_unfinalized";
+  let lastCompositeReq: {
+    operationId: string;
+    definition: { definitionId: string; ownerKind: "type" | "entity"; ownerId: string; label: string; valueClass: string; cardinality: string };
+    assertion: { assertionId: string; subjectId: string; definitionId: string; value: unknown; canon: string; sourceStatusRaw: string | null; provenance: unknown; scopeNote: string | null };
+  } | null = null;
+  let contextShouldOverflow = false;
+
+  const ui = setup(async (cmd, args) => {
+    if (cmd === "page_index") return [];
+    if (cmd === "codex_index") {
+      return {
+        types: [],
+        entities: [{ id: ENT_A, label: "Ash Spire", typeId: null, typeLabel: null, primaryPageTitle: null }],
+      };
+    }
+    if (cmd === "entity_context") {
+      if (contextShouldOverflow) throw { kind: "context_too_large" };
+      return {
+        entity: { id: ENT_A, label: "Ash Spire" },
+        typeLabel: null,
+        outgoingGroups: [],
+        incomingGroups: [],
+        archivedOutgoingGroups: [],
+        archivedIncomingGroups: [],
+      };
+    }
+    if (cmd === "create_definition_with_assertion") {
+      lastCompositeReq = args!.request as typeof lastCompositeReq;
+      if (mode === "context_too_large") {
+        contextShouldOverflow = true;
+        return {
+          definition: {
+            id: lastCompositeReq!.definition.definitionId,
+            ownerKind: lastCompositeReq!.definition.ownerKind,
+            ownerId: lastCompositeReq!.definition.ownerId,
+            propertyLabel: lastCompositeReq!.definition.label,
+            valueClass: lastCompositeReq!.definition.valueClass,
+            cardinality: lastCompositeReq!.definition.cardinality,
+            archived: false,
+          },
+          assertion: {
+            id: lastCompositeReq!.assertion.assertionId,
+            subjectId: lastCompositeReq!.assertion.subjectId,
+            definitionId: lastCompositeReq!.assertion.definitionId,
+            value: lastCompositeReq!.assertion.value,
+            canon: lastCompositeReq!.assertion.canon,
+            sourceStatusRaw: lastCompositeReq!.assertion.sourceStatusRaw,
+            provenance: lastCompositeReq!.assertion.provenance,
+            scopeNote: lastCompositeReq!.assertion.scopeNote,
+            archived: false,
+          },
+        };
+      }
+      throw new Error("IPC transport dropped");
+    }
+    if (cmd === "reconcile_codex_write") {
+      const req = args!.request as { operationId: string };
+      if (mode === "uncertain_unfinalized") {
+        return { operationId: req.operationId, finalized: false, definition: null, assertion: null };
+      }
+      if (mode === "uncertain_finalized") {
+        return { operationId: req.operationId, finalized: true, definition: null, assertion: null };
+      }
+      // Partial composite state: definition present, assertion missing -> integrity anomaly!
+      return {
+        operationId: req.operationId,
+        finalized: true,
+        definition: {
+          id: lastCompositeReq!.definition.definitionId,
+          ownerKind: lastCompositeReq!.definition.ownerKind,
+          ownerId: lastCompositeReq!.definition.ownerId,
+          propertyLabel: lastCompositeReq!.definition.label,
+          valueClass: lastCompositeReq!.definition.valueClass,
+          cardinality: lastCompositeReq!.definition.cardinality,
+          archived: false,
+        },
+        assertion: null,
+      };
+    }
+    return undefined;
+  });
+
+  ui.open("reconcile.sqlite");
+  await tick();
+  ui.doc.querySelector<HTMLButtonElement>("#mode-codex")!.click();
+  await tick();
+  ui.doc.querySelector<HTMLButtonElement>(".codex-entity-item")!.click();
+  await tick();
+
+  // Trigger uncertain composite write.
+  ui.doc.querySelector<HTMLButtonElement>("#codex-new-property")!.click();
+  ui.doc.querySelector<HTMLInputElement>("#codex-prop-label-input")!.value = "Height";
+  ui.doc.querySelector<HTMLTextAreaElement>("#codex-prop-val-text")!.value = "Forty spans";
+  ui.doc.querySelector<HTMLFormElement>("#codex-prop-form")!.dispatchEvent(new ui.win.Event("submit", { cancelable: true }));
+  await tick();
+
+  // Mutual exclusion: BOTH KA1 (New type / New entity) AND KA2 (New property) are locked!
+  assert.equal(ui.doc.querySelector<HTMLButtonElement>("#codex-new-type")!.disabled, true);
+  assert.equal(ui.doc.querySelector<HTMLButtonElement>("#codex-new-entity")!.disabled, true);
+  assert.equal(ui.doc.querySelector<HTMLButtonElement>("#codex-new-property")!.disabled, true);
+  assert.equal(ui.doc.querySelector<HTMLButtonElement>("#codex-verify-write")!.hidden, false);
+
+  // Absence with finalized=false is NOT definitive noncommit -> stays locked!
+  ui.doc.querySelector<HTMLButtonElement>("#codex-verify-write")!.click();
+  await tick();
+  assert.equal(ui.doc.querySelector<HTMLButtonElement>("#codex-new-type")!.disabled, true);
+  assert.equal(ui.doc.querySelector<HTMLButtonElement>("#codex-verify-write")!.hidden, false);
+  assert.match(ui.doc.querySelector("#codex-status")!.textContent!, /still unconfirmed/i);
+
+  // Absence with finalized=true IS definitive noncommit -> unlocks writes!
+  mode = "uncertain_finalized";
+  ui.doc.querySelector<HTMLButtonElement>("#codex-verify-write")!.click();
+  await tick();
+  assert.equal(ui.doc.querySelector<HTMLButtonElement>("#codex-new-type")!.disabled, false);
+  assert.equal(ui.doc.querySelector<HTMLButtonElement>("#codex-new-property")!.disabled, false);
+  assert.equal(ui.doc.querySelector<HTMLButtonElement>("#codex-verify-write")!.hidden, true);
+  assert.match(ui.doc.querySelector("#codex-status")!.textContent!, /nothing was saved/i);
+
+  // Partial composite state -> integrity anomaly locks session writes permanently until universe reopen!
+  mode = "uncertain_partial";
+  ui.doc.querySelector<HTMLButtonElement>("#codex-new-property")!.click();
+  ui.doc.querySelector<HTMLInputElement>("#codex-prop-label-input")!.value = "Age";
+  ui.doc.querySelector<HTMLTextAreaElement>("#codex-prop-val-text")!.value = "Ancient";
+  ui.doc.querySelector<HTMLFormElement>("#codex-prop-form")!.dispatchEvent(new ui.win.Event("submit", { cancelable: true }));
+  await tick();
+  ui.doc.querySelector<HTMLButtonElement>("#codex-verify-write")!.click();
+  await tick();
+  assert.equal(ui.doc.querySelector<HTMLButtonElement>("#codex-new-type")!.disabled, true);
+  assert.equal(ui.doc.querySelector<HTMLButtonElement>("#codex-new-entity")!.disabled, true);
+  assert.equal(ui.doc.querySelector<HTMLButtonElement>("#codex-new-property")!.disabled, true);
+  assert.match(ui.doc.querySelector("#codex-status")!.textContent!, /Integrity anomaly: unexpected partial state/i);
+
+  // Reopen universe clears anomaly lock; test post-write context_too_large preserves Saved confirmation!
+  mode = "context_too_large";
+  ui.open("reconcile-2.sqlite");
+  await tick();
+  ui.doc.querySelector<HTMLButtonElement>(".codex-entity-item")!.click();
+  await tick();
+  ui.doc.querySelector<HTMLButtonElement>("#codex-new-property")!.click();
+  ui.doc.querySelector<HTMLInputElement>("#codex-prop-label-input")!.value = "Origin";
+  ui.doc.querySelector<HTMLTextAreaElement>("#codex-prop-val-text")!.value = "First age";
+  ui.doc.querySelector<HTMLFormElement>("#codex-prop-form")!.dispatchEvent(new ui.win.Event("submit", { cancelable: true }));
+  await tick();
+  assert.match(ui.doc.querySelector("#codex-entry-status")!.textContent!, /Saved property "Origin"/);
+  assert.match(ui.doc.querySelector("#codex-detail-context")!.textContent!, /Context too large/i);
+  assert.equal(ui.doc.querySelector("#codex-new-property"), null);
+  ui.close();
+});
+
+test("KA2-A review regressions: persistent notices, duplicate property disambiguation in Add fact, native close guard, and reference picker focus", async () => {
+  const ENT_A = "55555555-5555-4555-8555-000000000101";
+  const ENT_B = "55555555-5555-4555-8555-000000000102";
+  const DEF_DUP_1 = "44444444-4444-4444-8444-000000000001";
+  const DEF_DUP_2 = "44444444-4444-4444-8444-000000000002";
+  const DEF_NULL_1 = "44444444-4444-4444-8444-000000000003";
+  const DEF_NULL_2 = "44444444-4444-4444-8444-000000000004";
+  const persistedDefIds: string[] = [];
+  const cancelCloseTokens: string[] = [];
+  const closeWindowTokens: string[] = [];
+  let inflightWrite: ReturnType<typeof deferred<unknown>> | null = null;
+  let inflightVerify: ReturnType<typeof deferred<unknown>> | null = null;
+
+  const ui = setup(async (cmd, args) => {
+    if (cmd === "page_index") return [];
+    if (cmd === "codex_index") {
+      return {
+        types: [],
+        entities: [
+          { id: ENT_A, label: "Kestrel", typeId: null, typeLabel: null, primaryPageTitle: null },
+          { id: ENT_B, label: "Ash Spire", typeId: null, typeLabel: null, primaryPageTitle: null },
+        ],
+      };
+    }
+    if (cmd === "entity_context") {
+      const entityId = String(args!.entityId);
+      if (entityId === ENT_A) {
+        return {
+          entity: { id: ENT_A, label: "Kestrel" },
+          typeLabel: null,
+          outgoingGroups: [
+            {
+              definition: { id: DEF_DUP_1, ownerKind: "entity", ownerId: ENT_A, propertyLabel: "Allegiance", valueClass: "text", cardinality: "singular", archived: false },
+              claims: [],
+              hasArchivedClaims: false,
+            },
+            {
+              definition: { id: DEF_DUP_2, ownerKind: "entity", ownerId: ENT_A, propertyLabel: "Allegiance", valueClass: "text", cardinality: "singular", archived: false },
+              claims: [],
+              hasArchivedClaims: false,
+            },
+            {
+              definition: { id: DEF_NULL_1, ownerKind: "entity", ownerId: ENT_A, propertyLabel: null, valueClass: "text", cardinality: "singular", archived: false },
+              claims: [],
+              hasArchivedClaims: false,
+            },
+            {
+              definition: { id: DEF_NULL_2, ownerKind: "entity", ownerId: ENT_A, propertyLabel: null, valueClass: "text", cardinality: "singular", archived: false },
+              claims: [],
+              hasArchivedClaims: false,
+            },
+          ],
+          incomingGroups: [],
+          archivedOutgoingGroups: [],
+          archivedIncomingGroups: [],
+        };
+      }
+      return {
+        entity: { id: ENT_B, label: "Ash Spire" },
+        typeLabel: null,
+        outgoingGroups: [],
+        incomingGroups: [],
+        archivedOutgoingGroups: [],
+        archivedIncomingGroups: [],
+      };
+    }
+    if (cmd === "create_assertion") {
+      const req = args!.request as { assertion: { assertionId: string; subjectId: string; definitionId: string; value: unknown; canon: string; sourceStatusRaw: string | null; provenance: unknown; scopeNote: string | null } };
+      persistedDefIds.push(req.assertion.definitionId);
+      return {
+        id: req.assertion.assertionId,
+        subjectId: req.assertion.subjectId,
+        definitionId: req.assertion.definitionId,
+        value: req.assertion.value,
+        canon: req.assertion.canon,
+        sourceStatusRaw: req.assertion.sourceStatusRaw,
+        provenance: req.assertion.provenance,
+        scopeNote: req.assertion.scopeNote,
+        archived: false,
+      };
+    }
+    if (cmd === "create_definition_with_assertion") {
+      inflightWrite = deferred();
+      return inflightWrite.promise;
+    }
+    if (cmd === "reconcile_codex_write") {
+      inflightVerify = deferred();
+      return inflightVerify.promise;
+    }
+    if (cmd === "cancel_close") {
+      cancelCloseTokens.push(String(args!.token));
+      return undefined;
+    }
+    if (cmd === "close_window") {
+      closeWindowTokens.push(String(args!.token));
+      return undefined;
+    }
+    return undefined;
+  });
+
+  ui.open("review.sqlite");
+  await tick();
+  ui.doc.querySelector<HTMLButtonElement>("#mode-codex")!.click();
+  await tick();
+  ui.doc.querySelector<HTMLButtonElement>(`.codex-entity-item[data-entity-id="${ENT_A}"]`)!.click();
+  await tick();
+
+  // 1. Duplicate property identity disambiguation in Add fact (both named and unnamed).
+  ui.doc.querySelector<HTMLButtonElement>(`.codex-add-value-btn[data-definition-id="${DEF_DUP_2}"]`)!.click();
+  assert.match(ui.doc.querySelector("#codex-fact-subtitle")!.textContent!, /Allegiance · …0002/);
+  ui.doc.querySelector<HTMLTextAreaElement>("#codex-fact-val-text")!.value = "Lantern";
+  ui.doc.querySelector<HTMLFormElement>("#codex-fact-form")!.dispatchEvent(new ui.win.Event("submit", { cancelable: true }));
+  await tick();
+  assert.deepEqual(persistedDefIds, [DEF_DUP_2]);
+
+  ui.doc.querySelector<HTMLButtonElement>(`.codex-add-value-btn[data-definition-id="${DEF_NULL_1}"]`)!.click();
+  assert.match(ui.doc.querySelector("#codex-fact-subtitle")!.textContent!, /Unnamed property · …0003/);
+  ui.doc.querySelector<HTMLButtonElement>("#codex-fact-cancel")!.click();
+
+  // 2. Reference picker uses native button aria-pressed (no listbox/option) and keeps focus on select.
+  ui.doc.querySelector<HTMLButtonElement>("#codex-new-property")!.click();
+  ui.doc.querySelector<HTMLSelectElement>("#codex-prop-value-class")!.value = "reference";
+  ui.doc.querySelector<HTMLSelectElement>("#codex-prop-value-class")!.dispatchEvent(new ui.win.Event("change"));
+  const refList = ui.doc.querySelector<HTMLElement>("#codex-prop-val-ref-list")!;
+  assert.equal(refList.getAttribute("role"), "group");
+  const targetBtn = refList.querySelector<HTMLButtonElement>(`.codex-ref-option[data-entity-id="${ENT_B}"]`)!;
+  assert.equal(targetBtn.getAttribute("role"), null);
+  assert.equal(targetBtn.getAttribute("aria-pressed"), "false");
+  targetBtn.focus();
+  targetBtn.click();
+  assert.equal(targetBtn.getAttribute("aria-pressed"), "true");
+  assert.equal(ui.doc.activeElement, targetBtn);
+
+  // 3. In-flight Codex write blocks ordinary native window close without opening close guard.
+  ui.doc.querySelector<HTMLInputElement>("#codex-prop-label-input")!.value = "Ally";
+  ui.doc.querySelector<HTMLFormElement>("#codex-prop-form")!.dispatchEvent(new ui.win.Event("submit", { cancelable: true }));
+  await tick();
+  ui.controller.requestClose("close-inflight-write");
+  await tick();
+  assert.deepEqual(cancelCloseTokens, ["close-inflight-write"]);
+  assert.deepEqual(closeWindowTokens, []);
+  assert.equal(ui.doc.querySelector<HTMLDialogElement>("#codex-close-guard")!.open, false);
+
+  // Fail write ambiguously -> pendingKnowledgeWrite active.
+  inflightWrite!.reject(new Error("transport dropped"));
+  await tick();
+  assert.match(ui.doc.querySelector("#codex-status")!.textContent!, /Could not confirm/);
+  assert.equal(ui.doc.querySelector<HTMLElement>("#codex-entry-status")!.dataset.severity, "warning");
+
+  // 4. Persistent uncertainty notice survives entity navigation, search filtering, and Write <-> Codex reactivation!
+  ui.doc.querySelector<HTMLButtonElement>(`.codex-entity-item[data-entity-id="${ENT_B}"]`)!.click();
+  await tick();
+  assert.match(ui.doc.querySelector("#codex-entry-status")!.textContent!, /Could not confirm/);
+  assert.match(ui.doc.querySelector("#codex-status")!.textContent!, /Could not confirm/);
+
+  const searchInput = ui.doc.querySelector<HTMLInputElement>("#codex-search")!;
+  searchInput.value = "nomatch";
+  searchInput.dispatchEvent(new ui.win.Event("input"));
+  await tick();
+  assert.match(ui.doc.querySelector("#codex-entry-status")!.textContent!, /Could not confirm/);
+
+  ui.doc.querySelector<HTMLButtonElement>("#mode-write")!.click();
+  await tick();
+  ui.doc.querySelector<HTMLButtonElement>("#mode-codex")!.click();
+  await tick();
+  assert.match(ui.doc.querySelector("#codex-status")!.textContent!, /Could not confirm/);
+  assert.match(ui.doc.querySelector("#codex-entry-status")!.textContent!, /Could not confirm/);
+
+  // 5. In-flight verification blocks ordinary native window close.
+  ui.doc.querySelector<HTMLButtonElement>("#codex-verify-write")!.click();
+  await tick();
+  ui.controller.requestClose("close-inflight-verify");
+  await tick();
+  assert.ok(cancelCloseTokens.includes("close-inflight-verify"));
+  assert.deepEqual(closeWindowTokens, []);
+
+  // Resolve verify with partial anomaly -> persistent anomaly survives navigation & prompts explicit close warning!
+  inflightVerify!.resolve({
+    operationId: "mismatch-op",
+    finalized: true,
+    definition: null,
+    assertion: null,
+  });
+  await tick();
+  assert.match(ui.doc.querySelector("#codex-status")!.textContent!, /Integrity anomaly/);
+  ui.doc.querySelector<HTMLButtonElement>("#mode-write")!.click();
+  await tick();
+  ui.doc.querySelector<HTMLButtonElement>("#mode-codex")!.click();
+  await tick();
+  assert.match(ui.doc.querySelector("#codex-status")!.textContent!, /Integrity anomaly/);
+  assert.match(ui.doc.querySelector("#codex-entry-status")!.textContent!, /Integrity anomaly/);
+
+  // Unresolved close guard: Stay cancels close; Close anyway permits close.
+  ui.controller.requestClose("close-stay");
+  await tick();
+  const closeGuard = ui.doc.querySelector<HTMLDialogElement>("#codex-close-guard")!;
+  assert.equal(closeGuard.open, true);
+  assert.match(ui.doc.querySelector("#codex-close-guard-text")!.textContent!, /Integrity anomaly/);
+  ui.doc.querySelector<HTMLButtonElement>("#codex-close-stay")!.click();
+  await tick();
+  assert.ok(cancelCloseTokens.includes("close-stay"));
+  assert.deepEqual(closeWindowTokens, []);
+
+  ui.controller.requestClose("close-leave");
+  await tick();
+  assert.equal(closeGuard.open, true);
+  ui.doc.querySelector<HTMLButtonElement>("#codex-close-leave")!.click();
+  await tick();
+  assert.deepEqual(closeWindowTokens, ["close-leave"]);
+  ui.close();
+});

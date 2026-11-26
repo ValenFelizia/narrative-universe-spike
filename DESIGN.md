@@ -314,3 +314,30 @@ synthetic universe (including universes with 0 documents):
   default) open focused `<dialog>` modals with explicit `Create` / `Cancel`,
   accessible labels, Escape cancellation while idle, and inline validation
   errors; no inline notes editor or KA2–KA5 authoring controls are present.
+
+## PA-I7/KA2-A Knowledge Authoring exception (issue #52)
+
+The Write-only restriction, permanent-right-pane ban, and KA1 editorial Codex
+hierarchy remain in force. PA-I7/KA2-A explicitly authorizes structured
+knowledge authoring inside Codex using compact native `<dialog>` modals:
+
+- **Entry-level triggers only where applicable:** `Facts` header provides a
+  discreet `New property` button, and each active applicable outgoing property
+  group (including unnamed and `Not recorded` definitions) provides a discreet
+  `Add value` button. `Referenced by` (incoming) and `Archived (N)` groups carry
+  no authoring controls. Write's `renderEntityContextSections` and facts peek
+  remain untouched.
+- **Worldbuilding-first authoring dialogs:** `New property` and `Add value` use
+  the same graphite `<dialog>` surface (`width: min(480px, calc(100vw - 24px))`,
+  internal vertical scroll at narrow heights), Source Serif 4 dialog headings,
+  and Instrument Sans controls — with plain-language ownership (`Only <Entity>`
+  default vs `All <Type> entities`; fixed for untyped entities), explicit `Yes`
+  / `No` radios without preselection, searchable disambiguated entity-reference
+  picker (allowing self-reference), class-independent `Record as Unknown`,
+  visible `Provisional` canon default, and collapsed `Source & scope (optional)`.
+- **Honest confirmation and write locking:** Confirmed writes display a quiet
+  entry-level confirmation independent of `entity_context` refresh (so
+  `context_too_large` or transient read failures never imply data loss).
+  Uncertain writes share the KA1/KA2 write lock until `Verify write` reconciles
+  by primary key; partial or mismatched records surface a non-destructive
+  integrity-anomaly warning and keep writes locked for the session.

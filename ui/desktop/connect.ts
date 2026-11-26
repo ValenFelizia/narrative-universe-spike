@@ -248,11 +248,17 @@ export function renderEntityContextSections(
   content.append(archivedDetails);
   return { entityDisplayName: name(data.entity) };
 }
+export type CodexAuthoringHooks = {
+  disabled: boolean;
+  onNewProperty: (trigger: HTMLButtonElement) => void;
+  onAddValue: (group: ContextOutgoingGroup, trigger: HTMLButtonElement) => void;
+};
 export function renderCodexEntrySections(
   content: HTMLElement,
   data: EntityContext,
   knownIdentities: readonly RevealIdentity[],
   onToggle?: () => void,
+  authoring?: CodexAuthoringHooks,
 ): { entityDisplayName: string } {
   const { name, property } = createContextDisambiguators(data, knownIdentities);
 
@@ -383,6 +389,16 @@ export function renderCodexEntrySections(
         valuesCol.append(renderOutgoingAssertion(claim, archivedSection));
       }
     }
+    if (!archivedSection && authoring) {
+      const addBtn = document.createElement("button");
+      addBtn.type = "button";
+      addBtn.className = "codex-add-value-btn";
+      addBtn.dataset.definitionId = group.definition.id;
+      addBtn.textContent = "Add value";
+      addBtn.disabled = authoring.disabled;
+      addBtn.addEventListener("click", () => authoring.onAddValue(group, addBtn));
+      valuesCol.append(addBtn);
+    }
 
     article.append(labelCol, valuesCol);
     return article;
@@ -428,7 +444,18 @@ export function renderCodexEntrySections(
 
   const factsSection = document.createElement("section");
   factsSection.className = "codex-section";
-  factsSection.append(buildSectionHeader("Facts", data.outgoingGroups.length));
+  const factsHead = buildSectionHeader("Facts", data.outgoingGroups.length);
+  if (authoring) {
+    const newPropBtn = document.createElement("button");
+    newPropBtn.id = "codex-new-property";
+    newPropBtn.type = "button";
+    newPropBtn.className = "codex-author-btn";
+    newPropBtn.textContent = "New property";
+    newPropBtn.disabled = authoring.disabled;
+    newPropBtn.addEventListener("click", () => authoring.onNewProperty(newPropBtn));
+    factsHead.append(newPropBtn);
+  }
+  factsSection.append(factsHead);
   if (!data.outgoingGroups.length) {
     const empty = document.createElement("p");
     empty.className = "codex-section-empty";

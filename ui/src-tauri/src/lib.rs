@@ -3,9 +3,10 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use narrative_universe::{
-    apply_mention_edit, validate_codex_label, Entity, EntityId, EntityType, Error, Mention,
-    MentionEdit, MentionId, Page, PageEdit, PageId, PageRevision, PageSummary, Store, TypeId,
-    ValidationReason,
+    apply_mention_edit, validate_codex_label, Assertion, AssertionId, Canon, Cardinality,
+    Definition, DefinitionId, DefinitionLabel, Entity, EntityId, EntityType, Error, Mention,
+    MentionEdit, MentionId, Owner, Page, PageEdit, PageId, PageRevision, PageSummary, Provenance,
+    Store, TypeId, ValidationReason, Value, ValueClass,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
@@ -18,6 +19,9 @@ struct DesktopState {
 struct ActiveUniverse {
     token: String,
     store: Store,
+    /// Session-scoped operation IDs fenced by `reconcile_codex_write` (keyed by
+    /// `operation_id` only, cleared when the active universe is replaced).
+    cancelled_ops: BTreeSet<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -39,6 +43,12 @@ enum BridgeError {
     PageMissing,
     EntityMissing,
     TypeMissing,
+    DefinitionMissing,
+    DefinitionArchived,
+    TargetMissing,
+    NotApplicable,
+    ValueMismatch,
+    OperationCancelled,
     ContextTooLarge,
     ReadFailed,
     StateUnavailable,
@@ -259,6 +269,7 @@ fn open_universe(
     *active = Some(ActiveUniverse {
         token: token.clone(),
         store,
+        cancelled_ops: BTreeSet::new(),
     });
     Ok(OpenedUniverse { token, pages })
 }
@@ -518,6 +529,546 @@ fn create_entity(
     )
 }
 
+const MAX_AUTHORED_TEXT_BYTES: usize = 16_384;
+const MAX_AUTHORED_SINGLE_LINE_META_BYTES: usize = 1_024;
+const MAX_AUTHORED_MULTILINE_META_BYTES: usize = 4_096;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OwnerKindInput {
+    Type,
+    Entity,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ValueClassInput {
+    Text,
+    Boolean,
+    Reference,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CardinalityInput {
+    Singular,
+    Multiple,
+}
+
+#[derive(Debug, Deserialize)]
+enum CanonInput {
+    #[serde(rename = "ACORDADO")]
+    Acordado,
+    #[serde(rename = "PROVISIONAL")]
+    Provisional,
+    #[serde(rename = "ABIERTO")]
+    Abierto,
+    #[serde(rename = "MISTERIO_INTENCIONAL")]
+    MisterioIntencional,
+}
+
+impl From<ValueClassInput> for ValueClass {
+    fn from(value: ValueClassInput) -> Self {
+        match value {
+            ValueClassInput::Text => ValueClass::Text,
+            ValueClassInput::Boolean => ValueClass::Boolean,
+            ValueClassInput::Reference => ValueClass::Reference,
+        }
+    }
+}
+
+impl From<CardinalityInput> for Cardinality {
+    fn from(value: CardinalityInput) -> Self {
+        match value {
+            CardinalityInput::Singular => Cardinality::Singular,
+            CardinalityInput::Multiple => Cardinality::Multiple,
+        }
+    }
+}
+
+impl From<CanonInput> for Canon {
+    fn from(value: CanonInput) -> Self {
+        match value {
+            CanonInput::Acordado => Canon::Acordado,
+            CanonInput::Provisional => Canon::Provisional,
+            CanonInput::Abierto => Canon::Abierto,
+            CanonInput::MisterioIntencional => Canon::MisterioIntencional,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum AssertionValueInput {
+    Text { text: String },
+    Boolean { value: bool },
+    Reference { target_entity_id: String },
+    Unknown,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProvenanceInput {
+    external_ref: Option<String>,
+    locator: Option<String>,
+    fragment: Option<String>,
+    source_revision: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NewDefinitionInput {
+    definition_id: String,
+    owner_kind: OwnerKindInput,
+    owner_id: String,
+    label: String,
+    value_class: ValueClassInput,
+    cardinality: CardinalityInput,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NewAssertionInput {
+    assertion_id: String,
+    subject_id: String,
+    definition_id: String,
+    value: AssertionValueInput,
+    canon: CanonInput,
+    source_status_raw: Option<String>,
+    provenance: ProvenanceInput,
+    scope_note: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateDefinitionRequest {
+    universe_token: String,
+    operation_id: String,
+    definition: NewDefinitionInput,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateAssertionRequest {
+    universe_token: String,
+    operation_id: String,
+    assertion: NewAssertionInput,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateDefinitionWithAssertionRequest {
+    universe_token: String,
+    operation_id: String,
+    definition: NewDefinitionInput,
+    assertion: NewAssertionInput,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReconcileCodexWriteRequest {
+    universe_token: String,
+    operation_id: String,
+    definition_id: Option<String>,
+    assertion_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+enum PersistedAssertionValue {
+    Text { text: String },
+    Boolean { value: bool },
+    Reference { target_entity_id: String },
+    Unknown,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct PersistedAssertion {
+    id: String,
+    subject_id: String,
+    definition_id: String,
+    value: PersistedAssertionValue,
+    canon: String,
+    source_status_raw: Option<String>,
+    provenance: RevealSource,
+    scope_note: Option<String>,
+    archived: bool,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct CreateDefinitionWithAssertionResponse {
+    definition: ContextDefinition,
+    assertion: PersistedAssertion,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ReconcileCodexWriteResponse {
+    operation_id: String,
+    finalized: bool,
+    definition: Option<ContextDefinition>,
+    assertion: Option<PersistedAssertion>,
+}
+
+fn parse_operation_id(raw: &str) -> Result<String, BridgeError> {
+    let parsed = uuid::Uuid::parse_str(raw).map_err(|_| BridgeError::InvalidInput)?;
+    let canonical = parsed.as_hyphenated().to_string();
+    if raw != canonical {
+        return Err(BridgeError::InvalidInput);
+    }
+    Ok(canonical)
+}
+
+fn validate_authored_text(raw: String) -> Result<String, BridgeError> {
+    if raw.len() > MAX_AUTHORED_TEXT_BYTES || raw.trim().is_empty() {
+        return Err(BridgeError::InvalidInput);
+    }
+    if raw
+        .chars()
+        .any(|c| c == '\0' || c == '\r' || (c.is_control() && c != '\n' && c != '\t'))
+    {
+        return Err(BridgeError::InvalidInput);
+    }
+    Ok(raw)
+}
+
+fn validate_optional_meta(
+    raw: Option<String>,
+    max_bytes: usize,
+    multiline: bool,
+) -> Result<Option<String>, BridgeError> {
+    let Some(text) = raw else {
+        return Ok(None);
+    };
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    if text.len() > max_bytes {
+        return Err(BridgeError::InvalidInput);
+    }
+    let bad = if multiline {
+        text.chars()
+            .any(|c| c == '\0' || c == '\r' || (c.is_control() && c != '\n' && c != '\t'))
+    } else {
+        text.chars().any(char::is_control)
+    };
+    if bad {
+        return Err(BridgeError::InvalidInput);
+    }
+    Ok(Some(text))
+}
+
+fn parse_new_definition(input: NewDefinitionInput) -> Result<Definition, BridgeError> {
+    let id = DefinitionId::parse(&input.definition_id).map_err(|_| BridgeError::InvalidInput)?;
+    let owner = match input.owner_kind {
+        OwnerKindInput::Type => {
+            Owner::Type(TypeId::parse(&input.owner_id).map_err(|_| BridgeError::InvalidInput)?)
+        }
+        OwnerKindInput::Entity => {
+            Owner::Entity(EntityId::parse(&input.owner_id).map_err(|_| BridgeError::InvalidInput)?)
+        }
+    };
+    let label = DefinitionLabel::parse(&input.label).map_err(|_| BridgeError::InvalidInput)?;
+    Ok(Definition {
+        id,
+        owner,
+        value_class: input.value_class.into(),
+        cardinality: input.cardinality.into(),
+        label: Some(label),
+        archived: false,
+    })
+}
+
+fn parse_new_assertion(input: NewAssertionInput) -> Result<Assertion, BridgeError> {
+    let id = AssertionId::parse(&input.assertion_id).map_err(|_| BridgeError::InvalidInput)?;
+    let subject_id = EntityId::parse(&input.subject_id).map_err(|_| BridgeError::InvalidInput)?;
+    let definition_id =
+        DefinitionId::parse(&input.definition_id).map_err(|_| BridgeError::InvalidInput)?;
+    let value = match input.value {
+        AssertionValueInput::Text { text } => Value::Text(validate_authored_text(text)?),
+        AssertionValueInput::Boolean { value } => Value::Boolean(value),
+        AssertionValueInput::Reference { target_entity_id } => Value::Reference(
+            EntityId::parse(&target_entity_id).map_err(|_| BridgeError::InvalidInput)?,
+        ),
+        AssertionValueInput::Unknown => Value::Unknown,
+    };
+    let source_status_raw = validate_optional_meta(
+        input.source_status_raw,
+        MAX_AUTHORED_SINGLE_LINE_META_BYTES,
+        false,
+    )?;
+    let provenance = Provenance {
+        external_ref: validate_optional_meta(
+            input.provenance.external_ref,
+            MAX_AUTHORED_SINGLE_LINE_META_BYTES,
+            false,
+        )?,
+        locator: validate_optional_meta(
+            input.provenance.locator,
+            MAX_AUTHORED_SINGLE_LINE_META_BYTES,
+            false,
+        )?,
+        fragment: validate_optional_meta(
+            input.provenance.fragment,
+            MAX_AUTHORED_MULTILINE_META_BYTES,
+            true,
+        )?,
+        source_revision: validate_optional_meta(
+            input.provenance.source_revision,
+            MAX_AUTHORED_SINGLE_LINE_META_BYTES,
+            false,
+        )?,
+    };
+    let scope_note =
+        validate_optional_meta(input.scope_note, MAX_AUTHORED_MULTILINE_META_BYTES, true)?;
+    Ok(Assertion {
+        id,
+        subject_id,
+        definition_id,
+        value,
+        canon: input.canon.into(),
+        source_status_raw,
+        provenance,
+        scope_note,
+        archived: false,
+    })
+}
+
+fn persisted_assertion(assertion: Assertion) -> PersistedAssertion {
+    let value = match assertion.value {
+        Value::Text(text) => PersistedAssertionValue::Text { text },
+        Value::Boolean(value) => PersistedAssertionValue::Boolean { value },
+        Value::Reference(target) => PersistedAssertionValue::Reference {
+            target_entity_id: target.as_str().to_owned(),
+        },
+        Value::Unknown => PersistedAssertionValue::Unknown,
+    };
+    PersistedAssertion {
+        id: assertion.id.as_str().to_owned(),
+        subject_id: assertion.subject_id.as_str().to_owned(),
+        definition_id: assertion.definition_id.as_str().to_owned(),
+        value,
+        canon: assertion.canon.as_str().to_owned(),
+        source_status_raw: assertion.source_status_raw,
+        provenance: RevealSource {
+            external_ref: assertion.provenance.external_ref,
+            locator: assertion.provenance.locator,
+            fragment: assertion.provenance.fragment,
+            source_revision: assertion.provenance.source_revision,
+        },
+        scope_note: assertion.scope_note,
+        archived: assertion.archived,
+    }
+}
+
+fn codex_knowledge_write_error(error: Error) -> BridgeError {
+    match error {
+        Error::Busy => BridgeError::Busy,
+        Error::Validation {
+            reason: ValidationReason::DuplicateId,
+            ..
+        } => BridgeError::DuplicateId,
+        Error::Validation {
+            reason: ValidationReason::UnknownType,
+            ..
+        } => BridgeError::TypeMissing,
+        Error::Validation {
+            reason: ValidationReason::UnknownEntity | ValidationReason::UnknownSubject,
+            ..
+        } => BridgeError::EntityMissing,
+        Error::Validation {
+            reason: ValidationReason::UnknownTarget,
+            ..
+        } => BridgeError::TargetMissing,
+        Error::Validation {
+            reason: ValidationReason::UnknownDefinition,
+            ..
+        } => BridgeError::DefinitionMissing,
+        Error::Validation {
+            reason: ValidationReason::ArchivedDefinition,
+            ..
+        } => BridgeError::DefinitionArchived,
+        Error::Validation {
+            reason: ValidationReason::NotApplicable,
+            ..
+        } => BridgeError::NotApplicable,
+        Error::Validation {
+            reason: ValidationReason::ValueMismatch,
+            ..
+        } => BridgeError::ValueMismatch,
+        Error::Validation { .. } | Error::InvalidDocument { .. } => BridgeError::InvalidInput,
+        Error::Io { .. } => BridgeError::Io,
+        _ => BridgeError::Storage,
+    }
+}
+
+fn create_definition_active(
+    active: &mut Option<ActiveUniverse>,
+    request: CreateDefinitionRequest,
+) -> Result<ContextDefinition, BridgeError> {
+    let universe = active.as_mut().ok_or(BridgeError::UniverseNotOpen)?;
+    if universe.token != request.universe_token {
+        return Err(BridgeError::UniverseChanged);
+    }
+    let op_id = parse_operation_id(&request.operation_id)?;
+    if universe.cancelled_ops.contains(&op_id) {
+        return Err(BridgeError::OperationCancelled);
+    }
+    let definition = parse_new_definition(request.definition)?;
+    let created = universe
+        .store
+        .create_definition(definition)
+        .map_err(codex_knowledge_write_error)?;
+    Ok(context_definition(created))
+}
+
+#[tauri::command(async)]
+fn create_definition(
+    request: CreateDefinitionRequest,
+    state: State<'_, DesktopState>,
+) -> Result<ContextDefinition, BridgeError> {
+    let mut active = state
+        .store
+        .lock()
+        .map_err(|_| BridgeError::StateUnavailable)?;
+    create_definition_active(&mut active, request)
+}
+
+fn create_assertion_active(
+    active: &mut Option<ActiveUniverse>,
+    request: CreateAssertionRequest,
+) -> Result<PersistedAssertion, BridgeError> {
+    let universe = active.as_mut().ok_or(BridgeError::UniverseNotOpen)?;
+    if universe.token != request.universe_token {
+        return Err(BridgeError::UniverseChanged);
+    }
+    let op_id = parse_operation_id(&request.operation_id)?;
+    if universe.cancelled_ops.contains(&op_id) {
+        return Err(BridgeError::OperationCancelled);
+    }
+    let assertion = parse_new_assertion(request.assertion)?;
+    let created = universe
+        .store
+        .create_assertion(assertion)
+        .map_err(codex_knowledge_write_error)?;
+    Ok(persisted_assertion(created))
+}
+
+#[tauri::command(async)]
+fn create_assertion(
+    request: CreateAssertionRequest,
+    state: State<'_, DesktopState>,
+) -> Result<PersistedAssertion, BridgeError> {
+    let mut active = state
+        .store
+        .lock()
+        .map_err(|_| BridgeError::StateUnavailable)?;
+    create_assertion_active(&mut active, request)
+}
+
+fn create_definition_with_assertion_active(
+    active: &mut Option<ActiveUniverse>,
+    request: CreateDefinitionWithAssertionRequest,
+) -> Result<CreateDefinitionWithAssertionResponse, BridgeError> {
+    let universe = active.as_mut().ok_or(BridgeError::UniverseNotOpen)?;
+    if universe.token != request.universe_token {
+        return Err(BridgeError::UniverseChanged);
+    }
+    let op_id = parse_operation_id(&request.operation_id)?;
+    if universe.cancelled_ops.contains(&op_id) {
+        return Err(BridgeError::OperationCancelled);
+    }
+    let definition = parse_new_definition(request.definition)?;
+    let assertion = parse_new_assertion(request.assertion)?;
+    let (created_def, created_ass) = universe
+        .store
+        .create_definition_with_assertion(definition, assertion)
+        .map_err(codex_knowledge_write_error)?;
+    Ok(CreateDefinitionWithAssertionResponse {
+        definition: context_definition(created_def),
+        assertion: persisted_assertion(created_ass),
+    })
+}
+
+#[tauri::command(async)]
+fn create_definition_with_assertion(
+    request: CreateDefinitionWithAssertionRequest,
+    state: State<'_, DesktopState>,
+) -> Result<CreateDefinitionWithAssertionResponse, BridgeError> {
+    let mut active = state
+        .store
+        .lock()
+        .map_err(|_| BridgeError::StateUnavailable)?;
+    create_definition_with_assertion_active(&mut active, request)
+}
+
+fn reconcile_codex_write_active(
+    active: &mut Option<ActiveUniverse>,
+    request: ReconcileCodexWriteRequest,
+) -> Result<ReconcileCodexWriteResponse, BridgeError> {
+    let universe = active.as_mut().ok_or(BridgeError::UniverseNotOpen)?;
+    if universe.token != request.universe_token {
+        return Err(BridgeError::UniverseChanged);
+    }
+    let op_id = parse_operation_id(&request.operation_id)?;
+    if request.definition_id.is_none() && request.assertion_id.is_none() {
+        return Err(BridgeError::InvalidInput);
+    }
+    let def_id = request
+        .definition_id
+        .as_deref()
+        .map(DefinitionId::parse)
+        .transpose()
+        .map_err(|_| BridgeError::InvalidInput)?;
+    let ass_id = request
+        .assertion_id
+        .as_deref()
+        .map(AssertionId::parse)
+        .transpose()
+        .map_err(|_| BridgeError::InvalidInput)?;
+    // Fence the operation under the same store mutex before probing SQLite so a
+    // delayed original request can never acquire the lock later and commit after
+    // absence was reported.
+    universe.cancelled_ops.insert(op_id.clone());
+    let probed = universe
+        .store
+        .probe_knowledge_records(def_id.as_ref(), ass_id.as_ref())
+        .map_err(|error| match error {
+            Error::Busy => BridgeError::Busy,
+            Error::Io { .. } => BridgeError::Io,
+            other => map_read_error(other, false),
+        })?;
+    Ok(ReconcileCodexWriteResponse {
+        operation_id: op_id,
+        finalized: true,
+        definition: probed.definition.map(context_definition),
+        assertion: probed.assertion.map(persisted_assertion),
+    })
+}
+
+#[tauri::command(async)]
+fn reconcile_codex_write(
+    request: ReconcileCodexWriteRequest,
+    state: State<'_, DesktopState>,
+) -> Result<ReconcileCodexWriteResponse, BridgeError> {
+    let mut active = state
+        .store
+        .lock()
+        .map_err(|_| BridgeError::StateUnavailable)?;
+    reconcile_codex_write_active(&mut active, request)
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RevealIdentity {
@@ -534,7 +1085,7 @@ enum RevealValue {
     Unknown,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct RevealSource {
     external_ref: Option<String>,
@@ -651,7 +1202,7 @@ fn entity_reveal(
     reveal_active(&active, &universe_token, &entity_id)
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct ContextDefinition {
     id: String,
@@ -1269,6 +1820,10 @@ pub fn run() {
             codex_index,
             create_entity_type,
             create_entity,
+            create_definition,
+            create_assertion,
+            create_definition_with_assertion,
+            reconcile_codex_write,
             entity_reveal,
             entity_context,
             save_page,
@@ -1529,6 +2084,7 @@ mod tests {
         let mut active = Some(ActiveUniverse {
             token: "new".into(),
             store,
+            cancelled_ops: std::collections::BTreeSet::new(),
         });
         assert!(matches!(
             active_store(&active, "test"),
@@ -1699,6 +2255,7 @@ mod tests {
         let mut active = Some(ActiveUniverse {
             token: "current".into(),
             store,
+            cancelled_ops: std::collections::BTreeSet::new(),
         });
         assert!(matches!(
             create_active(&mut active, "old", PAGE),
@@ -2173,6 +2730,7 @@ mod tests {
         let active = Some(super::ActiveUniverse {
             token: "reveal-token".into(),
             store,
+            cancelled_ops: std::collections::BTreeSet::new(),
         });
         let id = "00000000-0000-4000-8000-000000000011";
         assert!(matches!(
@@ -2246,6 +2804,7 @@ mod tests {
         let active = Some(super::ActiveUniverse {
             token: "context-token".into(),
             store,
+            cancelled_ops: std::collections::BTreeSet::new(),
         });
         let mara_id = "00000000-0000-4000-8000-000000000011";
         assert!(matches!(
@@ -2406,6 +2965,7 @@ mod tests {
         let large_active = Some(super::ActiveUniverse {
             token: "large".into(),
             store: large_store,
+            cancelled_ops: std::collections::BTreeSet::new(),
         });
         let ok_dto = super::context_active(&large_active, "large", PLACE).unwrap();
         assert!(
@@ -2449,6 +3009,7 @@ mod tests {
         let too_large_active = Some(super::ActiveUniverse {
             token: "large".into(),
             store: large_store,
+            cancelled_ops: std::collections::BTreeSet::new(),
         });
         let too_large = super::context_active(&too_large_active, "large", PLACE).unwrap_err();
         assert!(matches!(too_large, BridgeError::ContextTooLarge));
@@ -2525,6 +3086,7 @@ mod tests {
             let active = Some(super::ActiveUniverse {
                 token: "t".into(),
                 store,
+                cancelled_ops: std::collections::BTreeSet::new(),
             });
             let res = super::context_active(&active, "t", e1.as_str());
             if should_fit {
@@ -2722,6 +3284,7 @@ mod tests {
         let base_active = Some(super::ActiveUniverse {
             token: "m".into(),
             store: base_store,
+            cancelled_ops: std::collections::BTreeSet::new(),
         });
         let base_dto = super::context_active(&base_active, "m", e1.as_str()).unwrap();
         let base_len = serde_json::to_vec(&base_dto).unwrap().len();
@@ -2736,6 +3299,7 @@ mod tests {
         let fit_active = Some(super::ActiveUniverse {
             token: "m".into(),
             store: fit_store,
+            cancelled_ops: std::collections::BTreeSet::new(),
         });
         let fit_dto = super::context_active(&fit_active, "m", e1.as_str()).unwrap();
         let fit_len = serde_json::to_vec(&fit_dto).unwrap().len();
@@ -2747,6 +3311,7 @@ mod tests {
         let over_active = Some(super::ActiveUniverse {
             token: "m".into(),
             store: over_store,
+            cancelled_ops: std::collections::BTreeSet::new(),
         });
         assert!(matches!(
             super::context_active(&over_active, "m", e1.as_str()),
@@ -3236,6 +3801,7 @@ mod tests {
             let base_active = Some(super::ActiveUniverse {
                 token: "k".into(),
                 store: build(&format!("{label}-base.sqlite"), String::new()),
+                cancelled_ops: std::collections::BTreeSet::new(),
             });
             let base_dto = super::context_active(&base_active, "k", PLACE).unwrap();
             let true_groups = base_dto
@@ -3254,6 +3820,7 @@ mod tests {
             let fit_active = Some(super::ActiveUniverse {
                 token: "k".into(),
                 store: build(&format!("{label}-fit.sqlite"), "x".repeat(max_core_fit)),
+                cancelled_ops: std::collections::BTreeSet::new(),
             });
             let fit_dto = super::context_active(&fit_active, "k", PLACE).unwrap();
             let fit_len = serde_json::to_vec(&fit_dto).unwrap().len();
@@ -3276,6 +3843,7 @@ mod tests {
                     &format!("{label}-over.sqlite"),
                     "x".repeat(max_core_fit + 1),
                 ),
+                cancelled_ops: std::collections::BTreeSet::new(),
             });
             assert!(
                 matches!(
@@ -3490,6 +4058,7 @@ mod tests {
         let mut active = Some(ActiveUniverse {
             token: "tok-1".into(),
             store,
+            cancelled_ops: std::collections::BTreeSet::new(),
         });
 
         let empty = codex_entries(active_store(&active, "tok-1").unwrap()).unwrap();
@@ -3632,5 +4201,429 @@ mod tests {
 
         let reopened = Store::open(&path).unwrap();
         assert_eq!(codex_entries(&reopened).unwrap(), index);
+    }
+
+    #[test]
+    fn ka2_knowledge_bridge_validates_commits_atomically_fences_delayed_ops_and_reconciles() {
+        use super::{
+            create_assertion_active, create_definition_active,
+            create_definition_with_assertion_active, reconcile_codex_write_active,
+            AssertionValueInput, CanonInput, CardinalityInput, CreateAssertionRequest,
+            CreateDefinitionRequest, CreateDefinitionWithAssertionRequest, NewAssertionInput,
+            NewDefinitionInput, OwnerKindInput, PersistedAssertionValue, ProvenanceInput,
+            ReconcileCodexWriteRequest, ValueClassInput, MAX_AUTHORED_MULTILINE_META_BYTES,
+            MAX_AUTHORED_SINGLE_LINE_META_BYTES, MAX_AUTHORED_TEXT_BYTES,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ka2-bridge.sqlite");
+        let mut store = Store::create(&path, UniverseId::parse(UNIVERSE).unwrap()).unwrap();
+        store
+            .create_entity_type(EntityType {
+                id: TypeId::parse(HOUSE).unwrap(),
+                label: "House".into(),
+            })
+            .unwrap();
+        store
+            .create_entity(Entity {
+                id: EntityId::parse(PLACE).unwrap(),
+                label: "Valdoria".into(),
+                type_id: Some(TypeId::parse(HOUSE).unwrap()),
+                page_id: None,
+            })
+            .unwrap();
+
+        let mut active = Some(ActiveUniverse {
+            token: "tok-ka2".into(),
+            store,
+            cancelled_ops: std::collections::BTreeSet::new(),
+        });
+
+        let empty_prov = || ProvenanceInput {
+            external_ref: None,
+            locator: None,
+            fragment: None,
+            source_revision: None,
+        };
+
+        // 1. Unknown request fields rejected via deny_unknown_fields.
+        let bad_json = serde_json::json!({
+            "universeToken": "tok-ka2",
+            "operationId": "11111111-1111-4111-8111-000000000001",
+            "definition": {
+                "definitionId": "44444444-4444-4444-8444-000000000001",
+                "ownerKind": "entity",
+                "ownerId": PLACE,
+                "label": "Motto",
+                "valueClass": "text",
+                "cardinality": "singular",
+                "extraField": true
+            }
+        });
+        assert!(serde_json::from_value::<CreateDefinitionRequest>(bad_json).is_err());
+
+        // 2. Surrounding whitespace on property label is REJECTED (never silently trimmed).
+        assert!(matches!(
+            create_definition_active(
+                &mut active,
+                CreateDefinitionRequest {
+                    universe_token: "tok-ka2".into(),
+                    operation_id: "11111111-1111-4111-8111-000000000001".into(),
+                    definition: NewDefinitionInput {
+                        definition_id: "44444444-4444-4444-8444-000000000001".into(),
+                        owner_kind: OwnerKindInput::Entity,
+                        owner_id: PLACE.into(),
+                        label: "  Motto  ".into(),
+                        value_class: ValueClassInput::Text,
+                        cardinality: CardinalityInput::Singular,
+                    },
+                },
+            ),
+            Err(BridgeError::InvalidInput)
+        ));
+
+        // 3. Stale token rejected.
+        assert!(matches!(
+            create_definition_active(
+                &mut active,
+                CreateDefinitionRequest {
+                    universe_token: "stale-tok".into(),
+                    operation_id: "11111111-1111-4111-8111-000000000002".into(),
+                    definition: NewDefinitionInput {
+                        definition_id: "44444444-4444-4444-8444-000000000001".into(),
+                        owner_kind: OwnerKindInput::Entity,
+                        owner_id: PLACE.into(),
+                        label: "Motto".into(),
+                        value_class: ValueClassInput::Text,
+                        cardinality: CardinalityInput::Singular,
+                    },
+                },
+            ),
+            Err(BridgeError::UniverseChanged)
+        ));
+
+        // 4. Intentionally empty property commits via create_definition_active.
+        let def_empty_id = "44444444-4444-4444-8444-000000000010";
+        let created_empty = create_definition_active(
+            &mut active,
+            CreateDefinitionRequest {
+                universe_token: "tok-ka2".into(),
+                operation_id: "11111111-1111-4111-8111-000000000010".into(),
+                definition: NewDefinitionInput {
+                    definition_id: def_empty_id.into(),
+                    owner_kind: OwnerKindInput::Type,
+                    owner_id: HOUSE.into(),
+                    label: "Motto".into(),
+                    value_class: ValueClassInput::Text,
+                    cardinality: CardinalityInput::Singular,
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(created_empty.id, def_empty_id);
+        assert_eq!(created_empty.owner_kind, "type");
+        assert_eq!(created_empty.property_label.as_deref(), Some("Motto"));
+
+        // 5. Boundary byte tests including multi-byte Unicode (4-byte emoji / 2-byte accented).
+        // Exact 16,384 UTF-8 bytes accepted and preserved verbatim (including surrounding spaces, LF, tab).
+        let exact_text = format!(" \t{}\n", "é".repeat((MAX_AUTHORED_TEXT_BYTES - 3) / 2));
+        let exact_text = format!(
+            "{exact_text}{}",
+            "a".repeat(MAX_AUTHORED_TEXT_BYTES - exact_text.len())
+        );
+        assert_eq!(exact_text.len(), MAX_AUTHORED_TEXT_BYTES);
+        let exact_single = "é".repeat(MAX_AUTHORED_SINGLE_LINE_META_BYTES / 2);
+        assert_eq!(exact_single.len(), MAX_AUTHORED_SINGLE_LINE_META_BYTES);
+        let exact_multi = format!(
+            "{}\n",
+            "é".repeat((MAX_AUTHORED_MULTILINE_META_BYTES - 2) / 2)
+        );
+        let exact_multi = format!(
+            "{exact_multi}{}",
+            "a".repeat(MAX_AUTHORED_MULTILINE_META_BYTES - exact_multi.len())
+        );
+        assert_eq!(exact_multi.len(), MAX_AUTHORED_MULTILINE_META_BYTES);
+
+        let ass_exact_id = "66666666-6666-4666-8666-000000000010";
+        let created_ass = create_assertion_active(
+            &mut active,
+            CreateAssertionRequest {
+                universe_token: "tok-ka2".into(),
+                operation_id: "11111111-1111-4111-8111-000000000011".into(),
+                assertion: NewAssertionInput {
+                    assertion_id: ass_exact_id.into(),
+                    subject_id: PLACE.into(),
+                    definition_id: def_empty_id.into(),
+                    value: AssertionValueInput::Text {
+                        text: exact_text.clone(),
+                    },
+                    canon: CanonInput::Provisional,
+                    source_status_raw: Some("   ".into()), // whitespace-only optional -> None
+                    provenance: ProvenanceInput {
+                        external_ref: Some(exact_single.clone()),
+                        locator: Some("  p. 4  ".into()), // nonblank -> preserved verbatim
+                        fragment: Some(exact_multi.clone()),
+                        source_revision: None,
+                    },
+                    scope_note: Some("\tBook I\n".into()),
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            created_ass.value,
+            PersistedAssertionValue::Text { text: exact_text }
+        );
+        assert_eq!(created_ass.source_status_raw, None);
+        assert_eq!(
+            created_ass.provenance.external_ref.as_deref(),
+            Some(exact_single.as_str())
+        );
+        assert_eq!(created_ass.provenance.locator.as_deref(), Some("  p. 4  "));
+        assert_eq!(
+            created_ass.provenance.fragment.as_deref(),
+            Some(exact_multi.as_str())
+        );
+        assert_eq!(created_ass.scope_note.as_deref(), Some("\tBook I\n"));
+
+        // Over-limit (+1 byte), blank text, CR, NUL, and single-line newline are all rejected.
+        for bad_text in [
+            "   \n\t  ".to_string(),
+            "a".repeat(MAX_AUTHORED_TEXT_BYTES + 1),
+            "hello\r\nworld".to_string(),
+            "hello\0world".to_string(),
+            "hello\x07world".to_string(),
+        ] {
+            assert!(matches!(
+                create_assertion_active(
+                    &mut active,
+                    CreateAssertionRequest {
+                        universe_token: "tok-ka2".into(),
+                        operation_id: "11111111-1111-4111-8111-000000000012".into(),
+                        assertion: NewAssertionInput {
+                            assertion_id: "66666666-6666-4666-8666-000000000099".into(),
+                            subject_id: PLACE.into(),
+                            definition_id: def_empty_id.into(),
+                            value: AssertionValueInput::Text { text: bad_text },
+                            canon: CanonInput::Provisional,
+                            source_status_raw: None,
+                            provenance: empty_prov(),
+                            scope_note: None,
+                        },
+                    },
+                ),
+                Err(BridgeError::InvalidInput)
+            ));
+        }
+
+        // Single-line metadata rejects newline and >1024 bytes; multiline rejects >4096 bytes.
+        assert!(matches!(
+            create_assertion_active(
+                &mut active,
+                CreateAssertionRequest {
+                    universe_token: "tok-ka2".into(),
+                    operation_id: "11111111-1111-4111-8111-000000000013".into(),
+                    assertion: NewAssertionInput {
+                        assertion_id: "66666666-6666-4666-8666-000000000098".into(),
+                        subject_id: PLACE.into(),
+                        definition_id: def_empty_id.into(),
+                        value: AssertionValueInput::Unknown,
+                        canon: CanonInput::Provisional,
+                        source_status_raw: None,
+                        provenance: ProvenanceInput {
+                            external_ref: Some("line1\nline2".into()),
+                            locator: None,
+                            fragment: None,
+                            source_revision: None,
+                        },
+                        scope_note: None,
+                    },
+                },
+            ),
+            Err(BridgeError::InvalidInput)
+        ));
+        assert!(matches!(
+            create_assertion_active(
+                &mut active,
+                CreateAssertionRequest {
+                    universe_token: "tok-ka2".into(),
+                    operation_id: "11111111-1111-4111-8111-000000000014".into(),
+                    assertion: NewAssertionInput {
+                        assertion_id: "66666666-6666-4666-8666-000000000097".into(),
+                        subject_id: PLACE.into(),
+                        definition_id: def_empty_id.into(),
+                        value: AssertionValueInput::Unknown,
+                        canon: CanonInput::Provisional,
+                        source_status_raw: None,
+                        provenance: ProvenanceInput {
+                            external_ref: Some("a".repeat(MAX_AUTHORED_SINGLE_LINE_META_BYTES + 1)),
+                            locator: None,
+                            fragment: None,
+                            source_revision: None,
+                        },
+                        scope_note: None,
+                    },
+                },
+            ),
+            Err(BridgeError::InvalidInput)
+        ));
+        assert!(matches!(
+            create_assertion_active(
+                &mut active,
+                CreateAssertionRequest {
+                    universe_token: "tok-ka2".into(),
+                    operation_id: "11111111-1111-4111-8111-000000000015".into(),
+                    assertion: NewAssertionInput {
+                        assertion_id: "66666666-6666-4666-8666-000000000096".into(),
+                        subject_id: PLACE.into(),
+                        definition_id: def_empty_id.into(),
+                        value: AssertionValueInput::Unknown,
+                        canon: CanonInput::Provisional,
+                        source_status_raw: None,
+                        provenance: empty_prov(),
+                        scope_note: Some("a".repeat(MAX_AUTHORED_MULTILINE_META_BYTES + 1)),
+                    },
+                },
+            ),
+            Err(BridgeError::InvalidInput)
+        ));
+
+        // 6. Atomic composite write + rollback on missing target.
+        let def_fail_id = "44444444-4444-4444-8444-000000000020";
+        let ass_fail_id = "66666666-6666-4666-8666-000000000020";
+        assert!(matches!(
+            create_definition_with_assertion_active(
+                &mut active,
+                CreateDefinitionWithAssertionRequest {
+                    universe_token: "tok-ka2".into(),
+                    operation_id: "11111111-1111-4111-8111-000000000020".into(),
+                    definition: NewDefinitionInput {
+                        definition_id: def_fail_id.into(),
+                        owner_kind: OwnerKindInput::Entity,
+                        owner_id: PLACE.into(),
+                        label: "Ally".into(),
+                        value_class: ValueClassInput::Reference,
+                        cardinality: CardinalityInput::Multiple,
+                    },
+                    assertion: NewAssertionInput {
+                        assertion_id: ass_fail_id.into(),
+                        subject_id: PLACE.into(),
+                        definition_id: def_fail_id.into(),
+                        value: AssertionValueInput::Reference {
+                            target_entity_id: "55555555-5555-4555-8555-999999999999".into(),
+                        },
+                        canon: CanonInput::Provisional,
+                        source_status_raw: None,
+                        provenance: empty_prov(),
+                        scope_note: None,
+                    },
+                },
+            ),
+            Err(BridgeError::TargetMissing)
+        ));
+
+        // 7. Reconcile fences delayed operation_id so a delayed write can NEVER commit after absence.
+        let delayed_op = "11111111-1111-4111-8111-000000000030";
+        let delayed_def_id = "44444444-4444-4444-8444-000000000030";
+        let delayed_ass_id = "66666666-6666-4666-8666-000000000030";
+        let probe_absent = reconcile_codex_write_active(
+            &mut active,
+            ReconcileCodexWriteRequest {
+                universe_token: "tok-ka2".into(),
+                operation_id: delayed_op.into(),
+                definition_id: Some(delayed_def_id.into()),
+                assertion_id: Some(delayed_ass_id.into()),
+            },
+        )
+        .unwrap();
+        assert!(probe_absent.finalized);
+        assert!(probe_absent.definition.is_none());
+        assert!(probe_absent.assertion.is_none());
+
+        // Now the delayed original composite write arrives -> MUST fail with OperationCancelled
+        // and leave SQLite untouched.
+        assert!(matches!(
+            create_definition_with_assertion_active(
+                &mut active,
+                CreateDefinitionWithAssertionRequest {
+                    universe_token: "tok-ka2".into(),
+                    operation_id: delayed_op.into(),
+                    definition: NewDefinitionInput {
+                        definition_id: delayed_def_id.into(),
+                        owner_kind: OwnerKindInput::Entity,
+                        owner_id: PLACE.into(),
+                        label: "Late Prop".into(),
+                        value_class: ValueClassInput::Boolean,
+                        cardinality: CardinalityInput::Singular,
+                    },
+                    assertion: NewAssertionInput {
+                        assertion_id: delayed_ass_id.into(),
+                        subject_id: PLACE.into(),
+                        definition_id: delayed_def_id.into(),
+                        value: AssertionValueInput::Boolean { value: false },
+                        canon: CanonInput::Acordado,
+                        source_status_raw: None,
+                        provenance: empty_prov(),
+                        scope_note: None,
+                    },
+                },
+            ),
+            Err(BridgeError::OperationCancelled)
+        ));
+        let probe_still_absent = reconcile_codex_write_active(
+            &mut active,
+            ReconcileCodexWriteRequest {
+                universe_token: "tok-ka2".into(),
+                operation_id: delayed_op.into(),
+                definition_id: Some(delayed_def_id.into()),
+                assertion_id: Some(delayed_ass_id.into()),
+            },
+        )
+        .unwrap();
+        assert!(probe_still_absent.definition.is_none());
+        assert!(probe_still_absent.assertion.is_none());
+
+        // 8. Reconcile finds committed composite write in one snapshot.
+        let comp_def_id = "44444444-4444-4444-8444-000000000040";
+        let comp_ass_id = "66666666-6666-4666-8666-000000000040";
+        let comp = create_definition_with_assertion_active(
+            &mut active,
+            CreateDefinitionWithAssertionRequest {
+                universe_token: "tok-ka2".into(),
+                operation_id: "11111111-1111-4111-8111-000000000040".into(),
+                definition: NewDefinitionInput {
+                    definition_id: comp_def_id.into(),
+                    owner_kind: OwnerKindInput::Entity,
+                    owner_id: PLACE.into(),
+                    label: "Still standing".into(),
+                    value_class: ValueClassInput::Boolean,
+                    cardinality: CardinalityInput::Singular,
+                },
+                assertion: NewAssertionInput {
+                    assertion_id: comp_ass_id.into(),
+                    subject_id: PLACE.into(),
+                    definition_id: comp_def_id.into(),
+                    value: AssertionValueInput::Boolean { value: false },
+                    canon: CanonInput::MisterioIntencional,
+                    source_status_raw: None,
+                    provenance: empty_prov(),
+                    scope_note: None,
+                },
+            },
+        )
+        .unwrap();
+        let probe_committed = reconcile_codex_write_active(
+            &mut active,
+            ReconcileCodexWriteRequest {
+                universe_token: "tok-ka2".into(),
+                operation_id: "11111111-1111-4111-8111-000000000040".into(),
+                definition_id: Some(comp_def_id.into()),
+                assertion_id: Some(comp_ass_id.into()),
+            },
+        )
+        .unwrap();
+        assert!(probe_committed.finalized);
+        assert_eq!(probe_committed.definition, Some(comp.definition));
+        assert_eq!(probe_committed.assertion, Some(comp.assertion));
     }
 }

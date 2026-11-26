@@ -47,6 +47,7 @@
             <button id="codex-new-entity" type="button" disabled>New entity</button>
             <button id="codex-new-type" type="button" disabled>New type</button>
             <button id="codex-refresh" type="button" hidden>Refresh Codex</button>
+            <button id="codex-verify-write" type="button" hidden>Verify write</button>
           </div>
         </header>
         <div class="codex-filters">
@@ -72,6 +73,7 @@
             <h2 id="codex-detail-title">Codex</h2>
             <div id="codex-detail-meta" class="codex-detail-meta"></div>
           </header>
+          <p id="codex-entry-status" class="codex-entry-status" role="status"></p>
           <div id="codex-detail-context" class="codex-detail-context"></div>
         </article>
       </main>
@@ -105,5 +107,161 @@
         <button id="codex-entity-submit" type="submit">Create entity</button>
       </div>
     </form>
+  </dialog>
+  <dialog id="codex-property-dialog" class="codex-dialog-wide" aria-labelledby="codex-prop-dialog-title">
+    <form id="codex-prop-form" class="codex-dialog-form">
+      <h2 id="codex-prop-dialog-title">New property</h2>
+      <p id="codex-prop-subtitle" class="codex-dialog-note"></p>
+      <label for="codex-prop-label-input">Property name</label>
+      <input id="codex-prop-label-input" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. Allegiance, Motto, Still standing" />
+      <p id="codex-prop-dup-hint" class="codex-hint" hidden></p>
+      <fieldset id="codex-prop-owner-group" class="codex-fieldset">
+        <legend>Applies to</legend>
+        <label class="codex-radio-label"><input id="codex-prop-owner-entity" type="radio" name="propOwner" value="entity" checked /><span id="codex-prop-owner-entity-text">Only this entity</span></label>
+        <label id="codex-prop-owner-type-wrap" class="codex-radio-label"><input id="codex-prop-owner-type" type="radio" name="propOwner" value="type" /><span id="codex-prop-owner-type-text">All entities of this type</span></label>
+        <p id="codex-prop-owner-untyped-note" class="codex-hint" hidden>This entity is untyped, so new properties apply to it alone.</p>
+      </fieldset>
+      <div class="codex-form-row">
+        <div class="codex-form-col">
+          <label for="codex-prop-value-class">Value kind</label>
+          <select id="codex-prop-value-class">
+            <option value="text" selected>Text</option>
+            <option value="boolean">Yes / No</option>
+            <option value="reference">Link to another entity</option>
+          </select>
+        </div>
+        <fieldset class="codex-fieldset codex-form-col">
+          <legend>Values</legend>
+          <div class="codex-radio-row">
+            <label class="codex-radio-label"><input id="codex-prop-card-singular" type="radio" name="propCardinality" value="singular" checked /><span>Usually one</span></label>
+            <label class="codex-radio-label"><input id="codex-prop-card-multiple" type="radio" name="propCardinality" value="multiple" /><span>Multiple</span></label>
+          </div>
+        </fieldset>
+      </div>
+      <label class="codex-check-label"><input id="codex-prop-include-fact" type="checkbox" checked /><span>Record a first fact now</span></label>
+      <div id="codex-prop-fact-fields" class="codex-fact-fields">
+        <fieldset class="codex-fieldset">
+          <legend>Value</legend>
+          <div class="codex-radio-row">
+            <label class="codex-radio-label"><input id="codex-prop-val-mode-value" type="radio" name="propValMode" value="value" checked /><span>Record a value</span></label>
+            <label class="codex-radio-label"><input id="codex-prop-val-mode-unknown" type="radio" name="propValMode" value="unknown" /><span>Record as Unknown</span></label>
+          </div>
+        </fieldset>
+        <div id="codex-prop-val-text-wrap" class="codex-val-wrap">
+          <label for="codex-prop-val-text">Fact text</label>
+          <textarea id="codex-prop-val-text" rows="3" spellcheck="true"></textarea>
+        </div>
+        <div id="codex-prop-val-bool-wrap" class="codex-val-wrap" hidden>
+          <div class="codex-radio-row">
+            <label class="codex-radio-label"><input id="codex-prop-val-bool-yes" type="radio" name="propValBool" value="true" /><span>Yes</span></label>
+            <label class="codex-radio-label"><input id="codex-prop-val-bool-no" type="radio" name="propValBool" value="false" /><span>No</span></label>
+          </div>
+        </div>
+        <div id="codex-prop-val-ref-wrap" class="codex-val-wrap" hidden>
+          <label for="codex-prop-val-ref-search">Target entity</label>
+          <input id="codex-prop-val-ref-search" type="search" autocomplete="off" spellcheck="false" placeholder="Search entities by name, type, or ID" />
+          <div id="codex-prop-val-ref-list" class="codex-ref-list" role="group" aria-label="Target entities"></div>
+          <p id="codex-prop-val-ref-selected" class="codex-ref-selected"></p>
+        </div>
+        <label for="codex-prop-canon">Canon status</label>
+        <select id="codex-prop-canon">
+          <option value="PROVISIONAL" selected>Provisional</option>
+          <option value="ACORDADO">Agreed</option>
+          <option value="ABIERTO">Open</option>
+          <option value="MISTERIO_INTENCIONAL">Intentional mystery</option>
+        </select>
+        <details id="codex-prop-source-details" class="codex-disclosure codex-source-disclosure">
+          <summary>Source &amp; scope (optional)</summary>
+          <div class="codex-source-grid">
+            <label for="codex-prop-src-ref">Source</label>
+            <input id="codex-prop-src-ref" type="text" autocomplete="off" />
+            <label for="codex-prop-src-locator">Locator</label>
+            <input id="codex-prop-src-locator" type="text" autocomplete="off" />
+            <label for="codex-prop-src-rev">Source revision</label>
+            <input id="codex-prop-src-rev" type="text" autocomplete="off" />
+            <label for="codex-prop-src-status">Source status</label>
+            <input id="codex-prop-src-status" type="text" autocomplete="off" />
+            <label for="codex-prop-src-fragment">Excerpt / fragment</label>
+            <textarea id="codex-prop-src-fragment" rows="2"></textarea>
+            <label for="codex-prop-src-scope">Narrative scope</label>
+            <textarea id="codex-prop-src-scope" rows="2"></textarea>
+          </div>
+        </details>
+      </div>
+      <p id="codex-prop-error" class="codex-form-error" role="alert" hidden></p>
+      <div class="codex-dialog-actions">
+        <button id="codex-prop-cancel" type="button">Cancel</button>
+        <button id="codex-prop-submit" type="submit">Create &amp; save</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="codex-fact-dialog" class="codex-dialog-wide" aria-labelledby="codex-fact-dialog-title">
+    <form id="codex-fact-form" class="codex-dialog-form">
+      <h2 id="codex-fact-dialog-title">Add fact</h2>
+      <p id="codex-fact-subtitle" class="codex-dialog-note"></p>
+      <p id="codex-fact-competing-note" class="codex-hint" hidden>This property usually holds one value. Adding another keeps both as competing claims.</p>
+      <fieldset class="codex-fieldset">
+        <legend>Value</legend>
+        <div class="codex-radio-row">
+          <label class="codex-radio-label"><input id="codex-fact-val-mode-value" type="radio" name="factValMode" value="value" checked /><span>Record a value</span></label>
+          <label class="codex-radio-label"><input id="codex-fact-val-mode-unknown" type="radio" name="factValMode" value="unknown" /><span>Record as Unknown</span></label>
+        </div>
+      </fieldset>
+      <div id="codex-fact-val-text-wrap" class="codex-val-wrap">
+        <label for="codex-fact-val-text">Fact text</label>
+        <textarea id="codex-fact-val-text" rows="3" spellcheck="true"></textarea>
+      </div>
+      <div id="codex-fact-val-bool-wrap" class="codex-val-wrap" hidden>
+        <div class="codex-radio-row">
+          <label class="codex-radio-label"><input id="codex-fact-val-bool-yes" type="radio" name="factValBool" value="true" /><span>Yes</span></label>
+          <label class="codex-radio-label"><input id="codex-fact-val-bool-no" type="radio" name="factValBool" value="false" /><span>No</span></label>
+        </div>
+      </div>
+      <div id="codex-fact-val-ref-wrap" class="codex-val-wrap" hidden>
+        <label for="codex-fact-val-ref-search">Target entity</label>
+        <input id="codex-fact-val-ref-search" type="search" autocomplete="off" spellcheck="false" placeholder="Search entities by name, type, or ID" />
+        <div id="codex-fact-val-ref-list" class="codex-ref-list" role="group" aria-label="Target entities"></div>
+        <p id="codex-fact-val-ref-selected" class="codex-ref-selected"></p>
+      </div>
+      <label for="codex-fact-canon">Canon status</label>
+      <select id="codex-fact-canon">
+        <option value="PROVISIONAL" selected>Provisional</option>
+        <option value="ACORDADO">Agreed</option>
+        <option value="ABIERTO">Open</option>
+        <option value="MISTERIO_INTENCIONAL">Intentional mystery</option>
+      </select>
+      <details id="codex-fact-source-details" class="codex-disclosure codex-source-disclosure">
+        <summary>Source &amp; scope (optional)</summary>
+        <div class="codex-source-grid">
+          <label for="codex-fact-src-ref">Source</label>
+          <input id="codex-fact-src-ref" type="text" autocomplete="off" />
+          <label for="codex-fact-src-locator">Locator</label>
+          <input id="codex-fact-src-locator" type="text" autocomplete="off" />
+          <label for="codex-fact-src-rev">Source revision</label>
+          <input id="codex-fact-src-rev" type="text" autocomplete="off" />
+          <label for="codex-fact-src-status">Source status</label>
+          <input id="codex-fact-src-status" type="text" autocomplete="off" />
+          <label for="codex-fact-src-fragment">Excerpt / fragment</label>
+          <textarea id="codex-fact-src-fragment" rows="2"></textarea>
+          <label for="codex-fact-src-scope">Narrative scope</label>
+          <textarea id="codex-fact-src-scope" rows="2"></textarea>
+        </div>
+      </details>
+      <p id="codex-fact-error" class="codex-form-error" role="alert" hidden></p>
+      <div class="codex-dialog-actions">
+        <button id="codex-fact-cancel" type="button">Cancel</button>
+        <button id="codex-fact-submit" type="submit">Save fact</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="codex-close-guard" aria-labelledby="codex-close-guard-title">
+    <div class="codex-dialog-form">
+      <h2 id="codex-close-guard-title">Unresolved Codex write</h2>
+      <p id="codex-close-guard-text" class="codex-dialog-note"></p>
+      <div class="codex-dialog-actions">
+        <button id="codex-close-stay" type="button">Stay</button>
+        <button id="codex-close-leave" type="button">Close anyway</button>
+      </div>
+    </div>
   </dialog></body>
 </html>

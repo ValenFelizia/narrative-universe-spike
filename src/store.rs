@@ -130,6 +130,14 @@ pub struct CodexIndex {
     pub entities: Vec<CodexEntitySummary>,
 }
 
+/// Primary-key snapshot probe of a definition and/or assertion for write
+/// reconciliation, independent of bounded [`Store::entity_context`] limits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KnowledgeRecordProbe {
+    pub definition: Option<Definition>,
+    pub assertion: Option<Assertion>,
+}
+
 /// A point-in-time, read-only projection. Claims keep their original orientation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntityReveal {
@@ -673,45 +681,8 @@ impl Store {
     pub fn create_definition(&mut self, definition: Definition) -> Result<Definition> {
         let id = definition.id.clone();
         self.write(|tx| {
-            match &definition.owner {
-                Owner::Type(type_id) => {
-                    if lookup_entity_type(tx, type_id)?.is_none() {
-                        return Err(Error::validation(
-                            ValidationReason::UnknownType,
-                            "owner_type_id",
-                            Some(type_id.as_str()),
-                        ));
-                    }
-                }
-                Owner::Entity(entity_id) => {
-                    if lookup_entity(tx, entity_id)?.is_none() {
-                        return Err(Error::validation(
-                            ValidationReason::UnknownEntity,
-                            "owner_entity_id",
-                            Some(entity_id.as_str()),
-                        ));
-                    }
-                }
-            }
-            let (owner_type, owner_entity) = match &definition.owner {
-                Owner::Type(type_id) => (Some(type_id.as_str()), None),
-                Owner::Entity(entity_id) => (None, Some(entity_id.as_str())),
-            };
-            tx.execute(
-                "INSERT INTO definitions (
-                    id, owner_type_id, owner_entity_id, value_class, cardinality, archived, label
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    definition.id.as_str(),
-                    owner_type,
-                    owner_entity,
-                    definition.value_class.as_str(),
-                    definition.cardinality.as_str(),
-                    i64::from(definition.archived),
-                    definition.label.as_ref().map(DefinitionLabel::as_str),
-                ],
-            )
-            .map_err(|err| map_write("id", id.as_str(), err))?;
+            require_definition_owner(tx, &definition)?;
+            insert_definition(tx, &definition)?;
             required_definition(tx, &id)
         })
     }
@@ -724,34 +695,69 @@ impl Store {
         let id = assertion.id.clone();
         self.write(|tx| {
             validate_assertion(tx, &assertion)?;
-            let (kind, text_value, bool_value, target) = value_columns(&assertion.value);
-            tx.execute(
-                "INSERT INTO assertions (
-                    id, subject_id, definition_id, value_kind, text_value, bool_value,
-                    target_entity_id, canon, source_status_raw, provenance_external_ref,
-                    provenance_locator, provenance_fragment, provenance_source_revision,
-                    scope_note, archived
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-                params![
-                    assertion.id.as_str(),
-                    assertion.subject_id.as_str(),
-                    assertion.definition_id.as_str(),
-                    kind,
-                    text_value,
-                    bool_value,
-                    target,
-                    assertion.canon.as_str(),
-                    assertion.source_status_raw,
-                    assertion.provenance.external_ref,
-                    assertion.provenance.locator,
-                    assertion.provenance.fragment,
-                    assertion.provenance.source_revision,
-                    assertion.scope_note,
-                    i64::from(assertion.archived),
-                ],
-            )
-            .map_err(|err| map_write("id", id.as_str(), err))?;
+            insert_assertion(tx, &assertion)?;
             required_assertion(tx, &id)
+        })
+    }
+
+    /// Creates a new property definition and its initial assertion in one
+    /// atomic `IMMEDIATE` write transaction.
+    ///
+    /// Requires `assertion.definition_id == definition.id` and reuses the exact
+    /// owner, applicability, archive, value-class, and target validation of
+    /// [`Store::create_definition`] and [`Store::create_assertion`]. Any
+    /// validation or storage failure rolls back both inserts.
+    pub fn create_definition_with_assertion(
+        &mut self,
+        definition: Definition,
+        assertion: Assertion,
+    ) -> Result<(Definition, Assertion)> {
+        if assertion.definition_id != definition.id {
+            return Err(Error::validation(
+                ValidationReason::NotApplicable,
+                "definition_id",
+                Some(assertion.definition_id.as_str()),
+            ));
+        }
+        let def_id = definition.id.clone();
+        let ass_id = assertion.id.clone();
+        self.write(|tx| {
+            require_definition_owner(tx, &definition)?;
+            insert_definition(tx, &definition)?;
+            validate_assertion(tx, &assertion)?;
+            insert_assertion(tx, &assertion)?;
+            Ok((
+                required_definition(tx, &def_id)?,
+                required_assertion(tx, &ass_id)?,
+            ))
+        })
+    }
+
+    /// Reads an optional definition and/or assertion by primary key inside one
+    /// consistent SQLite read snapshot. Only actual row absence returns `None`;
+    /// stored corruption, busy, or I/O errors fail closed.
+    pub fn probe_knowledge_records(
+        &self,
+        definition_id: Option<&DefinitionId>,
+        assertion_id: Option<&AssertionId>,
+    ) -> Result<KnowledgeRecordProbe> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| map_sql("begin knowledge probe", err))?;
+        let definition = definition_id
+            .map(|id| lookup_definition(&tx, id))
+            .transpose()?
+            .flatten();
+        let assertion = assertion_id
+            .map(|id| lookup_assertion(&tx, id))
+            .transpose()?
+            .flatten();
+        tx.commit()
+            .map_err(|err| map_sql("commit knowledge probe", err))?;
+        Ok(KnowledgeRecordProbe {
+            definition,
+            assertion,
         })
     }
 

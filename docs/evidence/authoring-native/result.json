@@ -1,0 +1,65 @@
+{
+  "synthetic": true,
+  "native": true,
+  "note": "CDP-dispatched DOM/keyboard events and programmatic resize; does not replace physical Windows keyboard/IME/DPI QA.",
+  "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36 Edg/158.0.0.0",
+  "viewports": {
+    "win1600": {
+      "width": 1600,
+      "height": 900,
+      "dpr": 1
+    },
+    "win1120": {
+      "width": 1120,
+      "height": 780,
+      "dpr": 1
+    },
+    "win800": {
+      "width": 800,
+      "height": 600,
+      "dpr": 1
+    },
+    "win600": {
+      "width": 600,
+      "height": 720,
+      "dpr": 1
+    }
+  },
+  "setupIds": {
+    "orderId": "cf2d4ae9-bd43-4f24-822c-597b80f445c0",
+    "kestrelId": "fabd3898-5e4d-464a-a495-525299d6a55b",
+    "sableId": "a79722c8-c786-462f-9e4a-8fda21fe8b6d",
+    "spireId": "68d79545-b287-472b-b0f4-378e859406b1"
+  },
+  "authoredIds": {
+    "swornDefId": "b29c7cf2-b2dd-4df3-8cb1-e8ffde67cf30",
+    "alliedDefId": "bef6157a-e51c-4983-933a-54e7571a6e33",
+    "defIds": [
+      "48c16ede-cc8b-4a9e-8db2-5fbbd6df8738",
+      "b29c7cf2-b2dd-4df3-8cb1-e8ffde67cf30",
+      "bef6157a-e51c-4983-933a-54e7571a6e33",
+      "bef6157a-e51c-4983-933a-54e7571a6e33"
+    ],
+    "assIds": [
+      "a355dc20-938c-439b-a0c0-869866f551d2",
+      "2863cb7e-1942-4d91-9c0f-94871721f1b6",
+      "b47ecfb0-a89c-41d1-9ab1-da1ed1031d42",
+      "1690d08d-9f10-489e-a303-c0030a994ccc",
+      "25f094dc-1f5e-42cb-b593-c52953d8f47d",
+      "1690d08d-9f10-489e-a303-c0030a994ccc"
+    ]
+  },
+  "relaunchVerify": {
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36 Edg/158.0.0.0",
+    "reopenedDefCount": 4,
+    "reopenedAssCount": 6
+  },
+  "screenshots": [
+    "authoring-1600-new-property-dialog.png",
+    "authoring-1600-kestrel-facts.png",
+    "authoring-1120-add-value-dialog.png",
+    "authoring-800-narrow.png",
+    "authoring-600-stacked.png",
+    "authoring-1120-write-reveal-parity.png"
+  ]
+}
