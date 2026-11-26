@@ -24,7 +24,7 @@ Only synthetic universes and fixtures were used.
   at `16,384` / `1,024` / `4,096` bytes, verbatim byte preservation, atomic
   rollback, and session-scoped `cancelled_ops` fencing proving delayed original
   writes return `OperationCancelled` after `reconcile_codex_write`).
-- PASS: UI `npm test` (`133` tests across `adapter`, `save-session`, `mentions`,
+- PASS: UI `npm test` (`134` tests across `adapter`, `save-session`, `mentions`,
   `mention-history`, `desktop`, and `codex`), `npm run check`,
   `npm run desktop:check`, and `npm run desktop:frontend:build`.
 - PASS: `node scripts/verify.mjs --diff-base origin/main` (including WebView2
@@ -89,9 +89,31 @@ issue #52 and returned **PASS** with zero P1 or P2 findings and four P3 notes:
   `operation_id` only and scoped to the active session.
 - Remaining P3 notes retained for awareness: stored corruption detected during
   probe maps to `ReadFailed` (fails safe by keeping the write lock active as
-  unconfirmed); the reference picker uses `role="listbox"` / `role="option"`
-  with standard Tab/click focus rather than arrow-key `aria-activedescendant`
-  navigation (flagged for physical Windows keyboard QA below).
+  unconfirmed).
+- Follow-up review pass (addressing Ari's PR #53 review findings on `56e5941`):
+  - Derived persistent uncertainty/integrity notices from `integrityAnomaly`,
+    `pendingKnowledgeWrite.notice`, and `pendingCreate.notice` so warnings
+    persist across entity navigation, search/filter changes, and Write <-> Codex
+    reactivation while writes are locked.
+  - Disambiguated duplicate and unnamed property labels in `Add fact` via
+    shortest distinguishing ID suffix (`formatDefinitionDisplay`), matching the
+    Codex context renderer.
+  - Guarded native window close (`requestClose` in `ui/desktop/main.ts`) to
+    block ordinary closure during in-flight Codex writes/verifications and
+    display an explicit `#codex-close-guard` confirmation before leaving
+    unresolved Codex write/anomaly states (preserving Write's dirty-draft guard).
+  - Switched the reference picker to native button `aria-pressed` semantics
+    inside `role="group"` with in-place selection updates so selecting a target
+    never tears down DOM or drops keyboard focus.
+  - Made modal action buttons sticky inside scrolling `.codex-dialog-wide`
+    dialogs (with bottom padding inside the sticky bar so scrolled fields do
+    not peek below it) so `Cancel` and `Save`/`Create` remain accessible when
+    `Source & scope (optional)` expands.
+  - Focused independent review of the follow-up changes by **Claude Sonnet 5.5**
+    (`effort: high`, via Claude Code) returned **PASS** with zero P1/P2
+    findings; added `onclose` settlement on `#codex-close-guard`, cached
+    disambiguated `factTargetLabel` in `openFactDialog`, and eliminated bottom
+    peek beneath the sticky dialog actions.
 
 ## Trade-offs, limitations & remaining human acceptance (Windows)
 

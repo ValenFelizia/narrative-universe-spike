@@ -160,7 +160,7 @@
         <div id="codex-prop-val-ref-wrap" class="codex-val-wrap" hidden>
           <label for="codex-prop-val-ref-search">Target entity</label>
           <input id="codex-prop-val-ref-search" type="search" autocomplete="off" spellcheck="false" placeholder="Search entities by name, type, or ID" />
-          <div id="codex-prop-val-ref-list" class="codex-ref-list" role="listbox" aria-label="Target entities"></div>
+          <div id="codex-prop-val-ref-list" class="codex-ref-list" role="group" aria-label="Target entities"></div>
           <p id="codex-prop-val-ref-selected" class="codex-ref-selected"></p>
         </div>
         <label for="codex-prop-canon">Canon status</label>
@@ -220,7 +220,7 @@
       <div id="codex-fact-val-ref-wrap" class="codex-val-wrap" hidden>
         <label for="codex-fact-val-ref-search">Target entity</label>
         <input id="codex-fact-val-ref-search" type="search" autocomplete="off" spellcheck="false" placeholder="Search entities by name, type, or ID" />
-        <div id="codex-fact-val-ref-list" class="codex-ref-list" role="listbox" aria-label="Target entities"></div>
+        <div id="codex-fact-val-ref-list" class="codex-ref-list" role="group" aria-label="Target entities"></div>
         <p id="codex-fact-val-ref-selected" class="codex-ref-selected"></p>
       </div>
       <label for="codex-fact-canon">Canon status</label>
@@ -253,5 +253,15 @@
         <button id="codex-fact-submit" type="submit">Save fact</button>
       </div>
     </form>
+  </dialog>
+  <dialog id="codex-close-guard" aria-labelledby="codex-close-guard-title">
+    <div class="codex-dialog-form">
+      <h2 id="codex-close-guard-title">Unresolved Codex write</h2>
+      <p id="codex-close-guard-text" class="codex-dialog-note"></p>
+      <div class="codex-dialog-actions">
+        <button id="codex-close-stay" type="button">Stay</button>
+        <button id="codex-close-leave" type="button">Close anyway</button>
+      </div>
+    </div>
   </dialog></body>
 </html>

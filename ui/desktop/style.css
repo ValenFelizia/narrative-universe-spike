@@ -236,7 +236,7 @@ dialog::backdrop { background: rgba(0,0,0,.6); }
 .codex-detail-error p { margin:0; }
 
 .codex-dialog-form { display:grid; gap:10px; min-width:min(360px, calc(100vw - 48px)); }
-.codex-dialog-wide { width:min(480px, calc(100vw - 24px)); max-height:calc(100vh - 24px); overflow-y:auto; padding:18px; }
+.codex-dialog-wide { width:min(480px, calc(100vw - 24px)); max-height:calc(100vh - 24px); overflow-y:auto; padding:18px 18px 0; }
 .codex-dialog-wide .codex-dialog-form { min-width:0; width:100%; }
 .codex-dialog-form h2 { margin:0; font-size:18px; font-family:"Source Serif 4", Georgia, serif; }
 .codex-dialog-note { margin:0; font-size:12px; color:#aba9a5; overflow-wrap:anywhere; }
@@ -254,7 +254,7 @@ dialog::backdrop { background: rgba(0,0,0,.6); }
 .codex-ref-list { max-height:150px; overflow-y:auto; border:1px solid #393b40; border-radius:4px; background:#17191c; display:grid; gap:2px; padding:4px; }
 .codex-ref-option { width:100%; display:grid; gap:2px; text-align:left; padding:6px 8px; border:0; border-radius:4px; background:transparent; color:#cfcbc3; font:inherit; cursor:pointer; }
 .codex-ref-option:hover { background:#25282e; color:#ece7de; }
-.codex-ref-option[aria-selected="true"] { background:#39443f; color:#ece7de; }
+.codex-ref-option[aria-pressed="true"] { background:#39443f; color:#ece7de; }
 .codex-ref-option-label { font-size:13px; overflow-wrap:anywhere; }
 .codex-ref-option-sub { font-size:11px; color:#9c9a94; overflow-wrap:anywhere; }
 .codex-ref-empty { margin:4px 6px; font-size:12px; color:#82807b; font-style:italic; }
@@ -263,6 +263,7 @@ dialog::backdrop { background: rgba(0,0,0,.6); }
 .codex-source-grid { display:grid; gap:6px; margin-top:8px; }
 .codex-hint { margin:0; font-size:12px; color:#c6b697; line-height:1.45; }
 .codex-entry-status { margin:0 0 14px; font-size:12px; color:#9db7ad; line-height:1.45; }
+.codex-entry-status[data-severity="warning"] { color:#dfb47d; }
 .codex-entry-status:empty { display:none; }
 .codex-author-btn { margin-left:auto; padding:4px 10px; border:1px solid #4b4d52; border-radius:4px; background:transparent; color:#ece7de; font:inherit; font-size:12px; cursor:pointer; }
 .codex-add-value-btn { justify-self:start; padding:3px 9px; border:1px solid #393b40; border-radius:4px; background:transparent; color:#aba9a5; font:inherit; font-size:12px; cursor:pointer; }
@@ -270,6 +271,7 @@ dialog::backdrop { background: rgba(0,0,0,.6); }
 .codex-author-btn:disabled, .codex-add-value-btn:disabled { opacity:0.45; cursor:default; }
 .codex-form-error { margin:0; color:#dfb47d; font-size:12px; }
 .codex-dialog-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:6px; }
+.codex-dialog-wide .codex-dialog-actions { position:sticky; bottom:0; background:#1f2226; padding:10px 0 18px; border-top:1px solid #393b40; }
 
 @media (max-width: 720px) {
   .codex-shell { grid-template-columns:232px minmax(0, 1fr); }

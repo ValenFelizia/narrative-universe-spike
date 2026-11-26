@@ -106,6 +106,7 @@ type PendingCodexCreate = {
   kind: "type" | "entity";
   id: string;
   label: string;
+  notice: string;
 };
 
 type PendingKnowledgeWrite = {
@@ -117,6 +118,7 @@ type PendingKnowledgeWrite = {
   expectedDefinition: ContextDefinition | null;
   expectedAssertion: PersistedAssertion | null;
   summaryLabel: string;
+  notice: string;
 };
 
 const MAX_CODEX_LABEL_SCALARS = 120;
@@ -337,6 +339,8 @@ export type CodexController = {
   deactivate: () => void;
   resetForUniverse: (token: string) => void;
   isBusy: () => boolean;
+  hasInFlightWrite: () => boolean;
+  unresolvedCloseWarning: () => string | null;
 };
 
 export function createCodexController(options: {
@@ -483,6 +487,7 @@ export function createCodexController(options: {
   let propDialogSeq = 0;
   let factTargetEntity: CodexEntityEntry | null = null;
   let factTargetGroup: ContextOutgoingGroup | null = null;
+  let factTargetLabel = "";
   let factSelectedRefId: string | null = null;
   let factReturnFocus: HTMLElement | null = null;
   let factDialogSeq = 0;
@@ -549,6 +554,25 @@ export function createCodexController(options: {
     });
   }
 
+  function persistentLockNotice(): string | null {
+    if (integrityAnomaly) return integrityAnomaly;
+    if (pendingKnowledgeWrite) return pendingKnowledgeWrite.notice;
+    if (pendingCreate) return pendingCreate.notice;
+    return null;
+  }
+
+  function syncPersistentNotices(): void {
+    const notice = persistentLockNotice();
+    if (notice) {
+      statusEl.textContent = notice;
+      entryStatusEl.textContent = notice;
+      entryStatusEl.dataset.severity = "warning";
+    } else if (entryStatusEl.dataset.severity === "warning") {
+      entryStatusEl.textContent = "";
+      delete entryStatusEl.dataset.severity;
+    }
+  }
+
   function isWriteLocked(): boolean {
     const busy = loadingIndex || creatingType || creatingEntity || authoringWrite || verifyingWrite;
     return busy || !!pendingCreate || !!pendingKnowledgeWrite || !!integrityAnomaly;
@@ -568,6 +592,7 @@ export function createCodexController(options: {
     for (const btn of detailContext.querySelectorAll<HTMLButtonElement>("#codex-new-property, .codex-add-value-btn")) {
       btn.disabled = !hasToken || !indexLoaded || creationLocked;
     }
+    syncPersistentNotices();
   }
 
   function renderTypeFilterOptions(): void {
@@ -663,7 +688,14 @@ export function createCodexController(options: {
     currentContext = null;
     detailTitle.textContent = entities.length ? "Select an entity" : "Codex";
     detailMeta.replaceChildren();
-    entryStatusEl.textContent = "";
+    const lockNotice = persistentLockNotice();
+    if (lockNotice) {
+      entryStatusEl.textContent = lockNotice;
+      entryStatusEl.dataset.severity = "warning";
+    } else {
+      entryStatusEl.textContent = "";
+      delete entryStatusEl.dataset.severity;
+    }
     detailContext.replaceChildren();
     const prompt = document.createElement("p");
     prompt.className = "codex-detail-placeholder";
@@ -735,7 +767,14 @@ export function createCodexController(options: {
     const reqVersion = ++contextVersion;
     currentContext = null;
     if (!opts?.preserveEntryStatus) {
-      entryStatusEl.textContent = "";
+      const lockNotice = persistentLockNotice();
+      if (lockNotice) {
+        entryStatusEl.textContent = lockNotice;
+        entryStatusEl.dataset.severity = "warning";
+      } else {
+        entryStatusEl.textContent = "";
+        delete entryStatusEl.dataset.severity;
+      }
     }
     renderDetailHeader(entity);
     detailContext.replaceChildren();
@@ -871,7 +910,7 @@ export function createCodexController(options: {
           }
         }
       } else {
-        statusEl.textContent = preserveStatus ?? "";
+        statusEl.textContent = persistentLockNotice() ?? preserveStatus ?? "";
       }
 
       const targetSelectId = preferSelectId ?? reconciledEntityId;
@@ -905,10 +944,11 @@ export function createCodexController(options: {
       const pendingForToken = pendingCreate && pendingCreate.token === token ? pendingCreate : null;
       if (pendingForToken) {
         const noun = pendingForToken.kind === "type" ? "type" : "entity";
-        statusEl.textContent =
+        pendingForToken.notice =
           kind === "busy"
             ? `Database is busy; ${noun} "${pendingForToken.label}" creation is still unconfirmed. Use Refresh Codex to verify.`
             : `Verification failed; ${noun} "${pendingForToken.label}" creation is still unconfirmed. Use Refresh Codex to verify.`;
+        statusEl.textContent = pendingForToken.notice;
       } else if (pendingRefreshAfterWrite) {
         statusEl.textContent = `${pendingRefreshAfterWrite} Use Refresh Codex to reload the list.`;
       } else if (!indexLoaded) {
@@ -1072,7 +1112,7 @@ export function createCodexController(options: {
           typeErrorEl.hidden = false;
           typeLabelInput.focus();
         } else {
-          pendingCreate = { token, kind: "type", id: typeId, label: validation.label };
+          pendingCreate = { token, kind: "type", id: typeId, label: validation.label, notice: message };
           typeDialog.close();
           refreshButton.hidden = false;
           statusEl.textContent = message;
@@ -1134,7 +1174,7 @@ export function createCodexController(options: {
           entityErrorEl.hidden = false;
           entityLabelInput.focus();
         } else {
-          pendingCreate = { token, kind: "entity", id: entityId, label: validation.label };
+          pendingCreate = { token, kind: "entity", id: entityId, label: validation.label, notice: message };
           entityDialog.close();
           refreshButton.hidden = false;
           statusEl.textContent = message;
@@ -1153,6 +1193,37 @@ export function createCodexController(options: {
   function formatEntityDisplay(entity: CodexEntityEntry): string {
     const entityGroups = entityIdMap();
     return suffixed(entity.label, entity.id, entityGroups.get(entity.label) ?? [entity.id]);
+  }
+
+  function formatDefinitionDisplay(def: ContextDefinition, context: EntityContext): string {
+    const allGroups = [
+      ...context.outgoingGroups,
+      ...context.incomingGroups,
+      ...context.archivedOutgoingGroups,
+      ...context.archivedIncomingGroups,
+    ];
+    const targetLabel = def.propertyLabel ?? "Unnamed property";
+    const sameLabelIds = new Set<string>([def.id]);
+    for (const group of allGroups) {
+      if ((group.definition.propertyLabel ?? "Unnamed property") === targetLabel) {
+        sameLabelIds.add(group.definition.id);
+      }
+    }
+    return suffixed(targetLabel, def.id, [...sameLabelIds]);
+  }
+
+  function updateReferenceSelectionInPlace(opts: {
+    listEl: HTMLElement;
+    selectedEl: HTMLElement;
+    selectedId: string | null;
+  }): void {
+    for (const btn of opts.listEl.querySelectorAll<HTMLButtonElement>(".codex-ref-option")) {
+      btn.setAttribute("aria-pressed", String(btn.dataset.entityId === opts.selectedId));
+    }
+    const chosen = opts.selectedId ? entities.find(e => e.id === opts.selectedId) : null;
+    opts.selectedEl.textContent = chosen
+      ? `Selected target: ${formatEntityDisplay(chosen)}`
+      : "No target entity selected.";
   }
 
   function renderReferencePicker(opts: {
@@ -1189,9 +1260,8 @@ export function createCodexController(options: {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "codex-ref-option";
-        btn.setAttribute("role", "option");
         btn.dataset.entityId = candidate.id;
-        btn.setAttribute("aria-selected", String(opts.selectedId === candidate.id));
+        btn.setAttribute("aria-pressed", String(opts.selectedId === candidate.id));
 
         const primary = document.createElement("span");
         primary.className = "codex-ref-option-label";
@@ -1214,10 +1284,11 @@ export function createCodexController(options: {
         opts.listEl.append(btn);
       }
     }
-    const chosen = opts.selectedId ? entities.find(e => e.id === opts.selectedId) : null;
-    opts.selectedEl.textContent = chosen
-      ? `Selected target: ${formatEntityDisplay(chosen)}`
-      : "No target entity selected.";
+    updateReferenceSelectionInPlace({
+      listEl: opts.listEl,
+      selectedEl: opts.selectedEl,
+      selectedId: opts.selectedId,
+    });
   }
 
   function syncValueControls(opts: {
@@ -1270,7 +1341,11 @@ export function createCodexController(options: {
         selectedId: propSelectedRefId,
         onSelect: id => {
           propSelectedRefId = id;
-          syncPropDialogState();
+          updateReferenceSelectionInPlace({
+            listEl: propValRefList,
+            selectedEl: propValRefSelected,
+            selectedId: propSelectedRefId,
+          });
         },
       });
     }
@@ -1295,7 +1370,11 @@ export function createCodexController(options: {
         selectedId: factSelectedRefId,
         onSelect: id => {
           factSelectedRefId = id;
-          syncFactDialogState();
+          updateReferenceSelectionInPlace({
+            listEl: factValRefList,
+            selectedEl: factValRefSelected,
+            selectedId: factSelectedRefId,
+          });
         },
       });
     }
@@ -1382,7 +1461,8 @@ export function createCodexController(options: {
     factReturnFocus = trigger;
 
     const entityDisp = formatEntityDisplay(entity);
-    const propLabel = group.definition.propertyLabel ?? "Unnamed property";
+    const propLabel = formatDefinitionDisplay(group.definition, currentContext);
+    factTargetLabel = propLabel;
     const ownerText =
       group.definition.ownerKind === "type"
         ? `All ${formatEntityTypeText(entity, typeIdMap())} entities`
@@ -1608,7 +1688,8 @@ export function createCodexController(options: {
           pendingKnowledgeWrite = null;
           statusEl.textContent = `Verified: "${pending.summaryLabel}" was not saved. You may try again.`;
         } else {
-          statusEl.textContent = `Outcome for "${pending.summaryLabel}" is still unconfirmed because the earlier request could not be guaranteed finished. Writes remain locked; verify again or reopen the universe.`;
+          pending.notice = `Outcome for "${pending.summaryLabel}" is still unconfirmed because the earlier request could not be guaranteed finished. Writes remain locked; verify again or reopen the universe.`;
+          statusEl.textContent = pending.notice;
         }
       } else if (pending.kind === "definition") {
         const expected = pending.expectedDefinition!;
@@ -1628,7 +1709,8 @@ export function createCodexController(options: {
           pendingKnowledgeWrite = null;
           statusEl.textContent = `Verified: property "${pending.summaryLabel}" was not saved. You may try again.`;
         } else {
-          statusEl.textContent = `Outcome for property "${pending.summaryLabel}" is still unconfirmed because the earlier request could not be guaranteed finished. Writes remain locked; verify again or reopen the universe.`;
+          pending.notice = `Outcome for property "${pending.summaryLabel}" is still unconfirmed because the earlier request could not be guaranteed finished. Writes remain locked; verify again or reopen the universe.`;
+          statusEl.textContent = pending.notice;
         }
       } else {
         const expectedDef = pending.expectedDefinition!;
@@ -1656,7 +1738,8 @@ export function createCodexController(options: {
             pendingKnowledgeWrite = null;
             statusEl.textContent = `Verified: nothing was saved for "${pending.summaryLabel}". You may try again.`;
           } else {
-            statusEl.textContent = `Outcome for "${pending.summaryLabel}" is still unconfirmed because the earlier request could not be guaranteed finished. Writes remain locked; verify again or reopen the universe.`;
+            pending.notice = `Outcome for "${pending.summaryLabel}" is still unconfirmed because the earlier request could not be guaranteed finished. Writes remain locked; verify again or reopen the universe.`;
+            statusEl.textContent = pending.notice;
           }
         } else {
           const detail = hasDef
@@ -1672,10 +1755,11 @@ export function createCodexController(options: {
         return;
       }
       const kind = errorKind(error);
-      statusEl.textContent =
+      pending.notice =
         kind === "busy"
           ? `Database is busy; "${pending.summaryLabel}" is still unconfirmed. Use Verify write to try again.`
           : `Verification could not read the database; "${pending.summaryLabel}" is still unconfirmed. Use Verify write to try again.`;
+      statusEl.textContent = pending.notice;
     } finally {
       if (universeEpoch === pending.epoch) {
         verifyingWrite = false;
@@ -1878,6 +1962,7 @@ export function createCodexController(options: {
             expectedDefinition,
             expectedAssertion,
             summaryLabel: labelCheck.label,
+            notice: message,
           };
           if (seq === propDialogSeq && propDialog.open) propDialog.close();
           statusEl.textContent = message;
@@ -1928,7 +2013,7 @@ export function createCodexController(options: {
     const seq = factDialogSeq;
     const subjectId = factTargetEntity.id;
     const definitionId = factTargetGroup.definition.id;
-    const summaryLabel = factTargetGroup.definition.propertyLabel ?? "Unnamed property";
+    const summaryLabel = factTargetLabel || (factTargetGroup.definition.propertyLabel ?? "Unnamed property");
     const operationId = crypto.randomUUID();
     const assertionId = crypto.randomUUID();
     const expectedAssertion: PersistedAssertion = {
@@ -1992,6 +2077,7 @@ export function createCodexController(options: {
             expectedDefinition: null,
             expectedAssertion,
             summaryLabel,
+            notice: message,
           };
           if (seq === factDialogSeq && factDialog.open) factDialog.close();
           statusEl.textContent = message;
@@ -2056,6 +2142,7 @@ export function createCodexController(options: {
       verifyWriteButton.hidden = true;
       statusEl.textContent = "";
       entryStatusEl.textContent = "";
+      delete entryStatusEl.dataset.severity;
       typeSubmitButton.disabled = false;
       typeCancelButton.disabled = false;
       entitySubmitButton.disabled = false;
@@ -2081,6 +2168,14 @@ export function createCodexController(options: {
         propDialog.open ||
         factDialog.open
       );
+    },
+    hasInFlightWrite(): boolean {
+      return creatingType || creatingEntity || authoringWrite || verifyingWrite;
+    },
+    unresolvedCloseWarning(): string | null {
+      const notice = persistentLockNotice();
+      if (!notice) return null;
+      return `${notice} Closing now ends this session without durable recovery of pending verification state. Close anyway?`;
     },
   };
 }

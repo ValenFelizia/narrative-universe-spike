@@ -26,27 +26,27 @@
     }
   },
   "setupIds": {
-    "orderId": "dab0c4f9-105a-4698-97a6-4e5c51a8fd13",
-    "kestrelId": "4c29488d-7671-41fb-b3ef-51f9270a54a8",
-    "sableId": "7491018b-c78d-4b6c-b526-4905e220afe5",
-    "spireId": "3dfac77b-2423-452e-9136-876f99a089fe"
+    "orderId": "cf2d4ae9-bd43-4f24-822c-597b80f445c0",
+    "kestrelId": "fabd3898-5e4d-464a-a495-525299d6a55b",
+    "sableId": "a79722c8-c786-462f-9e4a-8fda21fe8b6d",
+    "spireId": "68d79545-b287-472b-b0f4-378e859406b1"
   },
   "authoredIds": {
-    "swornDefId": "bd2a7c3c-b69d-4555-a269-fb9a32230958",
-    "alliedDefId": "e61c80b2-c15c-4951-8a0c-0708276c5481",
+    "swornDefId": "b29c7cf2-b2dd-4df3-8cb1-e8ffde67cf30",
+    "alliedDefId": "bef6157a-e51c-4983-933a-54e7571a6e33",
     "defIds": [
-      "bd2a7c3c-b69d-4555-a269-fb9a32230958",
-      "e21aa5b5-a818-4fc1-941f-59e0dd6e9b82",
-      "e61c80b2-c15c-4951-8a0c-0708276c5481",
-      "e61c80b2-c15c-4951-8a0c-0708276c5481"
+      "48c16ede-cc8b-4a9e-8db2-5fbbd6df8738",
+      "b29c7cf2-b2dd-4df3-8cb1-e8ffde67cf30",
+      "bef6157a-e51c-4983-933a-54e7571a6e33",
+      "bef6157a-e51c-4983-933a-54e7571a6e33"
     ],
     "assIds": [
-      "0a4dd2b6-142f-4204-aafa-b25b324ea8a2",
-      "6a046db1-4db3-471c-8c60-3fc16b7a2d43",
-      "0589fadb-8815-4d42-841e-2abfd5ebaa26",
-      "65506207-48b9-494a-a7b6-3c60c7a4ddbc",
-      "8e5b61bc-a5a1-499d-bf81-d1ca98a23ef8",
-      "8e5b61bc-a5a1-499d-bf81-d1ca98a23ef8"
+      "a355dc20-938c-439b-a0c0-869866f551d2",
+      "2863cb7e-1942-4d91-9c0f-94871721f1b6",
+      "b47ecfb0-a89c-41d1-9ab1-da1ed1031d42",
+      "1690d08d-9f10-489e-a303-c0030a994ccc",
+      "25f094dc-1f5e-42cb-b593-c52953d8f47d",
+      "1690d08d-9f10-489e-a303-c0030a994ccc"
     ]
   },
   "relaunchVerify": {

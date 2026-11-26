@@ -1202,3 +1202,215 @@ test("KA2-A reconciliation enforces finalized absence, partial anomaly lock, mut
   assert.equal(ui.doc.querySelector("#codex-new-property"), null);
   ui.close();
 });
+
+test("KA2-A review regressions: persistent notices, duplicate property disambiguation in Add fact, native close guard, and reference picker focus", async () => {
+  const ENT_A = "55555555-5555-4555-8555-000000000101";
+  const ENT_B = "55555555-5555-4555-8555-000000000102";
+  const DEF_DUP_1 = "44444444-4444-4444-8444-000000000001";
+  const DEF_DUP_2 = "44444444-4444-4444-8444-000000000002";
+  const DEF_NULL_1 = "44444444-4444-4444-8444-000000000003";
+  const DEF_NULL_2 = "44444444-4444-4444-8444-000000000004";
+  const persistedDefIds: string[] = [];
+  const cancelCloseTokens: string[] = [];
+  const closeWindowTokens: string[] = [];
+  let inflightWrite: ReturnType<typeof deferred<unknown>> | null = null;
+  let inflightVerify: ReturnType<typeof deferred<unknown>> | null = null;
+
+  const ui = setup(async (cmd, args) => {
+    if (cmd === "page_index") return [];
+    if (cmd === "codex_index") {
+      return {
+        types: [],
+        entities: [
+          { id: ENT_A, label: "Kestrel", typeId: null, typeLabel: null, primaryPageTitle: null },
+          { id: ENT_B, label: "Ash Spire", typeId: null, typeLabel: null, primaryPageTitle: null },
+        ],
+      };
+    }
+    if (cmd === "entity_context") {
+      const entityId = String(args!.entityId);
+      if (entityId === ENT_A) {
+        return {
+          entity: { id: ENT_A, label: "Kestrel" },
+          typeLabel: null,
+          outgoingGroups: [
+            {
+              definition: { id: DEF_DUP_1, ownerKind: "entity", ownerId: ENT_A, propertyLabel: "Allegiance", valueClass: "text", cardinality: "singular", archived: false },
+              claims: [],
+              hasArchivedClaims: false,
+            },
+            {
+              definition: { id: DEF_DUP_2, ownerKind: "entity", ownerId: ENT_A, propertyLabel: "Allegiance", valueClass: "text", cardinality: "singular", archived: false },
+              claims: [],
+              hasArchivedClaims: false,
+            },
+            {
+              definition: { id: DEF_NULL_1, ownerKind: "entity", ownerId: ENT_A, propertyLabel: null, valueClass: "text", cardinality: "singular", archived: false },
+              claims: [],
+              hasArchivedClaims: false,
+            },
+            {
+              definition: { id: DEF_NULL_2, ownerKind: "entity", ownerId: ENT_A, propertyLabel: null, valueClass: "text", cardinality: "singular", archived: false },
+              claims: [],
+              hasArchivedClaims: false,
+            },
+          ],
+          incomingGroups: [],
+          archivedOutgoingGroups: [],
+          archivedIncomingGroups: [],
+        };
+      }
+      return {
+        entity: { id: ENT_B, label: "Ash Spire" },
+        typeLabel: null,
+        outgoingGroups: [],
+        incomingGroups: [],
+        archivedOutgoingGroups: [],
+        archivedIncomingGroups: [],
+      };
+    }
+    if (cmd === "create_assertion") {
+      const req = args!.request as { assertion: { assertionId: string; subjectId: string; definitionId: string; value: unknown; canon: string; sourceStatusRaw: string | null; provenance: unknown; scopeNote: string | null } };
+      persistedDefIds.push(req.assertion.definitionId);
+      return {
+        id: req.assertion.assertionId,
+        subjectId: req.assertion.subjectId,
+        definitionId: req.assertion.definitionId,
+        value: req.assertion.value,
+        canon: req.assertion.canon,
+        sourceStatusRaw: req.assertion.sourceStatusRaw,
+        provenance: req.assertion.provenance,
+        scopeNote: req.assertion.scopeNote,
+        archived: false,
+      };
+    }
+    if (cmd === "create_definition_with_assertion") {
+      inflightWrite = deferred();
+      return inflightWrite.promise;
+    }
+    if (cmd === "reconcile_codex_write") {
+      inflightVerify = deferred();
+      return inflightVerify.promise;
+    }
+    if (cmd === "cancel_close") {
+      cancelCloseTokens.push(String(args!.token));
+      return undefined;
+    }
+    if (cmd === "close_window") {
+      closeWindowTokens.push(String(args!.token));
+      return undefined;
+    }
+    return undefined;
+  });
+
+  ui.open("review.sqlite");
+  await tick();
+  ui.doc.querySelector<HTMLButtonElement>("#mode-codex")!.click();
+  await tick();
+  ui.doc.querySelector<HTMLButtonElement>(`.codex-entity-item[data-entity-id="${ENT_A}"]`)!.click();
+  await tick();
+
+  // 1. Duplicate property identity disambiguation in Add fact (both named and unnamed).
+  ui.doc.querySelector<HTMLButtonElement>(`.codex-add-value-btn[data-definition-id="${DEF_DUP_2}"]`)!.click();
+  assert.match(ui.doc.querySelector("#codex-fact-subtitle")!.textContent!, /Allegiance · …0002/);
+  ui.doc.querySelector<HTMLTextAreaElement>("#codex-fact-val-text")!.value = "Lantern";
+  ui.doc.querySelector<HTMLFormElement>("#codex-fact-form")!.dispatchEvent(new ui.win.Event("submit", { cancelable: true }));
+  await tick();
+  assert.deepEqual(persistedDefIds, [DEF_DUP_2]);
+
+  ui.doc.querySelector<HTMLButtonElement>(`.codex-add-value-btn[data-definition-id="${DEF_NULL_1}"]`)!.click();
+  assert.match(ui.doc.querySelector("#codex-fact-subtitle")!.textContent!, /Unnamed property · …0003/);
+  ui.doc.querySelector<HTMLButtonElement>("#codex-fact-cancel")!.click();
+
+  // 2. Reference picker uses native button aria-pressed (no listbox/option) and keeps focus on select.
+  ui.doc.querySelector<HTMLButtonElement>("#codex-new-property")!.click();
+  ui.doc.querySelector<HTMLSelectElement>("#codex-prop-value-class")!.value = "reference";
+  ui.doc.querySelector<HTMLSelectElement>("#codex-prop-value-class")!.dispatchEvent(new ui.win.Event("change"));
+  const refList = ui.doc.querySelector<HTMLElement>("#codex-prop-val-ref-list")!;
+  assert.equal(refList.getAttribute("role"), "group");
+  const targetBtn = refList.querySelector<HTMLButtonElement>(`.codex-ref-option[data-entity-id="${ENT_B}"]`)!;
+  assert.equal(targetBtn.getAttribute("role"), null);
+  assert.equal(targetBtn.getAttribute("aria-pressed"), "false");
+  targetBtn.focus();
+  targetBtn.click();
+  assert.equal(targetBtn.getAttribute("aria-pressed"), "true");
+  assert.equal(ui.doc.activeElement, targetBtn);
+
+  // 3. In-flight Codex write blocks ordinary native window close without opening close guard.
+  ui.doc.querySelector<HTMLInputElement>("#codex-prop-label-input")!.value = "Ally";
+  ui.doc.querySelector<HTMLFormElement>("#codex-prop-form")!.dispatchEvent(new ui.win.Event("submit", { cancelable: true }));
+  await tick();
+  ui.controller.requestClose("close-inflight-write");
+  await tick();
+  assert.deepEqual(cancelCloseTokens, ["close-inflight-write"]);
+  assert.deepEqual(closeWindowTokens, []);
+  assert.equal(ui.doc.querySelector<HTMLDialogElement>("#codex-close-guard")!.open, false);
+
+  // Fail write ambiguously -> pendingKnowledgeWrite active.
+  inflightWrite!.reject(new Error("transport dropped"));
+  await tick();
+  assert.match(ui.doc.querySelector("#codex-status")!.textContent!, /Could not confirm/);
+  assert.equal(ui.doc.querySelector<HTMLElement>("#codex-entry-status")!.dataset.severity, "warning");
+
+  // 4. Persistent uncertainty notice survives entity navigation, search filtering, and Write <-> Codex reactivation!
+  ui.doc.querySelector<HTMLButtonElement>(`.codex-entity-item[data-entity-id="${ENT_B}"]`)!.click();
+  await tick();
+  assert.match(ui.doc.querySelector("#codex-entry-status")!.textContent!, /Could not confirm/);
+  assert.match(ui.doc.querySelector("#codex-status")!.textContent!, /Could not confirm/);
+
+  const searchInput = ui.doc.querySelector<HTMLInputElement>("#codex-search")!;
+  searchInput.value = "nomatch";
+  searchInput.dispatchEvent(new ui.win.Event("input"));
+  await tick();
+  assert.match(ui.doc.querySelector("#codex-entry-status")!.textContent!, /Could not confirm/);
+
+  ui.doc.querySelector<HTMLButtonElement>("#mode-write")!.click();
+  await tick();
+  ui.doc.querySelector<HTMLButtonElement>("#mode-codex")!.click();
+  await tick();
+  assert.match(ui.doc.querySelector("#codex-status")!.textContent!, /Could not confirm/);
+  assert.match(ui.doc.querySelector("#codex-entry-status")!.textContent!, /Could not confirm/);
+
+  // 5. In-flight verification blocks ordinary native window close.
+  ui.doc.querySelector<HTMLButtonElement>("#codex-verify-write")!.click();
+  await tick();
+  ui.controller.requestClose("close-inflight-verify");
+  await tick();
+  assert.ok(cancelCloseTokens.includes("close-inflight-verify"));
+  assert.deepEqual(closeWindowTokens, []);
+
+  // Resolve verify with partial anomaly -> persistent anomaly survives navigation & prompts explicit close warning!
+  inflightVerify!.resolve({
+    operationId: "mismatch-op",
+    finalized: true,
+    definition: null,
+    assertion: null,
+  });
+  await tick();
+  assert.match(ui.doc.querySelector("#codex-status")!.textContent!, /Integrity anomaly/);
+  ui.doc.querySelector<HTMLButtonElement>("#mode-write")!.click();
+  await tick();
+  ui.doc.querySelector<HTMLButtonElement>("#mode-codex")!.click();
+  await tick();
+  assert.match(ui.doc.querySelector("#codex-status")!.textContent!, /Integrity anomaly/);
+  assert.match(ui.doc.querySelector("#codex-entry-status")!.textContent!, /Integrity anomaly/);
+
+  // Unresolved close guard: Stay cancels close; Close anyway permits close.
+  ui.controller.requestClose("close-stay");
+  await tick();
+  const closeGuard = ui.doc.querySelector<HTMLDialogElement>("#codex-close-guard")!;
+  assert.equal(closeGuard.open, true);
+  assert.match(ui.doc.querySelector("#codex-close-guard-text")!.textContent!, /Integrity anomaly/);
+  ui.doc.querySelector<HTMLButtonElement>("#codex-close-stay")!.click();
+  await tick();
+  assert.ok(cancelCloseTokens.includes("close-stay"));
+  assert.deepEqual(closeWindowTokens, []);
+
+  ui.controller.requestClose("close-leave");
+  await tick();
+  assert.equal(closeGuard.open, true);
+  ui.doc.querySelector<HTMLButtonElement>("#codex-close-leave")!.click();
+  await tick();
+  assert.deepEqual(closeWindowTokens, ["close-leave"]);
+  ui.close();
+});
